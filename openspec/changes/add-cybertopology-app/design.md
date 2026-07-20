@@ -66,8 +66,8 @@ Three one-time products (Core, Studio, upgrade by price difference), universal p
 
 ## Open Questions
 
-- Product name / bundle ID (working title: CyberTopology).
-- Minimum OS: iPadOS 17 vs 18 (Pencil Pro APIs and swift-cxx maturity push toward 18; decide at project creation).
+- Product name / bundle ID (working title: CyberTopology; scaffolded as `com.cyberdynecorp.cybertopology` — rename before launch if needed).
+- ~~Minimum OS~~ **Decided at project creation: iPadOS 18** (Pencil Pro APIs, swift-cxx maturity). Project is XcodeGen-managed (`project.yml` is source of truth; `.xcodeproj` not committed).
 - Engine binary distribution into this repo: git submodule + SwiftPM binary target, or source build via CMake → xcframework in CI.
 - Bundled practice model (needs a commissioned asset with license for redistribution).
 - Exact Studio-tier feature split (live-link placement is a guess until beta feedback).

@@ -1,0 +1,83 @@
+name: CyberTopology
+options:
+  bundleIdPrefix: com.cyberdynecorp
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    TARGETED_DEVICE_FAMILY: "2"
+    SUPPORTS_MACCATALYST: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_STRICT_CONCURRENCY: complete
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  CyberTopology:
+    type: application
+    platform: iOS
+    sources:
+      - App/Sources
+      - App/Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cyberdynecorp.cybertopology
+        PRODUCT_NAME: CyberTopology
+        GENERATE_INFOPLIST_FILE: YES
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 0.1.0
+        INFOPLIST_KEY_CFBundleDisplayName: CyberTopology
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_UIRequiresFullScreen: NO
+        INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
+        INFOPLIST_KEY_UIFileSharingEnabled: YES
+
+  CyberTopologyTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - App/Tests
+    dependencies:
+      - target: CyberTopology
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.cyberdynecorp.cybertopology.tests
+
+  CyberTopologyUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    dependencies:
+      - target: CyberTopology
+    sources:
+      - App/UITests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.cyberdynecorp.cybertopology.uitests
+        TEST_TARGET_NAME: CyberTopology
+
+schemes:
+  CyberTopology:
+    build:
+      targets:
+        CyberTopology: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      coverageTargets:
+        - CyberTopology
+      targets:
+        - CyberTopologyTests
+        - CyberTopologyUITests
+    archive:
+      config: Release

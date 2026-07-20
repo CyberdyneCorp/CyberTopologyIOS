@@ -4,7 +4,7 @@ Phased to match the priority order in `docs/COMPETITOR_IDEAS.md` §10. Each phas
 
 ## 1. Foundation — project + engine bridge
 
-- [ ] 1.1 Create Xcode project (SwiftUI, iPadOS target; working title CyberTopology), repo scaffolding, CI (build + `openspec validate --all --strict`)
+- [x] 1.1 Create Xcode project (SwiftUI, iPadOS target; working title CyberTopology), repo scaffolding, CI (build + `openspec validate --all --strict`)
 - [ ] 1.1a Test infrastructure: XCTest + XCUITest targets, simulator test job per PR, >90% coverage gate per layer (xccov/llvm-cov), `tests/traceability.yaml` scenario→test map with CI check for unmapped scenarios (spec: quality-assurance)
 - [ ] 1.1b Stroke-fixture recorder/replayer for gesture integration tests; golden-file harness (Weave/tangents/bakes) (spec: quality-assurance)
 - [ ] 1.2 Integrate CyberRemesherAndUV: submodule/xcframework build, `CyberKit` Swift package façade, smoke test calling an engine mesh op from Swift
