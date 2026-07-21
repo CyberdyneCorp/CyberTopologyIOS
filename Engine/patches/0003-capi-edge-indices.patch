@@ -1,0 +1,132 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index dcf7b0f..057072e 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -180,6 +180,21 @@ int cyber_mesh_has_colors(const CyberMesh* mesh);
+  * required count (3 * vertex_count, or 0 without colors). */
+ size_t cyber_mesh_copy_colors(const CyberMesh* mesh, float* out, size_t max_floats);
+ 
++/* Number of unique undirected face edges (a quad contributes 4 edges, never
++ * its triangulation diagonal — wireframe overlays draw the authored
++ * topology, not the fan triangulation). Deterministic: edges are emitted
++ * per live face in id order, each kept on first sighting. Returns 0 on
++ * NULL. */
++size_t cyber_mesh_edge_count(const CyberMesh* mesh);
++
++/* Copies the unique-edge index buffer (2 uint32 per edge, indexing the
++ * compacted vertex order of cyber_mesh_copy_positions) into `out`, writing
++ * whole edges only, at most `max_indices` values; returns the number of
++ * indices written. Pass out=NULL to query the required count
++ * (2 * edge_count). */
++size_t cyber_mesh_copy_edge_indices(const CyberMesh* mesh, uint32_t* out,
++                                    size_t max_indices);
++
+ /* ---- zero-copy render buffer views ------------------------------------
+  *
+  * Direct pointers into the handle's internal render cache — no copy. On
+@@ -199,6 +214,7 @@ size_t cyber_mesh_copy_colors(const CyberMesh* mesh, float* out, size_t max_floa
+  * NULL, empty, or — for colors — carries no per-vertex colors. */
+ const float* cyber_mesh_positions_ptr(const CyberMesh* mesh, size_t* out_count);
+ const uint32_t* cyber_mesh_triangle_indices_ptr(const CyberMesh* mesh, size_t* out_count);
++const uint32_t* cyber_mesh_edge_indices_ptr(const CyberMesh* mesh, size_t* out_count);
+ const float* cyber_mesh_normals_ptr(const CyberMesh* mesh, size_t* out_count);
+ const float* cyber_mesh_colors_ptr(const CyberMesh* mesh, size_t* out_count);
+ 
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index 17f3766..9cdea82 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -18,6 +18,7 @@
+ #include <optional>
+ #include <string>
+ #include <string_view>
++#include <unordered_set>
+ 
+ #include "cyber/bake/bake.hpp"
+ #include "cyber/core/io.hpp"
+@@ -50,6 +51,7 @@
+ struct CyberRenderCache {
+     std::vector<float> positions;        // x,y,z per vertex, compacted order
+     std::vector<std::uint32_t> indices;  // 3 per triangle, deterministic fan
++    std::vector<std::uint32_t> edges;    // 2 per unique undirected face edge
+     std::vector<float> normals;          // x,y,z per vertex, unit length
+     std::vector<float> colors;           // r,g,b per vertex; empty if none
+     bool hasColors = false;
+@@ -428,6 +430,36 @@ void fanTriangulate(const cyber::Mesh& m, const std::vector<cyber::Index>& remap
+     }
+ }
+ 
++// Unique undirected face edges (wireframe topology, NOT the fan
++// triangulation: a quad contributes its 4 boundary edges and no diagonal).
++// Deterministic: faces walked in id order, each edge kept on first
++// sighting, endpoints emitted in face-winding order.
++void extractEdges(const cyber::Mesh& m, const std::vector<cyber::Index>& remap,
++                  CyberRenderCache& cache) {
++    std::unordered_set<std::uint64_t> seen;
++    for (cyber::Index f = 0; f < m.faceCapacity(); ++f) {
++        const cyber::FaceId face{f};
++        if (!m.isAlive(face)) {
++            continue;
++        }
++        const std::vector<cyber::VertexId> verts = m.faceVertices(face);
++        const std::size_t n = verts.size();
++        for (std::size_t k = 0; k < n; ++k) {
++            const std::uint32_t a = remap[verts[k].value];
++            const std::uint32_t b = remap[verts[(k + 1) % n].value];
++            if (a == b) {
++                continue;  // degenerate corner
++            }
++            const std::uint64_t key =
++                (static_cast<std::uint64_t>(std::min(a, b)) << 32) | std::max(a, b);
++            if (seen.insert(key).second) {
++                cache.edges.push_back(a);
++                cache.edges.push_back(b);
++            }
++        }
++    }
++}
++
+ // Per-compact-vertex normal accumulation: imported per-corner normals when
+ // the attribute exists, otherwise the engine's own face normals (Newell).
+ std::vector<cyber::Vec3> accumulateNormals(const cyber::Mesh& m,
+@@ -507,6 +539,7 @@ const CyberRenderCache* ensureRenderCache(const CyberMesh* mesh) {
+     try {
+         const std::vector<cyber::Index> remap = compactVertices(mesh->mesh, cache);
+         fanTriangulate(mesh->mesh, remap, cache);
++        extractEdges(mesh->mesh, remap, cache);
+         finalizeNormals(accumulateNormals(mesh->mesh, remap, cache.positions.size() / 3), cache);
+         extractColors(mesh->mesh, cache);
+         cache.built = true;
+@@ -558,6 +591,20 @@ size_t cyber_mesh_copy_triangle_indices(const CyberMesh* mesh, uint32_t* out,
+     return copyBuffer(cache->indices, out, max_indices - max_indices % 3);
+ }
+ 
++size_t cyber_mesh_edge_count(const CyberMesh* mesh) {
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    return cache == nullptr ? 0 : cache->edges.size() / 2;
++}
++
++size_t cyber_mesh_copy_edge_indices(const CyberMesh* mesh, uint32_t* out, size_t max_indices) {
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    if (cache == nullptr) {
++        return 0;
++    }
++    // Whole edges only: never end a truncated copy mid-edge.
++    return copyBuffer(cache->edges, out, max_indices - max_indices % 2);
++}
++
+ size_t cyber_mesh_copy_normals(const CyberMesh* mesh, float* out, size_t max_floats) {
+     const CyberRenderCache* cache = ensureRenderCache(mesh);
+     return cache == nullptr ? 0 : copyBuffer(cache->normals, out, max_floats);
+@@ -583,6 +630,11 @@ const uint32_t* cyber_mesh_triangle_indices_ptr(const CyberMesh* mesh, size_t* o
+     return bufferView(cache == nullptr ? nullptr : &cache->indices, out_count);
+ }
+ 
++const uint32_t* cyber_mesh_edge_indices_ptr(const CyberMesh* mesh, size_t* out_count) {
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    return bufferView(cache == nullptr ? nullptr : &cache->edges, out_count);
++}
++
+ const float* cyber_mesh_normals_ptr(const CyberMesh* mesh, size_t* out_count) {
+     const CyberRenderCache* cache = ensureRenderCache(mesh);
+     return bufferView(cache == nullptr ? nullptr : &cache->normals, out_count);

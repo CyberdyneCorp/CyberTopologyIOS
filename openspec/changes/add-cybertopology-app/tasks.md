@@ -14,11 +14,13 @@ Phased to match the priority order in `docs/COMPETITOR_IDEAS.md` §10. Each phas
 
 ## 2. Viewport — Metal renderer
 
-- [ ] 2.1 Metal viewport: MTKView/CAMetalLayer host, camera (orbit/pinch/reframe, adjustable speed, scale-adaptive clip planes, camera rescue) (spec: viewport-rendering)
-- [ ] 2.2 High-poly Target pipeline: meshlet/LOD path on mesh-shader hardware + fallback; smooth shading + vertex colors; 5M-tri @60fps acceptance test (spec: viewport-rendering)
-- [ ] 2.3 EditMesh overlay pipeline: animated wireframe, verts/pins/tags, opacity, occlusion threshold, x-ray mode (spec: viewport-rendering)
-- [ ] 2.4 Ghost-geometry render style + zero-copy engine buffer sharing (spec: viewport-rendering)
-- [ ] 2.5 120 Hz ProMotion pacing, resolution scale option, MetalFX (spec: viewport-rendering)
+- [x] 2.1 Metal viewport: MTKView/CAMetalLayer host, camera (orbit/pinch/reframe, adjustable speed, scale-adaptive clip planes, camera rescue) (spec: viewport-rendering)
+- [x] 2.1a Engine C API render-data access (prereq for 2.2–2.4, design D2): deterministic triangulated index buffer, per-vertex normals/colors + has-colors query, zero-copy pointer views with documented lifetime (Engine/patches/0002); CyberKit `triangleIndices`/`normals`/`colors`/`withRenderBuffers` facade (spec: viewport-rendering)
+- [x] 2.2 High-poly Target pipeline, fallback scope: indexed-vertex path (smooth shading + vertex colors), capability-gated render-path seam for the meshlet pipeline, pooled no-per-frame-allocation geometry buffers, device-only frame-time perf harness (spec: viewport-rendering) — meshlet/LOD path and the 5M-tri acceptance are 2.2a
+- [ ] 2.2a Meshlet/LOD render path on mesh-shader hardware (A14/M1+) behind the 2.2 `TargetRenderPath` seam; 5M-tri @60fps device acceptance run (traceability scenario "Multi-million-triangle target" stays pending until this lands) (spec: viewport-rendering)
+- [x] 2.3 EditMesh overlay pipeline: animated wireframe, verts/pins/tags, opacity, occlusion threshold, x-ray mode (spec: viewport-rendering) — pins/loop-tags render styles land with their data model in 4.3
+- [x] 2.4 Ghost-geometry render style + zero-copy engine buffer sharing (spec: viewport-rendering) — pooled-copy is the active sharing path until the engine allocates page-aligned VM-backed render caches (upstream issue); ghost accept flow lands with Weave in 5.4
+- [x] 2.5 120 Hz ProMotion pacing, resolution scale option, MetalFX (spec: viewport-rendering) — render-on-demand pacing (idle = zero draws) with the 120 Hz range on ProMotion; MetalFX spatial upscaling is capability-gated (simulator exercises the plain scaled fallback; the upscale itself is device-gate territory, task 9.6)
 
 ## 3. Input & gesture layer
 

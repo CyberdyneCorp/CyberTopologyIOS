@@ -117,10 +117,13 @@ schemes:
       config: Debug
     test:
       config: Debug
+      # Coverage is gathered for ALL targets (no coverageTargets list): with
+      # onlyGenerateCoverageForSpecifiedTargets, xcodebuild silently drops
+      # the CyberKit SwiftPM product from instrumentation and the per-layer
+      # gate (scripts/coverage_gate.sh) sees no CyberKit/Sources files at
+      # all. The gate filters by source-path prefix, so over-collection is
+      # harmless.
       gatherCoverageData: true
-      coverageTargets:
-        - CyberTopology
-        - package: CyberKit/CyberKit
       targets:
         - CyberTopologyTests
         - CyberTopologyUITests

@@ -23,6 +23,7 @@ scenarios:
       - TopoDocumentUndoTests/deepUndoReturnsToInitialState
     Gesture undo/redo:
       - CyberTopologyUITests/testUndoRedoGesturesAndButtons
+      - MetalViewportTests/fallbackViewKeepsUndoGestureOverlay
     Files app visibility:
       - CyberTopologyUITests/testAppLaunchesIntoDocumentBrowser
     Free-tier save:
@@ -38,6 +39,57 @@ scenarios:
   quality-assurance:
     PR test run:
       - CyberTopologyUITests/testAppLaunchesIntoDocumentBrowser
+    # Device-only frame-time tests skip on simulator via XCTSkip with an
+    # explicit device-only reason, so the run report classifies them
+    # instead of silently dropping them (task 2.2 perf harness).
+    No silent skips:
+      - ViewportPerfTests/testFrameTimeOnDevice
+      - ViewportPerfTests/testLargeReplicatedTargetFrameTimeOnDevice
+  viewport-rendering:
+    # X-ray on/off compared over two offscreen frames with far-side overlay
+    # geometry (task 2.3): occluded by default, depth-attenuated reveal on.
+    X-ray mode:
+      - EditMeshOverlayTests/xrayRevealsFarSideWireframe
+      - EditMeshOverlayTests/occlusionBiasKeepsNearbyBuriedEdgesVisible
+    # The reveal is asserted as a function of the time uniform (three
+    # frames at progress 0 / 0.5 / 1 differ progressively) plus the pure
+    # progress-math test; the no-frame-drop half of the scenario is
+    # device-only territory covered by the perf harness policy.
+    Wireframe animation on creation:
+      - EditMeshOverlayTests/creationAnimationProgressesWithTheTimeUniform
+      - EditMeshOverlayTests/animationProgressIsClampedAndMonotonic
+    # Ghost render style (task 2.4): covers the scenario's render half —
+    # a proposal displayed alongside committed topology is visually distinct
+    # (pulsing translucent amber fill vs the cyan committed wireframe,
+    # asserted over offscreen pixels). The "accepting SHALL transition it to
+    # the standard EditMesh style" half is the Weave accept flow (task 5.4)
+    # and will extend this mapping when it lands; the ghost feed itself is
+    # exercised via the debug preview path until then.
+    Ghost vs committed distinction:
+      - GhostGeometryTests/ghostRendersVisiblyDistinctAlongsideCommittedWireframe
+      - GhostGeometryTests/ghostStyleDiffersMeasurablyFromCommittedStyle
+      - GhostGeometryTests/ghostAlphaPulsesAcrossSampledTimes
+    # Resolution scale (task 2.5): 50% quarters the drawable pixel count
+    # (rendering cost drops with scale²) and the same point-space gesture
+    # sequence produces the identical camera pose at 100% and 50% drawable
+    # scale (gesture handling operates in view points, independent of the
+    # drawable). The popover UI test drives the actual 50% control. The
+    # MetalFX half of "Performance controls" is capability-gated: the
+    # simulator covers selection + fallback (ResolutionScaleTests), the
+    # upscale itself is device-only (MetalFXDeviceTests, explicit XCTSkip).
+    Resolution downscale:
+      - ResolutionScalePolicyTests/fiftyPercentQuartersDrawablePixels
+      - ResolutionScaleRendererTests/gesturesInViewPointsAreIndependentOfDrawableScale
+      - CyberTopologyUITests/testViewportSettingsPopover
+    Camera rescue from inside the mesh:
+      - CameraStateTests/rescueFromInsideMeshReframesOutside
+      - CameraStateTests/rescueFromDegeneratePoseRestoresValidFraming
+      - ViewportRendererTests/reframeRescuesDegenerateCameraAndShowsMesh
+    Scale-adaptive clipping:
+      - CameraStateTests/clipPlanesFitTinyScene
+      - CameraStateTests/clipPlanesFitHugeScene
+      - CameraStateTests/clipPlanesCoverSceneAfterLargePans
+      - CameraStateTests/clipPlanesCoverSceneDepthAfterPanAndOrbit
 
 pending:
   baking:
@@ -76,7 +128,6 @@ pending:
     - Coverage reported per layer
     - New feature lands with its integration test
     - Gesture grammar regression suite
-    - No silent skips
     - Release gate
     - Hardware-path parity
     - Cross-environment determinism
@@ -109,14 +160,13 @@ pending:
     - Stack mirrored islands
     - Two-tile UDIM export
   viewport-rendering:
+    # Both remaining scenarios are device-only measurements: the 5M-tri
+    # acceptance belongs to the meshlet path (task 2.2a) and "Stroke
+    # latency" needs ProMotion hardware timing (device release gate, task
+    # 9.6). The 120 Hz pacing *architecture* (render-on-demand scheduler,
+    # ProMotion frame-rate range) is unit-covered by FramePacingTests.
     - Multi-million-triangle target
     - Stroke latency
-    - Wireframe animation on creation
-    - Ghost vs committed distinction
-    - X-ray mode
-    - Camera rescue from inside the mesh
-    - Scale-adaptive clipping
-    - Resolution downscale
   weave-solver:
     - Frozen patch survives solve
     - Guide stroke steers flow

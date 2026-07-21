@@ -16,10 +16,16 @@
 # the submodule checkout; `--force` rebuilds, `--sim-only` skips the device
 # slice (what CI uses). Requires CMake >= 3.24, Ninja, Xcode 26.
 #
-# The two patches in Engine/patches/ are required for the engine to compile
-# for iOS (upstream metal_backend.mm typo + std::system() unavailable on
-# iOS). TODO(upstream): PR both one-liners to CyberRemesherAndUV and drop
-# the patch step once merged.
+# Every Engine/patches/*.patch is applied to the submodule in lexical
+# (numbered) order before building:
+#   0001  iOS build fixes (metal_backend.mm typo + std::system() unavailable
+#         on iOS). TODO(upstream): PR both one-liners and drop the patch.
+#   0002  capi render-data accessors (triangulated indices, per-vertex
+#         normals/colors, zero-copy pointer views) for the Metal viewport.
+#         TODO(upstream): PR to CyberRemesherAndUV and drop the patch.
+#   0003  capi unique face-edge indices (wireframe topology without fan
+#         diagonals) for the EditMesh overlay pipeline (task 2.3).
+#         TODO(upstream): fold into the 0002 PR and drop the patch.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -48,25 +54,96 @@ fi
 
 # ---- idempotence check ------------------------------------------------
 # Rebuild only when forced, when an artifact is missing, or when the
-# submodule commit changed since the last build.
+# *effective source* changed since the last build. The effective source is
+# the submodule commit AND the patch stack: patches change what gets built
+# without moving the submodule commit, so a stamp of the commit alone would
+# leave a stale xcframework (missing new C API symbols) after a pull that
+# only added/edited Engine/patches/*.patch.
 ENGINE_COMMIT="$(git -C "$ENGINE_SRC" rev-parse HEAD)"
+# Hash file names + contents in lexical (apply) order; empty stack hashes
+# the empty input. Renaming a patch reorders the stack, so names count.
+PATCH_STACK_HASH="$(
+    for patch in "$PATCH_DIR"/*.patch; do
+        [[ -e "$patch" ]] || continue
+        basename "$patch"
+        cat "$patch"
+    done | shasum -a 256 | awk '{print $1}'
+)"
+STAMP_VALUE="$ENGINE_COMMIT patches:$PATCH_STACK_HASH"
 STAMP="$BUILD_ROOT/.engine-commit"
 if [[ $FORCE -eq 0 && -d "$XCFRAMEWORK" && -d "$PACKAGE_COPY" \
-      && -f "$STAMP" && "$(cat "$STAMP")" == "$ENGINE_COMMIT" ]]; then
-    echo "build_engine: up to date ($ENGINE_COMMIT); use --force to rebuild"
+      && -f "$STAMP" && "$(cat "$STAMP")" == "$STAMP_VALUE" ]]; then
+    echo "build_engine: up to date ($STAMP_VALUE); use --force to rebuild"
     exit 0
 fi
 
 # ---- iOS patches (idempotent: skip when already applied) ---------------
-for patch in "$PATCH_DIR"/*.patch; do
-    [[ -e "$patch" ]] || continue
-    if git -C "$ENGINE_SRC" apply --reverse --check "$patch" 2>/dev/null; then
-        echo "build_engine: $(basename "$patch") already applied"
+# Later patches may add lines inside regions an earlier patch introduced;
+# on such a tree the earlier patch is neither cleanly appliable nor cleanly
+# reverse-checkable in isolation. That fully-patched state is recognized
+# WITHOUT touching the working tree (see worktree_matches_full_stack); the
+# script never resets the submodule on its own, so in-progress engine edits
+# are never silently discarded.
+apply_patch_stack() {
+    local patch
+    for patch in "$PATCH_DIR"/*.patch; do
+        [[ -e "$patch" ]] || continue
+        if git -C "$ENGINE_SRC" apply --reverse --check "$patch" 2>/dev/null; then
+            echo "build_engine: $(basename "$patch") already applied"
+        elif git -C "$ENGINE_SRC" apply --check "$patch" 2>/dev/null; then
+            echo "build_engine: applying $(basename "$patch")"
+            git -C "$ENGINE_SRC" apply "$patch"
+        else
+            return 1
+        fi
+    done
+}
+
+# True when the submodule's tracked files exactly match HEAD with the ENTIRE
+# patch stack applied — the overlapping-hunks state the per-patch checks in
+# apply_patch_stack cannot recognize. Builds the expected tree in a throwaway
+# index; never mutates the working tree.
+worktree_matches_full_stack() {
+    local tmp_index tree patch ok=1
+    tmp_index="$(mktemp)" || return 1
+    if GIT_INDEX_FILE="$tmp_index" git -C "$ENGINE_SRC" read-tree HEAD 2>/dev/null; then
+        for patch in "$PATCH_DIR"/*.patch; do
+            [[ -e "$patch" ]] || continue
+            if ! GIT_INDEX_FILE="$tmp_index" git -C "$ENGINE_SRC" \
+                    apply --cached "$patch" 2>/dev/null; then
+                ok=0
+                break
+            fi
+        done
+        if [[ $ok -eq 1 ]]; then
+            tree="$(GIT_INDEX_FILE="$tmp_index" git -C "$ENGINE_SRC" write-tree 2>/dev/null)" \
+                || ok=0
+        fi
+        if [[ $ok -eq 1 ]]; then
+            git -C "$ENGINE_SRC" diff --quiet "$tree" 2>/dev/null || ok=0
+        fi
     else
-        echo "build_engine: applying $(basename "$patch")"
-        git -C "$ENGINE_SRC" apply "$patch"
+        ok=0
     fi
-done
+    rm -f "$tmp_index"
+    [[ $ok -eq 1 ]]
+}
+
+if ! apply_patch_stack; then
+    if worktree_matches_full_stack; then
+        echo "build_engine: full patch stack already applied (overlapping hunks); continuing"
+    else
+        echo "build_engine: patch stack does not fit the current submodule tree," >&2
+        echo "build_engine: and the tree does not match the recorded commit with all" >&2
+        echo "build_engine: patches applied — it has local modifications this script" >&2
+        echo "build_engine: refuses to discard. Either:" >&2
+        echo "build_engine:   * commit/stash your engine work, or fold it into a new" >&2
+        echo "build_engine:     numbered patch in Engine/patches/, then re-run; or" >&2
+        echo "build_engine:   * reset the submodule yourself if the changes are disposable:" >&2
+        echo "build_engine:       git -C Engine/CyberRemesherAndUV checkout -- ." >&2
+        exit 1
+    fi
+fi
 
 # ---- per-slice CMake builds --------------------------------------------
 COMMON_FLAGS=(
@@ -126,5 +203,5 @@ rm -rf "$PACKAGE_COPY"
 mkdir -p "$(dirname "$PACKAGE_COPY")"
 cp -R "$XCFRAMEWORK" "$PACKAGE_COPY"
 
-echo "$ENGINE_COMMIT" > "$STAMP"
+echo "$STAMP_VALUE" > "$STAMP"
 echo "build_engine: done -> $XCFRAMEWORK"

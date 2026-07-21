@@ -7,9 +7,9 @@ extension UTType {
 }
 
 /// Editor shell for an open document: name, stage picker, object list,
-/// OBJ import/export, undo/redo (buttons + multi-finger taps), placeholder
-/// viewport (the Metal viewport lands in phase 2), save-version and close
-/// actions, and autosave-on-backgrounding.
+/// Metal viewport (camera gestures + multi-finger tap undo/redo), OBJ
+/// import/export, undo/redo buttons, save-version and close actions, and
+/// autosave-on-backgrounding.
 struct DocumentEditorView: View {
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var document: TopoDocument
@@ -17,9 +17,40 @@ struct DocumentEditorView: View {
     let onClose: @MainActor () -> Void
 
     @State private var showingSaveVersion = false
+    @State private var showingViewportSettings = false
     @State private var versionName = ""
     @State private var importRole: DocumentManifest.Object.Role?
     @State private var statusMessage: String?
+
+    /// Persisted camera sensitivity (spec: viewport-rendering / "Robust
+    /// camera system" — orbit/zoom speed SHALL be user-adjustable).
+    @AppStorage(ViewportSettings.orbitSpeedKey)
+    private var orbitSpeed = ViewportSettings.defaultSpeed
+    @AppStorage(ViewportSettings.zoomSpeedKey)
+    private var zoomSpeed = ViewportSettings.defaultSpeed
+
+    /// EditMesh overlay display options (spec: viewport-rendering /
+    /// "Animated EditMesh overlay pipeline" + "X-ray and occlusion
+    /// control"): configurable wireframe opacity, occlusion depth
+    /// threshold, and true x-ray mode.
+    @AppStorage(ViewportSettings.overlayOpacityKey)
+    private var overlayOpacity = ViewportSettings.defaultOverlayOpacity
+    @AppStorage(ViewportSettings.xrayKey)
+    private var xrayEnabled = false
+    @AppStorage(ViewportSettings.occlusionBiasKey)
+    private var occlusionBias = ViewportSettings.defaultOcclusionBias
+
+    /// DEBUG-only ghost preview (task 2.4 demo path): renders the EditMesh
+    /// as ghost geometry until the Weave solver (phase 5) exists. The
+    /// toggle only appears in DEBUG builds of the settings popover.
+    @AppStorage(ViewportSettings.ghostDebugKey)
+    private var ghostDebugEnabled = false
+
+    /// Viewport resolution scale (task 2.5, spec: viewport-rendering /
+    /// "Performance controls"): 50/75/100% of native drawable resolution;
+    /// MetalFX upscaling engages automatically where supported.
+    @AppStorage(ViewportSettings.resolutionScaleKey)
+    private var resolutionScale = ViewportSettings.defaultResolutionScale
 
     /// Version of the linked CyberRemesherAndUV engine, via the CyberKit
     /// facade (regression canary for the engine bridge).
@@ -30,7 +61,7 @@ struct DocumentEditorView: View {
             VStack(spacing: 16) {
                 stagePicker
                 objectList
-                viewportPlaceholder
+                viewport
                 if let statusMessage {
                     Text(statusMessage)
                         .font(.footnote)
@@ -117,6 +148,24 @@ struct DocumentEditorView: View {
                 showingSaveVersion = true
             }
             .accessibilityIdentifier("save-version")
+
+            Button {
+                showingViewportSettings = true
+            } label: {
+                Label("Viewport Settings", systemImage: "gearshape")
+            }
+            .accessibilityIdentifier("viewport-settings")
+            .popover(isPresented: $showingViewportSettings) {
+                ViewportSettingsView(
+                    orbitSpeed: $orbitSpeed,
+                    zoomSpeed: $zoomSpeed,
+                    overlayOpacity: $overlayOpacity,
+                    xrayEnabled: $xrayEnabled,
+                    occlusionBias: $occlusionBias,
+                    ghostDebugEnabled: $ghostDebugEnabled,
+                    resolutionScale: $resolutionScale
+                )
+            }
         }
     }
 
@@ -166,39 +215,44 @@ struct DocumentEditorView: View {
         }
     }
 
-    private var viewportPlaceholder: some View {
-        RoundedRectangle(cornerRadius: 16)
-            .fill(.quaternary)
-            // Identifier on the shape only: applying it after .overlay wraps
-            // shape + overlay into one accessibility element and hides the
-            // overlay's children from UI tests.
-            .accessibilityIdentifier("viewport-placeholder")
-            .overlay {
-                VStack(spacing: 8) {
-                    Image(systemName: "square.grid.3x3.topleft.filled")
-                        .font(.system(size: 44))
-                        .foregroundStyle(.tint)
-                    Text("Viewport — phase 2")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                    Text(engineVersionText)
-                        .font(.footnote.monospaced())
-                        .foregroundStyle(.secondary)
-                        .accessibilityIdentifier("engine-version")
-                }
+    /// Metal viewport. The undo/redo tap overlay lives INSIDE MetalViewport's
+    /// UIKit hierarchy (not as a SwiftUI .overlay) so camera drags/pinches
+    /// and the multi-finger taps share one hit-tested view tree — a SwiftUI
+    /// overlay sibling would shield the MTKView from all camera gestures.
+    private var viewport: some View {
+        MetalViewport(
+            bundle: document.bundle,
+            orbitSpeed: orbitSpeed,
+            zoomSpeed: zoomSpeed,
+            overlayOpacity: overlayOpacity,
+            xrayEnabled: xrayEnabled,
+            occlusionBias: occlusionBias,
+            ghostDebugEnabled: ghostDebugEnabled,
+            resolutionScale: resolutionScale,
+            onUndo: {
+                document.undoLast()
+                journal.handle(.documentEdited)
+            },
+            onRedo: {
+                document.redoLast()
+                journal.handle(.documentEdited)
             }
-            .overlay {
-                UndoGestureView(
-                    onUndo: {
-                        document.undoLast()
-                        journal.handle(.documentEdited)
-                    },
-                    onRedo: {
-                        document.redoLast()
-                        journal.handle(.documentEdited)
-                    }
-                )
-            }
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(alignment: .bottomTrailing) {
+            // Corner HUD; identifier on the leaf Text and hit-testing off so
+            // the label neither hides the viewport from XCUITest nor eats
+            // camera gestures.
+            Text(engineVersionText)
+                .font(.footnote.monospaced())
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.ultraThinMaterial, in: Capsule())
+                .accessibilityIdentifier("engine-version")
+                .allowsHitTesting(false)
+                .padding(10)
+        }
     }
 
     private var stageBinding: Binding<DocumentManifest.Stage> {

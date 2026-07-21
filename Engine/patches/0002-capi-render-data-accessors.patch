@@ -1,0 +1,342 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index 9281d0e..dcf7b0f 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -11,6 +11,7 @@
+ #define CYBER_CAPI_H
+ 
+ #include <stddef.h> /* size_t */
++#include <stdint.h> /* uint32_t */
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -133,6 +134,74 @@ size_t cyber_mesh_copy_positions(const CyberMesh* mesh, float* out, size_t max_f
+ /* Alias of cyber_default_params. */
+ void cyber_remesh_params_default(CyberRemeshParams* params);
+ 
++/* --- Render-data accessors (viewport renderers) --------------------------
++ *
++ * Everything below reads from a per-handle compacted render cache built
++ * lazily on first access:
++ *   - vertices are compacted to the same deterministic order used by
++ *     cyber_mesh_copy_positions (live vertices in id order), so positions,
++ *     normals, colors and triangle indices are all mutually consistent;
++ *   - faces are fan-triangulated deterministically around their first
++ *     corner: a live face (v0 v1 ... vn-1), taken in id order, emits
++ *     (v0,v1,v2), (v0,v2,v3), ... — an n-gon yields n-2 triangles, so a
++ *     quad mesh yields exactly 2 triangles per quad, and repeated calls on
++ *     an unchanged handle return identical buffers.
++ *
++ * These accessors are not thread-safe with each other on the same handle
++ * (the first call builds the cache); serialize per-handle access. */
++
++/* Number of triangles the live faces fan-triangulate to (an n-gon counts
++ * n-2). Returns 0 on NULL. */
++size_t cyber_mesh_triangle_count(const CyberMesh* mesh);
++
++/* Copies the triangulated index buffer (3 uint32 per triangle, indexing the
++ * compacted vertex order of cyber_mesh_copy_positions) into `out`, writing
++ * whole triangles only, at most `max_indices` values; returns the number of
++ * indices written. Pass out=NULL to query the required count
++ * (3 * triangle_count). */
++size_t cyber_mesh_copy_triangle_indices(const CyberMesh* mesh, uint32_t* out,
++                                        size_t max_indices);
++
++/* Copies per-vertex unit normals (x,y,z per vertex, compacted vertex order)
++ * into `out`, at most `max_floats`; returns the number of floats written.
++ * When the mesh carries imported per-corner normals they are averaged per
++ * vertex; otherwise normals are computed engine-side from face normals
++ * (Newell). A vertex with no usable normal (isolated, degenerate) gets
++ * (0,0,1). Pass out=NULL to query the required count (3 * vertex_count). */
++size_t cyber_mesh_copy_normals(const CyberMesh* mesh, float* out, size_t max_floats);
++
++/* Non-zero when the mesh carries per-vertex colors (e.g. an OBJ with
++ * "v x y z r g b" polypaint data). */
++int cyber_mesh_has_colors(const CyberMesh* mesh);
++
++/* Copies per-vertex linear RGB colors (r,g,b per vertex, compacted vertex
++ * order) into `out`, at most `max_floats`; returns the number of floats
++ * written, or 0 when the mesh has no colors. Pass out=NULL to query the
++ * required count (3 * vertex_count, or 0 without colors). */
++size_t cyber_mesh_copy_colors(const CyberMesh* mesh, float* out, size_t max_floats);
++
++/* ---- zero-copy render buffer views ------------------------------------
++ *
++ * Direct pointers into the handle's internal render cache — no copy. On
++ * Apple unified memory a renderer may hand these straight to the GPU (e.g.
++ * memcpy-free MTLBuffer setup or bounded per-frame uploads).
++ *
++ * LIFETIME: a returned pointer remains valid until the mesh handle is
++ * mutated by any future mutating C API call or released with
++ * cyber_mesh_free/cyber_mesh_destroy, whichever comes first. (The current
++ * C API never mutates an existing handle — cyber_remesh returns a new
++ * handle — so today the pointers live as long as the handle; new mutating
++ * entry points MUST invalidate the cache and this comment.) The pointers
++ * must not outlive the handle and must not be written through.
++ *
++ * Each accessor stores the element count (floats / indices) in *out_count
++ * (ignored when NULL) and returns NULL with *out_count = 0 when the mesh is
++ * NULL, empty, or — for colors — carries no per-vertex colors. */
++const float* cyber_mesh_positions_ptr(const CyberMesh* mesh, size_t* out_count);
++const uint32_t* cyber_mesh_triangle_indices_ptr(const CyberMesh* mesh, size_t* out_count);
++const float* cyber_mesh_normals_ptr(const CyberMesh* mesh, size_t* out_count);
++const float* cyber_mesh_colors_ptr(const CyberMesh* mesh, size_t* out_count);
++
+ /* ---- surface baking (group 11) --------------------------------------- */
+ 
+ /* Bakeable map types (surface-baking spec). */
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index 8d15b46..17f3766 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -10,6 +10,7 @@
+ #include "cyber_capi.h"
+ 
+ #include <algorithm>
++#include <cstdint>
+ #include <exception>
+ #include <filesystem>
+ #include <memory>
+@@ -41,12 +42,27 @@
+ #define CYBER_CAPI_VERSION_PATCH 0
+ #endif
+ 
++// Compacted render-ready buffers derived from a mesh handle (the
++// cyber_mesh_*_ptr / render-data accessors). Built lazily on first access;
++// the current C API never mutates an existing handle, so once built the
++// cache stays valid for the handle's lifetime (see the LIFETIME note in
++// cyber_capi.h — any future mutating entry point must reset `built`).
++struct CyberRenderCache {
++    std::vector<float> positions;        // x,y,z per vertex, compacted order
++    std::vector<std::uint32_t> indices;  // 3 per triangle, deterministic fan
++    std::vector<float> normals;          // x,y,z per vertex, unit length
++    std::vector<float> colors;           // r,g,b per vertex; empty if none
++    bool hasColors = false;
++    bool built = false;
++};
++
+ // Opaque handle definition: the mesh plus any statistics captured when the
+ // handle was produced by cyber_remesh (islandsFailed cannot be recovered
+ // from geometry alone).
+ struct CyberMesh {
+     cyber::Mesh mesh;
+     std::optional<cyber::remesh::Statistics> stats;
++    mutable CyberRenderCache render;  // lazy; see ensureRenderCache
+ };
+ 
+ namespace {
+@@ -369,6 +385,214 @@ size_t cyber_mesh_copy_positions(const CyberMesh* mesh, float* out, size_t max_f
+ 
+ void cyber_remesh_params_default(CyberRemeshParams* params) { cyber_default_params(params); }
+ 
++// ---- render-data accessors -------------------------------------------------
++
++namespace {
++
++// Live vertices in id order — the same compaction as Mesh::toIndexed and
++// cyber_mesh_copy_positions. Fills cache.positions and returns the
++// vertex-id → compact-index remap.
++std::vector<cyber::Index> compactVertices(const cyber::Mesh& m, CyberRenderCache& cache) {
++    std::vector<cyber::Index> remap(m.vertexCapacity(), cyber::kInvalidIndex);
++    cache.positions.reserve(m.vertexCount() * 3);
++    cyber::Index next = 0;
++    for (cyber::Index i = 0; i < m.vertexCapacity(); ++i) {
++        const cyber::VertexId v{i};
++        if (!m.isAlive(v)) {
++            continue;
++        }
++        remap[i] = next++;
++        const cyber::Vec3 p = m.position(v);
++        cache.positions.push_back(p.x);
++        cache.positions.push_back(p.y);
++        cache.positions.push_back(p.z);
++    }
++    return remap;
++}
++
++// Deterministic fan triangulation around each live face's first corner, in
++// face-id order: (v0,v1,v2), (v0,v2,v3), ... — an n-gon yields n-2 triangles.
++void fanTriangulate(const cyber::Mesh& m, const std::vector<cyber::Index>& remap,
++                    CyberRenderCache& cache) {
++    for (cyber::Index f = 0; f < m.faceCapacity(); ++f) {
++        const cyber::FaceId face{f};
++        if (!m.isAlive(face)) {
++            continue;
++        }
++        const std::vector<cyber::VertexId> verts = m.faceVertices(face);
++        for (std::size_t k = 2; k < verts.size(); ++k) {
++            cache.indices.push_back(remap[verts[0].value]);
++            cache.indices.push_back(remap[verts[k - 1].value]);
++            cache.indices.push_back(remap[verts[k].value]);
++        }
++    }
++}
++
++// Per-compact-vertex normal accumulation: imported per-corner normals when
++// the attribute exists, otherwise the engine's own face normals (Newell).
++std::vector<cyber::Vec3> accumulateNormals(const cyber::Mesh& m,
++                                           const std::vector<cyber::Index>& remap,
++                                           std::size_t compactCount) {
++    std::vector<cyber::Vec3> acc(compactCount, cyber::Vec3{});
++    const std::vector<cyber::Vec3>* corner =
++        m.cornerAttributes().find<cyber::Vec3>(cyber::io::kNormalAttribute);
++    for (cyber::Index f = 0; f < m.faceCapacity(); ++f) {
++        const cyber::FaceId face{f};
++        if (!m.isAlive(face)) {
++            continue;
++        }
++        if (corner != nullptr) {
++            for (const cyber::LoopId l : m.faceLoops(face)) {
++                acc[remap[m.loopVertex(l).value]] += (*corner)[l.value];
++            }
++        } else {
++            const cyber::Vec3 n = m.faceNormal(face);
++            for (const cyber::VertexId v : m.faceVertices(face)) {
++                acc[remap[v.value]] += n;
++            }
++        }
++    }
++    return acc;
++}
++
++// Normalizes the accumulated normals into the cache; a vertex with no usable
++// normal (isolated vertex, fully degenerate fan) gets (0,0,1) so the buffer
++// is always unit-length as documented.
++void finalizeNormals(const std::vector<cyber::Vec3>& acc, CyberRenderCache& cache) {
++    cache.normals.reserve(acc.size() * 3);
++    for (const cyber::Vec3& n : acc) {
++        const float len = cyber::length(n);
++        if (len > 0.0f) {
++            cache.normals.push_back(n.x / len);
++            cache.normals.push_back(n.y / len);
++            cache.normals.push_back(n.z / len);
++        } else {
++            cache.normals.push_back(0.0f);
++            cache.normals.push_back(0.0f);
++            cache.normals.push_back(1.0f);
++        }
++    }
++}
++
++// Copies the per-vertex color attribute (if any) in compacted vertex order.
++void extractColors(const cyber::Mesh& m, CyberRenderCache& cache) {
++    const std::vector<cyber::Vec3>* colors =
++        m.vertexAttributes().find<cyber::Vec3>(cyber::io::kColorAttribute);
++    if (colors == nullptr) {
++        return;
++    }
++    cache.hasColors = true;
++    cache.colors.reserve(m.vertexCount() * 3);
++    for (cyber::Index i = 0; i < m.vertexCapacity(); ++i) {
++        if (!m.isAlive(cyber::VertexId{i})) {
++            continue;
++        }
++        const cyber::Vec3 c = (*colors)[i];
++        cache.colors.push_back(c.x);
++        cache.colors.push_back(c.y);
++        cache.colors.push_back(c.z);
++    }
++}
++
++// Builds the handle's render cache once. Returns NULL when `mesh` is NULL or
++// the build failed (allocation failure must not cross the C boundary).
++const CyberRenderCache* ensureRenderCache(const CyberMesh* mesh) {
++    if (mesh == nullptr) {
++        return nullptr;
++    }
++    CyberRenderCache& cache = mesh->render;
++    if (cache.built) {
++        return &cache;
++    }
++    try {
++        const std::vector<cyber::Index> remap = compactVertices(mesh->mesh, cache);
++        fanTriangulate(mesh->mesh, remap, cache);
++        finalizeNormals(accumulateNormals(mesh->mesh, remap, cache.positions.size() / 3), cache);
++        extractColors(mesh->mesh, cache);
++        cache.built = true;
++        return &cache;
++    } catch (...) {
++        cache = CyberRenderCache{};
++        return nullptr;
++    }
++}
++
++// Query-or-copy helper shared by the copy accessors (out=NULL queries the
++// required count).
++template <typename T>
++size_t copyBuffer(const std::vector<T>& src, T* out, size_t max_values) {
++    if (out == nullptr) {
++        return src.size();
++    }
++    const size_t n = std::min(src.size(), max_values);
++    std::copy_n(src.data(), n, out);
++    return n;
++}
++
++// Pointer-view helper shared by the *_ptr accessors: NULL `src` (no cache)
++// and empty buffers both surface as NULL with *out_count = 0.
++template <typename T>
++const T* bufferView(const std::vector<T>* src, size_t* out_count) {
++    const size_t count = src == nullptr ? 0 : src->size();
++    if (out_count != nullptr) {
++        *out_count = count;
++    }
++    return count == 0 ? nullptr : src->data();
++}
++
++}  // namespace
++
++size_t cyber_mesh_triangle_count(const CyberMesh* mesh) {
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    return cache == nullptr ? 0 : cache->indices.size() / 3;
++}
++
++size_t cyber_mesh_copy_triangle_indices(const CyberMesh* mesh, uint32_t* out,
++                                        size_t max_indices) {
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    if (cache == nullptr) {
++        return 0;
++    }
++    // Whole triangles only: round the writable capacity down to a multiple
++    // of 3 so a truncated copy never ends mid-triangle.
++    return copyBuffer(cache->indices, out, max_indices - max_indices % 3);
++}
++
++size_t cyber_mesh_copy_normals(const CyberMesh* mesh, float* out, size_t max_floats) {
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    return cache == nullptr ? 0 : copyBuffer(cache->normals, out, max_floats);
++}
++
++int cyber_mesh_has_colors(const CyberMesh* mesh) {
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    return cache != nullptr && cache->hasColors ? 1 : 0;
++}
++
++size_t cyber_mesh_copy_colors(const CyberMesh* mesh, float* out, size_t max_floats) {
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    return cache == nullptr ? 0 : copyBuffer(cache->colors, out, max_floats);
++}
++
++const float* cyber_mesh_positions_ptr(const CyberMesh* mesh, size_t* out_count) {
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    return bufferView(cache == nullptr ? nullptr : &cache->positions, out_count);
++}
++
++const uint32_t* cyber_mesh_triangle_indices_ptr(const CyberMesh* mesh, size_t* out_count) {
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    return bufferView(cache == nullptr ? nullptr : &cache->indices, out_count);
++}
++
++const float* cyber_mesh_normals_ptr(const CyberMesh* mesh, size_t* out_count) {
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    return bufferView(cache == nullptr ? nullptr : &cache->normals, out_count);
++}
++
++const float* cyber_mesh_colors_ptr(const CyberMesh* mesh, size_t* out_count) {
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    return bufferView(cache == nullptr ? nullptr : &cache->colors, out_count);
++}
++
+ // ---- surface baking ------------------------------------------------------
+ 
+ struct CyberImage {
