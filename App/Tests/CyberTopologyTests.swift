@@ -106,6 +106,241 @@ struct TopoDocumentTests {
 }
 
 @MainActor
+struct TopoDocumentUndoTests {
+    private func openDocument() async throws -> TopoDocument {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("UndoTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("Undo.cybertopo")
+        try TopoDocument.writeNewDocument(at: url)
+        let document = TopoDocument(fileURL: url)
+        #expect(await document.open())
+        return document
+    }
+
+    @Test func performUndoRedoRoundTrip() async throws {
+        let document = try await openDocument()
+        #expect(!document.canUndo)
+
+        document.perform(.setStage(from: .retopology, to: .uv))
+        #expect(document.bundle.manifest.stage == .uv)
+        #expect(document.canUndo)
+
+        document.undoLast()
+        #expect(document.bundle.manifest.stage == .retopology)
+        #expect(document.canRedo)
+
+        document.redoLast()
+        #expect(document.bundle.manifest.stage == .uv)
+        _ = await document.close()
+    }
+
+    @Test func deepUndoReturnsToInitialState() async throws {
+        let document = try await openDocument()
+        let initial = document.bundle.manifest
+
+        for index in 0..<500 {
+            let even = index.isMultiple(of: 2)
+            document.perform(.setStage(from: even ? .retopology : .uv, to: even ? .uv : .retopology))
+        }
+        for _ in 0..<500 { document.undoLast() }
+
+        #expect(document.bundle.manifest == initial)
+        #expect(!document.canUndo)
+        _ = await document.close()
+    }
+
+    @Test func journalSurvivesReopen() async throws {
+        let document = try await openDocument()
+        document.perform(.setStage(from: .retopology, to: .baking))
+        #expect(await document.autosave())
+        let url = document.fileURL
+        _ = await document.close()
+
+        let reopened = TopoDocument(fileURL: url)
+        #expect(await reopened.open())
+        #expect(reopened.bundle.manifest.stage == .baking)
+        #expect(reopened.canUndo)
+        reopened.undoLast()
+        #expect(reopened.bundle.manifest.stage == .retopology)
+        _ = await reopened.close()
+    }
+}
+
+@MainActor
+struct TopoDocumentIOTests {
+    /// Colored-cube fixture shared with the CyberKit test suite.
+    private var fixtureURL: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // App
+            .deletingLastPathComponent()  // repo root
+            .appendingPathComponent("CyberKit/Tests/CyberKitTests/Fixtures/cube_colored.obj")
+    }
+
+    private func openDocument(named name: String) async throws -> TopoDocument {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("IOTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("\(name).cybertopo")
+        try TopoDocument.writeNewDocument(at: url)
+        let document = TopoDocument(fileURL: url)
+        #expect(await document.open())
+        return document
+    }
+
+    @Test func importIsJournaledAndUndoable() async throws {
+        let document = try await openDocument(named: "Import")
+        try document.importOBJ(at: fixtureURL, role: .target)
+
+        let object = try #require(document.bundle.manifest.objects.first)
+        #expect(object.role == .target)
+        #expect(object.name == "cube_colored")
+        #expect(object.counts == .init(vertices: 8, faces: 6))
+
+        document.undoLast()
+        #expect(document.bundle.manifest.objects.isEmpty)
+        document.redoLast()
+        #expect(document.bundle.manifest.objects.count == 1)
+        _ = await document.close()
+    }
+
+    @Test func exportWritesToUserVisibleExportFolder() async throws {
+        let document = try await openDocument(named: "Export Probe")
+        try document.importOBJ(at: fixtureURL, role: .editMesh)
+        try document.importOBJ(at: fixtureURL, role: .target)  // must not export
+
+        let written = try document.exportEditMeshes()
+        defer {
+            try? FileManager.default.removeItem(
+                at: URL.documentsDirectory.appendingPathComponent("Export", isDirectory: true)
+            )
+        }
+
+        #expect(written.count == 2)  // one EditMesh → OBJ + MTL
+        for url in written {
+            #expect(url.path.contains("/Export/Export Probe/"))
+            #expect(FileManager.default.fileExists(atPath: url.path))
+        }
+        _ = await document.close()
+    }
+
+    @Test func importFromMissingFileThrowsAndLeavesDocumentUntouched() async throws {
+        let document = try await openDocument(named: "Missing")
+        let bogus = URL(fileURLWithPath: "/tmp/definitely-missing-\(UUID()).obj")
+        #expect(throws: (any Error).self) {
+            try document.importOBJ(at: bogus, role: .target)
+        }
+        #expect(document.bundle.manifest.objects.isEmpty)
+        #expect(!document.canUndo)
+        _ = await document.close()
+    }
+}
+
+@MainActor
+struct DocumentEditorViewTests {
+    private var fixtureURL: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("CyberKit/Tests/CyberKitTests/Fixtures/cube_colored.obj")
+    }
+
+    private func openDocument() async throws -> TopoDocument {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("EditorTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("Editor.cybertopo")
+        try TopoDocument.writeNewDocument(at: url)
+        let document = TopoDocument(fileURL: url)
+        #expect(await document.open())
+        return document
+    }
+
+    @Test func rendersWithImportedObjects() async throws {
+        let document = try await openDocument()
+        try document.importOBJ(at: fixtureURL, role: .target)
+        try document.importOBJ(at: fixtureURL, role: .editMesh)
+
+        let editor = DocumentEditorView(document: document, journal: RecoveryJournal(), onClose: {})
+        let host = UIHostingController(rootView: editor)
+        host.view.frame = CGRect(x: 0, y: 0, width: 1024, height: 768)
+        host.view.layoutIfNeeded()
+        #expect(host.sizeThatFits(in: CGSize(width: 1024, height: 768)).height > 0)
+        _ = await document.close()
+    }
+
+    @Test func handleImportSuccessAndFailurePaths() async throws {
+        let document = try await openDocument()
+        let editor = DocumentEditorView(document: document, journal: RecoveryJournal(), onClose: {})
+
+        editor.handleImport(.success(fixtureURL), role: .editMesh)
+        #expect(document.bundle.manifest.objects.count == 1)
+
+        struct ProbeError: Error {}
+        editor.handleImport(.failure(ProbeError()), role: .editMesh)
+        #expect(document.bundle.manifest.objects.count == 1)
+
+        editor.handleImport(
+            .success(URL(fileURLWithPath: "/tmp/missing-\(UUID()).obj")), role: .target
+        )
+        #expect(document.bundle.manifest.objects.count == 1)
+        _ = await document.close()
+    }
+
+    @Test func exportNowWritesFiles() async throws {
+        let document = try await openDocument()
+        try document.importOBJ(at: fixtureURL, role: .editMesh)
+        let editor = DocumentEditorView(document: document, journal: RecoveryJournal(), onClose: {})
+
+        editor.exportNow()
+        defer {
+            try? FileManager.default.removeItem(
+                at: URL.documentsDirectory.appendingPathComponent("Export", isDirectory: true)
+            )
+        }
+        let exported = URL.documentsDirectory
+            .appendingPathComponent("Export/Editor/cube_colored.obj")
+        #expect(FileManager.default.fileExists(atPath: exported.path))
+        _ = await document.close()
+    }
+}
+
+@MainActor
+struct UITestSupportTests {
+    @Test func seedOBJIsLoadableByTheEngine() throws {
+        let url = try UITestSupport.writeSeedOBJ()
+        let mesh = try CyberKit.Mesh.loadOBJ(at: url)
+        #expect(mesh.vertexCount == 4)
+        #expect(mesh.faceCount == 1)
+    }
+}
+
+@MainActor
+struct UndoGestureViewTests {
+    @Test func coordinatorRoutesTapsToHandlers() {
+        var undone = 0
+        var redone = 0
+        let view = UndoGestureView(onUndo: { undone += 1 }, onRedo: { redone += 1 })
+        let coordinator = view.makeCoordinator()
+
+        coordinator.undoTap()
+        coordinator.redoTap()
+        coordinator.redoTap()
+        #expect(undone == 1)
+        #expect(redone == 2)
+    }
+
+    @Test func viewInstallsTwoAndThreeFingerRecognizers() {
+        let view = UndoGestureView(onUndo: {}, onRedo: {})
+        let uiView = UndoGestureView.makeConfiguredView(coordinator: view.makeCoordinator())
+        let taps = uiView.gestureRecognizers?.compactMap { $0 as? UITapGestureRecognizer } ?? []
+        #expect(taps.map(\.numberOfTouchesRequired).sorted() == [2, 3])
+    }
+}
+
+@MainActor
 struct DocumentBrowserCoordinatorTests {
     private func makeCoordinator(
         onOpen: @escaping @MainActor (URL) -> Void = { _ in }

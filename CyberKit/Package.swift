@@ -14,7 +14,11 @@ let package = Package(
     name: "CyberKit",
     platforms: [.iOS(.v18)],
     products: [
-        .library(name: "CyberKit", targets: ["CyberKit"])
+        .library(name: "CyberKit", targets: ["CyberKit"]),
+        // Test-support library (task 1.1b, spec quality-assurance): stroke
+        // fixtures for gesture regression tests and the golden-file harness.
+        // Shipped as a product so app test targets can depend on it too.
+        .library(name: "CyberKitTesting", targets: ["CyberKitTesting"]),
     ],
     targets: [
         // C ABI of the engine (capi/include/cyber_capi.h + module map),
@@ -35,9 +39,13 @@ let package = Package(
                 .linkedFramework("QuartzCore"),
             ]
         ),
+        .target(
+            name: "CyberKitTesting",
+            dependencies: ["CyberKit"]
+        ),
         .testTarget(
             name: "CyberKitTests",
-            dependencies: ["CyberKit", "CyberRemesherC"],
+            dependencies: ["CyberKit", "CyberKitTesting", "CyberRemesherC"],
             resources: [.copy("Fixtures")]
         ),
     ]

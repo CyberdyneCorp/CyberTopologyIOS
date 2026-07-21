@@ -60,6 +60,52 @@ final class CyberTopologyUITests: XCTestCase {
         XCTAssertTrue(reopenedPicker.buttons["UV"].isSelected)
     }
 
+    /// Spec: document-model / "Gesture undo/redo": two-finger tap undoes,
+    /// three-finger tap redoes; toolbar buttons mirror journal state.
+    @MainActor
+    func testUndoRedoGesturesAndButtons() throws {
+        let app = launch(arguments: ["-UITestResetState", "-UITestOpenDocument"])
+
+        let picker = app.segmentedControls["stage-picker"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 15))
+        XCTAssertFalse(app.buttons["undo"].isEnabled)
+
+        picker.buttons["UV"].tap()
+        XCTAssertTrue(app.buttons["undo"].isEnabled)
+
+        let viewport = app.otherElements["viewport-placeholder"].firstMatch
+        let target = viewport.exists ? viewport : app.windows.firstMatch
+
+        target.twoFingerTap()
+        XCTAssertTrue(picker.buttons["RT"].isSelected)
+        XCTAssertTrue(app.buttons["redo"].isEnabled)
+
+        target.tap(withNumberOfTaps: 1, numberOfTouches: 3)
+        XCTAssertTrue(picker.buttons["UV"].isSelected)
+        XCTAssertFalse(app.buttons["redo"].isEnabled)
+    }
+
+    /// Object list + export flow on a seeded EditMesh (task 1.5): the object
+    /// row shows counts, and Export EditMeshes reports success.
+    @MainActor
+    func testSeededObjectListAndExport() throws {
+        let app = launch(arguments: [
+            "-UITestResetState", "-UITestOpenDocument", "-UITestSeedEditMesh",
+        ])
+
+        let row = app.descendants(matching: .any)["object-row-seed-quad"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+
+        app.buttons["io-menu"].tap()
+        let export = app.buttons["export-editmeshes"]
+        XCTAssertTrue(export.waitForExistence(timeout: 5))
+        export.tap()
+
+        let status = app.staticTexts["status-message"]
+        XCTAssertTrue(status.waitForExistence(timeout: 10))
+        XCTAssertTrue(status.label.hasPrefix("Exported"))
+    }
+
     /// Spec: document-model / "Save new version": creates a named sibling
     /// copy while the original stays open.
     @MainActor

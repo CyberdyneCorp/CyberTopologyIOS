@@ -31,17 +31,35 @@ public struct DocumentManifest: Codable, Equatable, Sendable {
             case editMesh
         }
 
+        /// Topology summary captured at import time (stats readout, spec:
+        /// retopology-tools) so the UI never has to deserialize a payload
+        /// just to show counts. Optional: absent in pre-1.5 documents.
+        public struct Counts: Codable, Equatable, Sendable {
+            public let vertices: Int
+            public let faces: Int
+
+            public init(vertices: Int, faces: Int) {
+                self.vertices = vertices
+                self.faces = faces
+            }
+        }
+
         public let id: UUID
         public var name: String
         public var role: Role
         /// File name of this object's opaque payload inside `objects/`.
         public var payloadFile: String
+        public var counts: Counts?
 
-        public init(id: UUID = UUID(), name: String, role: Role, payloadFile: String) {
+        public init(
+            id: UUID = UUID(), name: String, role: Role, payloadFile: String,
+            counts: Counts? = nil
+        ) {
             self.id = id
             self.name = name
             self.role = role
             self.payloadFile = payloadFile
+            self.counts = counts
         }
     }
 
@@ -93,14 +111,23 @@ public enum DocumentBundleError: Error, Equatable, Sendable {
 public struct DocumentBundle: Equatable, Sendable {
     public static let manifestFilename = "manifest.json"
     public static let objectsDirectoryName = "objects"
+    public static let journalFilename = "journal.json"
 
     public var manifest: DocumentManifest
     /// Opaque engine payload bytes, keyed by file name inside `objects/`.
     public var payloads: [String: Data]
+    /// Undo history; persisted so it survives reopen (spec: document-model /
+    /// "Unbounded undo tree" — bounded only by storage).
+    public var journal: UndoJournal
 
-    public init(manifest: DocumentManifest = DocumentManifest(), payloads: [String: Data] = [:]) {
+    public init(
+        manifest: DocumentManifest = DocumentManifest(),
+        payloads: [String: Data] = [:],
+        journal: UndoJournal = UndoJournal()
+    ) {
         self.manifest = manifest
         self.payloads = payloads
+        self.journal = journal
     }
 
     // MARK: - Object convenience
@@ -150,6 +177,10 @@ public struct DocumentBundle: Equatable, Sendable {
         }
         self.manifest = manifest
         self.payloads = payloads
+        // A missing or corrupt journal costs undo history, never the document.
+        self.journal = children[Self.journalFilename]?.regularFileContents
+            .flatMap { try? JSONDecoder().decode(UndoJournal.self, from: $0) }
+            ?? UndoJournal()
         try validate()
     }
 
@@ -160,8 +191,10 @@ public struct DocumentBundle: Equatable, Sendable {
         // Stable key order keeps saved manifests diffable.
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let manifestData = try encoder.encode(manifest)
+        let journalData = try encoder.encode(journal)
         return FileWrapper(directoryWithFileWrappers: [
             Self.manifestFilename: FileWrapper(regularFileWithContents: manifestData),
+            Self.journalFilename: FileWrapper(regularFileWithContents: journalData),
             Self.objectsDirectoryName: FileWrapper(
                 directoryWithFileWrappers: payloads.mapValues(FileWrapper.init(regularFileWithContents:))
             ),

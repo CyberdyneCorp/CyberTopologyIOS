@@ -21,9 +21,32 @@ struct CyberTopologyApp: App {
 enum UITestSupport {
     static let resetArgument = "-UITestResetState"
     static let openDocumentArgument = "-UITestOpenDocument"
+    /// With `openDocumentArgument`: imports a small EditMesh into the test
+    /// document so object-list / export flows are drivable from XCUITest
+    /// (the Files picker is system UI and cannot be automated).
+    static let seedEditMeshArgument = "-UITestSeedEditMesh"
 
     static var openDocumentRequested: Bool {
         ProcessInfo.processInfo.arguments.contains(openDocumentArgument)
+    }
+
+    static var seedEditMeshRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(seedEditMeshArgument)
+    }
+
+    /// Minimal colored quad used by the seed hook.
+    static func writeSeedOBJ() throws -> URL {
+        let obj = """
+        v 0 0 0 1 0 0
+        v 1 0 0 0 1 0
+        v 1 1 0 0 0 1
+        v 0 1 0 1 1 1
+        f 1 2 3 4
+        """
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("seed-quad.obj")
+        try obj.write(to: url, atomically: true, encoding: .utf8)
+        return url
     }
 
     /// Fixed URL for the auto-opened test document.

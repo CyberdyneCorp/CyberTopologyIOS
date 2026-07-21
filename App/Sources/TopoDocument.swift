@@ -43,6 +43,64 @@ final class TopoDocument: UIDocument, ObservableObject {
         updateChangeCount(.done)
     }
 
+    // MARK: - Journaled commands (spec: document-model / "Unbounded undo tree")
+
+    var canUndo: Bool { bundle.journal.canUndo }
+    var canRedo: Bool { bundle.journal.canRedo }
+
+    /// Records `command` in the undo journal and applies it. All mutating
+    /// document operations go through here (task 1.4; phase 2+ tools adopt
+    /// the same path).
+    func perform(_ command: DocumentCommand) {
+        updateBundle { bundle in
+            bundle.journal.record(command)
+            command.apply(to: &bundle)
+        }
+    }
+
+    /// Two-finger tap. Steps the journal back one command.
+    func undoLast() {
+        updateBundle { bundle in
+            if let command = bundle.journal.undo() {
+                command.revert(on: &bundle)
+            }
+        }
+    }
+
+    /// Three-finger tap. Steps the journal forward along the active branch.
+    func redoLast() {
+        updateBundle { bundle in
+            if let command = bundle.journal.redo() {
+                command.apply(to: &bundle)
+            }
+        }
+    }
+
+    // MARK: - OBJ import/export (task 1.5, spec: scene-pipeline)
+
+    /// Imports an OBJ as a new journaled object. `url` may be
+    /// security-scoped (Files picker).
+    func importOBJ(at url: URL, role: DocumentManifest.Object.Role) throws {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let name = url.deletingPathExtension().lastPathComponent
+        let command = try bundle.importCommandForOBJ(at: url, name: name, role: role)
+        perform(command)
+    }
+
+    /// Exports every EditMesh object as OBJ+MTL into the user-visible
+    /// Export folder; returns the written URLs.
+    func exportEditMeshes() throws -> [URL] {
+        let directory = URL.documentsDirectory
+            .appendingPathComponent("Export", isDirectory: true)
+            .appendingPathComponent(documentName, isDirectory: true)
+        var written: [URL] = []
+        for object in bundle.manifest.objects where object.role == .editMesh {
+            written += try bundle.exportOBJ(object: object, to: directory)
+        }
+        return written
+    }
+
     /// "Save new version": writes the current state to a named sibling copy;
     /// the original file is untouched and this document stays open on it
     /// (spec: document-model / "Save new version").

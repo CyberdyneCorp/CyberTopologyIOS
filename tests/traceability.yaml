@@ -18,6 +18,11 @@
 
 scenarios:
   document-model:
+    Deep undo:
+      - UndoJournalTests/deepUndo
+      - TopoDocumentUndoTests/deepUndoReturnsToInitialState
+    Gesture undo/redo:
+      - CyberTopologyUITests/testUndoRedoGesturesAndButtons
     Files app visibility:
       - CyberTopologyUITests/testAppLaunchesIntoDocumentBrowser
     Free-tier save:
@@ -48,8 +53,6 @@ pending:
     - Target immutability
     - UV-only document without a Target
     - Two EditMeshes in one document
-    - Deep undo
-    - Gesture undo/redo
   monetization:
     - Free-tier work retention
     - Upgrade path

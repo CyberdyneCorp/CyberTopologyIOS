@@ -35,13 +35,24 @@ struct RootView: View {
     }
 
     /// UI-test entry point: open-or-create the fixed test document (see
-    /// `UITestSupport.openDocumentArgument`).
+    /// `UITestSupport.openDocumentArgument`), optionally seeding an
+    /// EditMesh object for object-list/export flows.
     private func openTestDocument() {
         let url = UITestSupport.testDocumentURL
         if !FileManager.default.fileExists(atPath: url.path) {
             try? TopoDocument.writeNewDocument(at: url)
         }
-        open(url)
+        let document = TopoDocument(fileURL: url)
+        Task { @MainActor in
+            guard await document.open() else { return }
+            if UITestSupport.seedEditMeshRequested,
+                document.bundle.manifest.objects.isEmpty,
+                let seed = try? UITestSupport.writeSeedOBJ() {
+                try? document.importOBJ(at: seed, role: .editMesh)
+            }
+            journal.handle(.documentOpened(url))
+            openDocument = document
+        }
     }
 
     private func close() {

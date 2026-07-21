@@ -6,11 +6,11 @@ Phased to match the priority order in `docs/COMPETITOR_IDEAS.md` §10. Each phas
 
 - [x] 1.1 Create Xcode project (SwiftUI, iPadOS target; working title CyberTopology), repo scaffolding, CI (build + `openspec validate --all --strict`)
 - [x] 1.1a Test infrastructure: XCTest + XCUITest targets, simulator test job per PR, >90% coverage gate per layer (xccov/llvm-cov), `tests/traceability.yaml` scenario→test map with CI check for unmapped scenarios (spec: quality-assurance)
-- [ ] 1.1b Stroke-fixture recorder/replayer for gesture integration tests; golden-file harness (Weave/tangents/bakes) (spec: quality-assurance)
+- [x] 1.1b Stroke-fixture recorder/replayer for gesture integration tests; golden-file harness (Weave/tangents/bakes) (spec: quality-assurance)
 - [x] 1.2 Integrate CyberRemesherAndUV: submodule/xcframework build, `CyberKit` Swift package façade, smoke test calling an engine mesh op from Swift
 - [x] 1.3 Document model: bundle format, `UIDocument` integration, Files-app-visible folder, autosave + crash recovery, named versions (spec: document-model)
-- [ ] 1.4 Undo journal on persistent element IDs; two/three-finger tap undo/redo (spec: document-model)
-- [ ] 1.5 OBJ import (vertex colors) as Target and as EditMesh; OBJ+MTL export — minimal I/O for dogfooding (spec: scene-pipeline)
+- [x] 1.4 Undo journal on persistent element IDs; two/three-finger tap undo/redo (spec: document-model)
+- [x] 1.5 OBJ import (vertex colors) as Target and as EditMesh; OBJ+MTL export — minimal I/O for dogfooding (spec: scene-pipeline)
 
 ## 2. Viewport — Metal renderer
 
