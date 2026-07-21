@@ -12,8 +12,15 @@ build/
 .build/
 .swiftpm/
 
+# Engine artifacts (produced by scripts/build_engine.sh; Engine/build is
+# covered by the build/ pattern above)
+CyberKit/Binaries/
+
 # macOS
 .DS_Store
 
 # Local tooling
 .claude/settings.local.json
+
+# Transient header staging dir used by scripts/build_engine.sh
+Engine/headers/

@@ -1,0 +1,3 @@
+[submodule "Engine/CyberRemesherAndUV"]
+	path = Engine/CyberRemesherAndUV
+	url = https://github.com/CyberdyneCorp/CyberRemesherAndUV

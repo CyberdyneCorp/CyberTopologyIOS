@@ -11,12 +11,32 @@ iPad-first retopology, UV unwrapping, and texture-baking tool — a SwiftUI/Meta
 
 ## Development setup
 
-Requirements: Xcode 26+, [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`), Node ≥ 20 with `@fission-ai/openspec` for spec validation.
+Requirements: Xcode 26+, [XcodeGen](https://github.com/yonaskolb/XcodeGen) and [Ninja](https://ninja-build.org) (`brew install xcodegen ninja`), CMake ≥ 3.24, Node ≥ 20 with `@fission-ai/openspec` for spec validation.
 
 ```sh
+git submodule update --init       # engine source: Engine/CyberRemesherAndUV
+scripts/build_engine.sh           # engine → Engine/build/CyberRemesherC.xcframework
+                                  # (+ copy under CyberKit/Binaries for SwiftPM)
 xcodegen generate                 # produces CyberTopology.xcodeproj (not committed)
 open CyberTopology.xcodeproj
 ```
+
+### Engine (CyberRemesherAndUV)
+
+The C++20 engine is a git submodule at `Engine/CyberRemesherAndUV`, built by
+`scripts/build_engine.sh` into a static xcframework (device arm64 + simulator
+arm64; pass `--sim-only` to skip the device slice, `--force` to rebuild). The
+script is idempotent — it no-ops while the artifact matches the submodule
+commit — and applies the iOS compile fixes in `Engine/patches/` until they are
+merged upstream. An Xcode pre-build phase reruns it on every build, so a stale
+engine can never ship.
+
+All engine access from Swift goes through **CyberKit** (`CyberKit/`), a local
+SwiftPM package wrapping the engine's C API (`cyber_capi.h`) with a typed
+facade (`CyberEngine`, `Mesh`, `RemeshParameters`, `CyberKitError`). Design
+rule D1: no mesh algorithms in Swift, no UI concepts in C++ — engine gaps
+become upstream issues, never app-side forks. CyberKit's own test suite runs
+as part of the app scheme (`CyberKit/Tests/CyberKitTests`).
 
 Build/test from the CLI:
 

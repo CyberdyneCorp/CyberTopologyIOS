@@ -22,14 +22,28 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Select latest Xcode
         run: |
           XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
           echo "Using $XCODE"
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Install XcodeGen + Ninja
+        run: brew install xcodegen ninja
+      - name: Engine cache key
+        id: engine
+        run: echo "commit=$(git ls-tree HEAD Engine/CyberRemesherAndUV --object-only)" >> "$GITHUB_OUTPUT"
+      - name: Cache engine build
+        uses: actions/cache@v4
+        with:
+          path: |
+            Engine/build
+            CyberKit/Binaries
+          key: engine-${{ runner.os }}-${{ steps.engine.outputs.commit }}-${{ hashFiles('scripts/build_engine.sh', 'Engine/patches/**') }}
+      - name: Build engine (simulator slice)
+        run: scripts/build_engine.sh --sim-only
       - name: Generate project
         run: xcodegen generate
       - name: Build
@@ -41,3 +55,53 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
             | tail -50
+
+  test:
+    name: Test (iOS Simulator)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Select latest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          echo "Using $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+      - name: Install XcodeGen + Ninja
+        run: brew install xcodegen ninja
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install script dependencies
+        run: python3 -m pip install --quiet pyyaml
+      - name: Traceability checker unit tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+      - name: Spec scenario traceability check
+        run: python3 scripts/check_traceability.py
+      - name: Engine cache key
+        id: engine
+        run: echo "commit=$(git ls-tree HEAD Engine/CyberRemesherAndUV --object-only)" >> "$GITHUB_OUTPUT"
+      - name: Cache engine build
+        uses: actions/cache@v4
+        with:
+          path: |
+            Engine/build
+            CyberKit/Binaries
+          key: engine-${{ runner.os }}-${{ steps.engine.outputs.commit }}-${{ hashFiles('scripts/build_engine.sh', 'Engine/patches/**') }}
+      - name: Build engine (simulator slice)
+        run: scripts/build_engine.sh --sim-only
+      - name: Generate project
+        run: xcodegen generate
+      - name: Run tests with coverage + gate
+        run: bash scripts/coverage_gate.sh
+        env:
+          RESULT_BUNDLE: ${{ runner.temp }}/CyberTopology.xcresult
+      - name: Upload result bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-xcresult
+          path: ${{ runner.temp }}/CyberTopology.xcresult
+          if-no-files-found: ignore

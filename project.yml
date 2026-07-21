@@ -15,6 +15,16 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     SWIFT_STRICT_CONCURRENCY: complete
     CODE_SIGN_STYLE: Automatic
+    # Team pinned here because the .xcodeproj is regenerated: anything set in
+    # the Xcode UI is lost on the next `xcodegen generate`.
+    DEVELOPMENT_TEAM: 2C69VJZSNR
+    # The engine xcframework ships ios-arm64 + ios-arm64-simulator only
+    # (scripts/build_engine.sh); Intel simulators are not supported.
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+
+packages:
+  CyberKit:
+    path: CyberKit
 
 targets:
   CyberTopology:
@@ -23,21 +33,55 @@ targets:
     sources:
       - App/Sources
       - App/Resources
+    dependencies:
+      - package: CyberKit
+    preBuildScripts:
+      - name: Build CyberRemesherAndUV engine (if missing)
+        script: |
+          # Idempotent: exits immediately when Engine/build is current.
+          cd "$SRCROOT" && scripts/build_engine.sh
+        basedOnDependencyAnalysis: false
+    info:
+      path: App/Resources/Info.plist
+      properties:
+        UISupportsDocumentBrowser: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: CyberTopology Document
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSTypeIsPackage: true
+            LSItemContentTypes:
+              - com.cyberdynecorp.cybertopology.document
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.cyberdynecorp.cybertopology.document
+            UTTypeDescription: CyberTopology Document
+            UTTypeConformsTo:
+              - com.apple.package
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - cybertopo
+        CFBundleDisplayName: CyberTopology
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIRequiresFullScreen: false
+        LSSupportsOpeningDocumentsInPlace: true
+        UIFileSharingEnabled: true
     settings:
       base:
+        # The engine pre-build script writes Engine/build + CyberKit/Binaries.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
         PRODUCT_BUNDLE_IDENTIFIER: com.cyberdynecorp.cybertopology
         PRODUCT_NAME: CyberTopology
-        GENERATE_INFOPLIST_FILE: YES
+        GENERATE_INFOPLIST_FILE: NO
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: 0.1.0
-        INFOPLIST_KEY_CFBundleDisplayName: CyberTopology
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
-        INFOPLIST_KEY_UIRequiresFullScreen: NO
-        INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
-        INFOPLIST_KEY_UIFileSharingEnabled: YES
 
   CyberTopologyTests:
     type: bundle.unit-test
@@ -76,8 +120,10 @@ schemes:
       gatherCoverageData: true
       coverageTargets:
         - CyberTopology
+        - package: CyberKit/CyberKit
       targets:
         - CyberTopologyTests
         - CyberTopologyUITests
+        - package: CyberKit/CyberKitTests
     archive:
       config: Release

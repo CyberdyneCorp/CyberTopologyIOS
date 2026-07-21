@@ -1,0 +1,127 @@
+# Spec scenario -> test traceability map (design D9, spec: quality-assurance).
+#
+# Checked in CI by scripts/check_traceability.py against every
+# '#### Scenario:' heading in openspec/changes/add-cybertopology-app/specs/*/spec.md.
+#
+# Format:
+#   scenarios:
+#     <capability>:              # spec directory name
+#       <scenario name>:         # text after '#### Scenario: '
+#         - <TestClass/testMethod>   # XCUITest / integration XCTest identifiers
+#   pending:
+#     <capability>:
+#       - <scenario name>        # spec'd, not yet implemented
+#
+# Every spec scenario must appear exactly once: either mapped to tests or in
+# the pending allowlist. The pending list exists so CI stays green during
+# bootstrap while keeping the debt visible — it must only shrink as tasks land.
+
+scenarios:
+  document-model:
+    Files app visibility:
+      - CyberTopologyUITests/testAppLaunchesIntoDocumentBrowser
+    Free-tier save:
+      - CyberTopologyUITests/testOpenAndCloseDocument
+    Stage state round-trip:
+      - CyberTopologyUITests/testStageEditSurvivesRelaunch
+      - TopoDocumentTests/editedStagePersistsAcrossReopen
+    Save new version:
+      - CyberTopologyUITests/testSaveNewVersion
+      - TopoDocumentTests/saveNewVersionCreatesSiblingAndKeepsOriginal
+    Crash recovery:
+      - RecoveryJournalPersistenceTests/activeSessionWithExistingFileIsRecovered
+  quality-assurance:
+    PR test run:
+      - CyberTopologyUITests/testAppLaunchesIntoDocumentBrowser
+
+pending:
+  baking:
+    - Explicit link then bake
+    - Local cage fix
+    - Substance-ready export
+    - Cage edit feedback
+    - Golden-file tangent check
+    - Rebake scanned texture
+    - Export bake mesh
+  document-model:
+    - EditMesh vertex snapping
+    - Target immutability
+    - UV-only document without a Target
+    - Two EditMeshes in one document
+    - Deep undo
+    - Gesture undo/redo
+  monetization:
+    - Free-tier work retention
+    - Upgrade path
+    - Airplane-mode session
+    - Network audit
+  pencil-interaction:
+    - Palm rejection during pen stroke
+    - No-Pencil session
+    - Relax semantics per stage
+    - Geodesic Move falloff
+    - Loop insert vs loop tag disambiguation
+    - Stage-dependent X gesture
+    - One-tap misrecognition fix
+    - Hover over an edge
+    - Spring-loaded Relax
+    - Toolbar persistence
+    - Snap feedback
+    - Tutorial completion
+  quality-assurance:
+    - Coverage gate on PR
+    - Coverage reported per layer
+    - New feature lands with its integration test
+    - Gesture grammar regression suite
+    - No silent skips
+    - Release gate
+    - Hardware-path parity
+    - Cross-environment determinism
+  retopology-tools:
+    - Patch Clone round-trip
+    - Extend Boundary automatic mode
+    - Relax over pinned loop
+    - Tag then weave
+    - Radial symmetry editing
+    - Re-symmetrize
+    - Auto Relax after quad creation
+    - Subdivide and reproject
+    - Editing under preview
+  scene-pipeline:
+    - Solo a component
+    - Import GLB as target
+    - Import existing low-poly as EditMesh
+    - Multi-object USD export
+    - Push-pull round trip from Blender
+    - Live camera stream
+    - Python client parity
+  uv-workflow:
+    - Draw seam, unwrap
+    - Maximize and re-split
+    - Texture-on-model transform
+    - Grid straighten
+    - Distortion heatmap while relaxing
+    - Proposal respects manual seams
+    - One-tap pack
+    - Stack mirrored islands
+    - Two-tile UDIM export
+  viewport-rendering:
+    - Multi-million-triangle target
+    - Stroke latency
+    - Wireframe animation on creation
+    - Ghost vs committed distinction
+    - X-ray mode
+    - Camera rescue from inside the mesh
+    - Scale-adaptive clipping
+    - Resolution downscale
+  weave-solver:
+    - Frozen patch survives solve
+    - Guide stroke steers flow
+    - Seamless interface
+    - Cancel mid-solve
+    - Constraint-driven re-solve
+    - Repeat solve
+    - Accept then edit
+    - Scale matching at the interface
+    - Assist off
+    - Ambient proposal override
