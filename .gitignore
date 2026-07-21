@@ -24,3 +24,6 @@ CyberKit/Binaries/
 
 # Transient header staging dir used by scripts/build_engine.sh
 Engine/headers/
+
+# Python bytecode
+__pycache__/
