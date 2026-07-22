@@ -72,9 +72,16 @@ struct RootView: View {
 
     private func close() {
         guard let document = openDocument else { return }
+        // nonisolated(unsafe): MainActor-to-MainActor Task capture of the
+        // non-Sendable UIDocument. Safe by the document's thread contract
+        // (all bundle mutations happen on MainActor; UIDocument snapshots
+        // contents on the initiating queue). Newer compilers (Xcode 26.6+)
+        // reject the plain capture; @unchecked Sendable on the class trips
+        // their nonisolated synthesis on @Published instead.
+        nonisolated(unsafe) let closing = document
         Task { @MainActor in
             // UIDocument.close autosaves pending changes before closing.
-            _ = await document.close()
+            _ = await closing.close()
             journal.handle(.documentClosed)
             openDocument = nil
         }
@@ -84,13 +91,3 @@ struct RootView: View {
 /// `fullScreenCover(item:)` identity: one editor per document instance.
 extension TopoDocument: Identifiable {}
 
-/// Thread contract (checked by hand, enforced by convention): every app
-/// mutation of `bundle` goes through MainActor paths (perform/undoLast/
-/// redoLast/updateBundle are only called from MainActor UI code), and
-/// UIDocument invokes `contents(forType:)` on the queue that initiated the
-/// save (main) before handing the snapshot to its background writer — the
-/// background queue never touches `bundle` directly. Newer Swift compilers
-/// (Xcode 26.6+) reject even MainActor-to-MainActor Task captures of
-/// non-Sendable classes, so the contract is declared explicitly here.
-/// Revisit if a non-MainActor mutation path is ever added.
-extension TopoDocument: @unchecked Sendable {}

@@ -522,8 +522,11 @@ struct DocumentEditorView: View {
     /// Forces an autosave when the app is backgrounded (spec: document-model /
     /// "Autosave and session recovery").
     private func autosaveNow() {
-        let document = document
-        let journal = journal
+        // nonisolated(unsafe): MainActor-to-MainActor capture of the
+        // non-Sendable document/journal (see RootView.close for the full
+        // rationale; Xcode 26.6+ rejects the plain capture).
+        nonisolated(unsafe) let document = document
+        nonisolated(unsafe) let journal = journal
         Task { @MainActor in
             if await document.autosave() {
                 journal.handle(.documentSaved)
