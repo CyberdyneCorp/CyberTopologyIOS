@@ -1,0 +1,149 @@
+diff --git a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+--- a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
++++ b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+@@ -61,7 +61,22 @@
+                                     // square units, not stretched ones
+     float holdMaxRadius = 0.015f;   // bounding radius below this => HoldPoint
+     float holdMinDuration = 0.30f;  // seconds; full-confidence hold
+-    float closedFraction = 0.22f;   // endpoint gap < f * pathLength => closed
++    // Endpoint gap < f * pathLength => closed. Deliberately NOT loosened:
++    // an X stroke and a scribble both have near-coincident endpoints
++    // relative to their path length, so raising this reclassifies them as
++    // closed (-> Lasso -> hideRegion), breaking the delete-faces and
++    // dissolve gestures. Hand-drawn quads that miss the seam are handled by
++    // the nearly-closed RESCUE below instead, which is gated on corner
++    // structure the X and the scribble do not have.
++    float closedFraction = 0.22f;
++    // Open strokes with a gap under this and a plausible corner count are
++    // rescued as ClosedLoop at reduced confidence rather than falling
++    // through to Scribble/Unknown (which produced "Dissolve no change" and
++    // "Not recognized" for quads the user clearly drew).
++    float nearlyClosedFraction = 0.55f;
++    // Segments at each end exempt from self-intersection counting when
++    // judging a CLOSED stroke; absorbs the overshoot of closing a loop.
++    int seamIgnoreSegments = 4;
+     float cornerRadians = 0.90f;    // per-window turn sharper than this is a corner
+     float straightRatio = 0.90f;    // endpointDist/pathLength above this => straight
+     float circleMaxDeviation = 0.18f;  // radius stddev / mean below this => round
+@@ -241,6 +256,44 @@
+         for (std::size_t j = i + 2; j + 1 < n; ++j) {
+             if (i == 0 && j + 2 == n) {
+                 continue;
++            }
++            if (segmentsCross(p[i], p[i + 1], p[j], p[j + 1])) {
++                ++hits;
++            }
++        }
++    }
++    return hits;
++}
++
++// Self-intersections EXCLUDING the seam: crossings between a leading
++// segment and a trailing segment, which is what closing a hand-drawn loop
++// produces when the pen overshoots the start.
++//
++// Why this exists: a closed quad only classifies as ClosedLoop when it has
++// zero self-intersections, and overshooting the join is what a human hand
++// does drawing a square. Counting that overshoot demoted the stroke to
++// Lasso -> hideRegion, so drawing a quad hid faces instead. `countSelfIntersections`
++// exempts only the exact first/last segment pair, which is one segment's
++// worth of tolerance; a real overshoot crosses several segments in.
++//
++// Crossings anywhere else still count, so a genuine scribble (which
++// crosses itself mid-stroke) is unaffected.
++inline int countSelfIntersectionsIgnoringSeam(const std::vector<Vec2>& p,
++                                              int seamSegments) {
++    const std::size_t n = p.size();
++    if (n < 2) {
++        return 0;
++    }
++    const std::size_t seam =
++        static_cast<std::size_t>(std::max(0, seamSegments));
++    const std::size_t lastSegment = n - 2;  // index of the final segment
++    int hits = 0;
++    for (std::size_t i = 0; i + 1 < n; ++i) {
++        for (std::size_t j = i + 2; j + 1 < n; ++j) {
++            const bool leading = i <= seam;
++            const bool trailing = j + seam >= lastSegment;
++            if (leading && trailing) {
++                continue;  // seam artifact, not a scribble signal
+             }
+             if (segmentsCross(p[i], p[i + 1], p[j], p[j + 1])) {
+                 ++hits;
+@@ -550,6 +603,11 @@
+         pathLength > 0.0f ? result.features.endpointDistance / pathLength : 0.0f;
+     result.features.closed =
+         result.features.endpointDistance < params.closedFraction * pathLength;
++
++    // Seam-tolerant count for the CLOSED branch only: overshooting the join
++    // is an artifact of closing the loop, not evidence of scribbling.
++    const int seamTolerantIntersections =
++        countSelfIntersectionsIgnoringSeam(pts, params.seamIgnoreSegments);
+ 
+     const ShapeFeatures& f = result.features;
+     if (f.closed) {
+@@ -562,11 +620,11 @@
+             c.x *= invAspect;
+         }
+         if (f.radiusDeviation <= params.circleMaxDeviation && f.corners <= 2 &&
+-            f.selfIntersections == 0) {
++            seamTolerantIntersections == 0) {
+             result.shape = StrokeShape::Circle;
+             result.confidence =
+                 0.9f - 0.5f * (f.radiusDeviation / params.circleMaxDeviation) * 0.2f;
+-        } else if (f.corners >= 3 && f.corners <= 6 && f.selfIntersections == 0) {
++        } else if (f.corners >= 3 && f.corners <= 6 && seamTolerantIntersections == 0) {
+             result.shape = StrokeShape::ClosedLoop;
+             // 3-4 detected corners (the seam corner never registers) reads
+             // as a quad; 5-6 is sloppier but still a closed polygon.
+@@ -602,12 +660,48 @@
+         result.confidence = 0.8f;
+         return result;
+     }
+-    if (f.selfIntersections >= params.scribbleMinIntersections ||
+-        f.corners >= params.scribbleMinCorners) {
++    // Scribble by SELF-CROSSING first: a stroke that crosses itself
++    // mid-path is a scribble whatever its corner count, and must be
++    // decided before the nearly-closed rescue below.
++    if (f.selfIntersections >= params.scribbleMinIntersections) {
+         result.shape = StrokeShape::Scribble;
+         result.confidence = 0.8f;
+         return result;
+     }
++
++    // NEARLY-CLOSED RESCUE. A hand-drawn quad that does not quite meet at
++    // the seam is still a quad, but the branches below would call it a
++    // Scribble (>= 4 corners -> DissolveEdge, "Dissolve no change") or drop
++    // it to Unknown ("Not recognized") when the open stroke shows only 3
++    // corners because the seam corner never registers. Measured on device:
++    // real quad strokes land at a gap ratio of ~0.21 with 3 corners.
++    //
++    // Ordered AFTER grid, cross and self-crossing scribble: those are
++    // real gestures with their own structure and must keep priority (an
++    // earlier ordering here reclassified every grid stroke as a quad).
++    // This rescues only strokes that would otherwise fall through to
++    // Scribble-by-corners or Unknown. Confidence is reduced
++    // (0.65) so the chip still offers alternatives: the user can pick
++    // another interpretation when this guesses wrong.
++    if (f.straightness < params.nearlyClosedFraction && f.corners >= 3 &&
++        f.corners <= 6 && seamTolerantIntersections == 0) {
++        result.corners = quadCorners(pts, rc, window, params.cornerRadians);
++        const float invAspect = params.aspect > 0.0f ? 1.0f / params.aspect : 1.0f;
++        for (Vec2& c : result.corners) {
++            c.x *= invAspect;
++        }
++        result.shape = StrokeShape::ClosedLoop;
++        result.confidence = 0.65f;
++        return result;
++    }
++
++    // Scribble by CORNER COUNT: reached only when the stroke did not
++    // nearly close, so a genuine many-cornered open scrawl still lands here.
++    if (f.corners >= params.scribbleMinCorners) {
++        result.shape = StrokeShape::Scribble;
++        result.confidence = 0.8f;
++        return result;
++    }
+     if (f.straightness >= params.straightRatio && f.corners <= 1) {
+         result.shape = StrokeShape::Line;
+         result.confidence = f.straightness;
