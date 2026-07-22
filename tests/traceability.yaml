@@ -449,9 +449,19 @@ scenarios:
     # result must land exactly on the Target surface via the engine snapper.
     # FBX joins the same import path with counts, journaled addObject,
     # error paths, and a golden-filed ufbx→OBJ bridge (FBXImportTests).
+    # The two entries below run on the hand-written cube/grid fixtures. The
+    # bunny suite adds the real-mesh half: 2503 vertices / 4968 triangles
+    # through the SAME chain, plus the app-layer entry point the Import
+    # menu items actually call (TopoDocument.importMesh), which the
+    # CyberKit-only tests never touch. Only the EditMesh-role tests are
+    # listed here; the Target-role and loader tests in those suites cover
+    # neighbouring ground and are deliberately not claimed against this
+    # scenario.
     Import existing low-poly as EditMesh:
       - DocumentIOTests/importedEditMeshIsEditableAndSnapsToTarget
       - MeshEditingTests/tweakVertexSnapsToTarget
+      - OBJImportDocumentTests/importedGeometryPersistsAcrossReopen
+      - OBJImportDocumentTests/targetAndEditMeshImportsCoexist
   viewport-rendering:
     # X-ray on/off compared over two offscreen frames with far-side overlay
     # geometry (task 2.3): occluded by default, depth-attenuated reveal on.

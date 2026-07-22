@@ -50,7 +50,13 @@ let package = Package(
         ),
         .target(
             name: "CyberKitTesting",
-            dependencies: ["CyberKit"]
+            dependencies: ["CyberKit"],
+            // Mesh fixtures live here, not in CyberKitTests/Fixtures, so the
+            // app test target can reach them too: the import path under test
+            // spans TopoDocument (app) and DocumentBundle (CyberKit), and
+            // App/Tests has no resource bundle of its own. Provenance is
+            // pinned in Fixtures/PROVENANCE.md.
+            resources: [.copy("Fixtures")]
         ),
         .testTarget(
             name: "CyberKitTests",
