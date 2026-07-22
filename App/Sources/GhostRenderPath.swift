@@ -111,6 +111,45 @@ struct GhostStyle: Equatable {
         return style
     }
 
+    /// Committed EditMesh face fill (spec: viewport-rendering / "Animated
+    /// EditMesh overlay pipeline" — filled faces).
+    ///
+    /// The wireframe alone is hard to read against a light Target: thin
+    /// cyan lines over near-white geometry give no sense of what is
+    /// actually covered. A translucent fill under the wire makes each
+    /// authored face read as a surface while still showing the Target
+    /// through it, which is the whole point of retopologising over a
+    /// reference.
+    ///
+    /// Deliberately NOT the ghost amber and NOT the preview grey-blue: this
+    /// is COMMITTED geometry, and the spec requires proposals to stay
+    /// visually distinct from it. A cool desaturated indigo reads as
+    /// "authored" beside the cyan wire without competing with it, and
+    /// never pulses — committed topology must not animate, or the viewport
+    /// pins the display link for decoration.
+    static let editMeshFill: GhostStyle = {
+        var style = GhostStyle()
+        style.color = SIMD3(0.42, 0.45, 0.68)
+        style.baseAlpha = 0.28
+        style.pulsePeriod = 0
+        style.rimStrength = 0.25
+        return style
+    }()
+
+    /// `editMeshFill` at a caller-chosen opacity, lifted off the Target.
+    ///
+    /// The lift is REQUIRED for the same reason the subdivision preview
+    /// needs one: authored faces are snapped ONTO the Target, so the two
+    /// coplanar surfaces z-fight into speckle without it. Smaller than the
+    /// preview's lift (the fill must read as lying on the surface, not
+    /// hovering above it) but the same scale-free fraction-of-radius form.
+    static func editMeshFill(sceneRadius: Float, opacity: Float) -> GhostStyle {
+        var style = editMeshFill
+        style.baseAlpha = max(0, min(1, opacity))
+        style.normalOffset = max(sceneRadius, 1e-6) * 0.003
+        return style
+    }
+
     /// DEBUG-only demo style (task 2.4): until the Weave solver exists
     /// (phase 5) the viewport-settings popover can render the committed
     /// EditMesh as a ghost, lifted off the surface by a small fraction of

@@ -38,6 +38,8 @@ struct MetalViewport: UIViewRepresentable {
     var overlayOpacity: Double = ViewportSettings.defaultOverlayOpacity
     var xrayEnabled: Bool = false
     var occlusionBias: Double = ViewportSettings.defaultOcclusionBias
+    /// EditMesh face-fill opacity (0 = wireframe only).
+    var fillOpacity: Double = ViewportSettings.defaultFillOpacity
     /// DEBUG-only ghost preview (task 2.4 demo path): renders the committed
     /// EditMesh as ghost geometry until the Weave solver (phase 5) exists.
     var ghostDebugEnabled: Bool = false
@@ -70,7 +72,8 @@ struct MetalViewport: UIViewRepresentable {
         OverlaySettings(
             opacity: Float(overlayOpacity),
             xrayEnabled: xrayEnabled,
-            occlusionBias: Float(occlusionBias)
+            occlusionBias: Float(occlusionBias),
+            fillOpacity: Float(fillOpacity)
         )
     }
 
@@ -124,6 +127,9 @@ struct MetalViewport: UIViewRepresentable {
         let framePacer = ViewportFramePacer()
         /// The live MTKView (nil on the Metal-unavailable fallback).
         private(set) weak var metalView: ViewportMetalView?
+        /// Live ink trail drawn while a stroke is in progress (spec:
+        /// pencil-interaction / "Live stroke feedback").
+        let liveStrokeInk = LiveStrokeInk()
         /// Last applied resolution scale; guards redundant reapplication
         /// on every SwiftUI update pass.
         private var appliedResolutionScale: Double?
@@ -263,6 +269,11 @@ struct MetalViewport: UIViewRepresentable {
             // drawable for blits where that path can actually run.
             view.framebufferOnly = !renderer.capabilities.supportsMetalFXSpatial
             metalView = view
+            liveStrokeInk.attach(to: view)
+            view.onLayoutSubviews = { [weak self, weak view] in
+                guard let self, let view else { return }
+                self.liveStrokeInk.layoutIfNeeded(in: view)
+            }
 
             framePacer.attach(to: view) { [weak renderer] in
                 renderer?.isAnimating() ?? false
@@ -523,6 +534,19 @@ struct MetalViewport: UIViewRepresentable {
             }
             inputModel.onStrokeWillBegin = { [weak self] in
                 self?.hoverPreview.strokeBegan()
+            }
+            // Live ink (spec: pencil-interaction / "Live stroke feedback").
+            // Bound here rather than in the renderer: the trail is Core
+            // Animation content over the Metal view, so it updates without
+            // marking the render-on-demand viewport dirty.
+            inputModel.onLiveStrokeBegan = { [weak self] point in
+                self?.liveStrokeInk.begin(at: point)
+            }
+            inputModel.onLiveStrokeSample = { [weak self] point in
+                self?.liveStrokeInk.append(point)
+            }
+            inputModel.onLiveStrokeEnded = { [weak self] in
+                self?.liveStrokeInk.end()
             }
             inputModel.hoverPreview = hoverPreview
             let hover = UIHoverGestureRecognizer(
@@ -1013,11 +1037,20 @@ final class ViewportMetalView: MTKView {
     }
 
     var onDidMoveToWindow: (() -> Void)?
+    /// Keeps Core Animation content (the live ink layer) aligned with the
+    /// view: sublayers do not autoresize, so rotation or a split-view
+    /// resize would otherwise leave the trail scaled against stale bounds.
+    var onLayoutSubviews: (() -> Void)?
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
         applyDesiredContentScale()
         onDidMoveToWindow?()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        onLayoutSubviews?()
     }
 
     private func applyDesiredContentScale() {
@@ -1126,6 +1159,7 @@ enum ViewportSettings {
     static let occlusionBiasKey = "overlayOcclusionBias"
     static let defaultOverlayOpacity = 0.85
     static let overlayOpacityRange = 0.0...1.0
+    static let fillOpacityRange = 0.0...1.0
     /// Occlusion threshold in NDC depth units (0 = hard occlusion at the
     /// surface, upper bound keeps the wireframe from bleeding through the
     /// whole model).
@@ -1152,6 +1186,11 @@ enum ViewportSettings {
     /// polyline and its full interpretation record on the viewport. The
     /// toggle only appears in DEBUG builds of the settings popover.
     static let strokeDebugHUDKey = "strokeDebugHUD"
+    /// EditMesh face-fill opacity (spec: viewport-rendering / "Animated
+    /// EditMesh overlay pipeline"). Default 0.28: enough to read the face
+    /// as a surface, light enough to keep the Target visible through it.
+    static let fillOpacityKey = "overlayFillOpacity"
+    static let defaultFillOpacity = 0.28
 
     // Performance controls (task 2.5, spec: "Performance controls"):
     // resolution scale for battery/thermals; MetalFX upscaling engages
@@ -1183,6 +1222,7 @@ struct ViewportSettingsView: View {
     @Binding var orbitSpeed: Double
     @Binding var zoomSpeed: Double
     @Binding var overlayOpacity: Double
+    @Binding var fillOpacity: Double
     @Binding var xrayEnabled: Bool
     @Binding var occlusionBias: Double
     @Binding var ghostDebugEnabled: Bool
@@ -1231,6 +1271,11 @@ struct ViewportSettingsView: View {
                 Slider(value: $overlayOpacity, in: ViewportSettings.overlayOpacityRange)
                     .frame(width: 180)
                     .accessibilityIdentifier("wireframe-opacity-slider")
+            }
+            LabeledContent("Face fill") {
+                Slider(value: $fillOpacity, in: ViewportSettings.fillOpacityRange)
+                    .frame(width: 180)
+                    .accessibilityIdentifier("face-fill-slider")
             }
             LabeledContent("Occlusion depth") {
                 Slider(value: $occlusionBias, in: ViewportSettings.occlusionBiasRange)

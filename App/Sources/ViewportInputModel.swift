@@ -114,6 +114,17 @@ final class ViewportInputModel {
     /// Task 3.6: the viewport coordinator clears the hover preview here —
     /// a preview must never linger under live authoring.
     @ObservationIgnored var onStrokeWillBegin: (() -> Void)?
+
+    /// Live ink feed (spec: pencil-interaction / "Live stroke feedback").
+    /// Deliberately plain callbacks rather than observable state: the
+    /// viewport coordinator drives a `CAShapeLayer` synchronously on the
+    /// turn each sample arrives, and routing 120-240 Hz of samples through
+    /// `@Observable` would rebuild the SwiftUI graph once per sample to
+    /// draw a line the renderer never needs to know about.
+    /// Points are in normalized viewport coordinates (`StrokeSample` space).
+    @ObservationIgnored var onLiveStrokeBegan: ((CGPoint) -> Void)?
+    @ObservationIgnored var onLiveStrokeSample: ((CGPoint) -> Void)?
+    @ObservationIgnored var onLiveStrokeEnded: (() -> Void)?
     /// Hover-preview controller (task 3.6), installed by the viewport
     /// coordinator alongside `meshEditor`. Weak: the coordinator owns it.
     /// Exposed so the editor's UI-test/screenshot hooks can drive hover
@@ -202,6 +213,10 @@ final class ViewportInputModel {
             self?.pendingInterpretation = interpretation
         }
         controller.capture.onStrokeBegan = { [weak self] verb, _, sample in
+            // Live ink (spec: pencil-interaction / "Live stroke feedback"):
+            // published on the SAME turn the sample arrives, before any
+            // mesh work, so the trail never trails the pen.
+            self?.onLiveStrokeBegan?(CGPoint(x: sample.x, y: sample.y))
             // The chip must never block the next stroke: it dismisses the
             // moment new input lands (task 3.5), the hover preview clears
             // the same instant (task 3.6), and so does the quick-verb
@@ -212,12 +227,18 @@ final class ViewportInputModel {
             self?.meshEditor?.strokeBegan(verb: verb, sample: sample)
         }
         controller.capture.onSampleAppended = { [weak self] sample in
+            self?.onLiveStrokeSample?(CGPoint(x: sample.x, y: sample.y))
             self?.meshEditor?.strokeContinued(sample: sample)
         }
         controller.capture.onStrokeCancelled = { [weak self] in
+            self?.onLiveStrokeEnded?()
             self?.meshEditor?.strokeCancelled()
         }
         controller.capture.onStrokeFinished = { [weak self] stroke in
+            // Ink clears BEFORE the verb runs: the committed result is what
+            // the user should see next, and leaving the trail up would
+            // double-draw the gesture over its own outcome.
+            self?.onLiveStrokeEnded?()
             self?.publish(stroke)
         }
     }

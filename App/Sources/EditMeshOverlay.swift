@@ -30,6 +30,11 @@ struct OverlaySettings: Equatable {
     /// Occlusion depth threshold in NDC depth units: how far behind the
     /// Target surface edges stay visible before they are occluded.
     var occlusionBias: Float = Float(ViewportSettings.defaultOcclusionBias)
+    /// Translucent face fill under the wireframe, 0...1. 0 = wireframe
+    /// only (the pre-fill behaviour). Independent of `opacity`: the fill
+    /// and the wire are separate reads — you can want a solid-looking face
+    /// with a faint wire, or the reverse.
+    var fillOpacity: Float = Float(ViewportSettings.defaultFillOpacity)
 }
 
 /// Creation micro-animation timing: a pure time→progress mapping so the

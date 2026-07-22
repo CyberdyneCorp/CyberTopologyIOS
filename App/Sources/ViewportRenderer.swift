@@ -50,6 +50,13 @@ final class ViewportRenderer: NSObject {
     /// feed or the hover hint over one set of buffers, and so turning the
     /// preview off is a `clear()` on a channel nothing else writes.
     let subdivisionPreviewPath: GhostRenderPath
+    /// Translucent fill under the EditMesh wireframe (spec:
+    /// viewport-rendering / "Animated EditMesh overlay pipeline"). A
+    /// GhostRenderPath instance rather than a new pipeline: it already
+    /// encodes blended triangles with depth-writes-off and a normal
+    /// offset, and it carries its OWN buffer pool, so the overlay's
+    /// per-frame upload invariant is untouched.
+    let editMeshFillPath: GhostRenderPath
     /// Render-time probe over every submitted frame (perf harness).
     let frameProbe = FrameTimeProbe()
 
@@ -75,6 +82,7 @@ final class ViewportRenderer: NSObject {
     var hasHoverGhost: Bool { hoverGhostPath.hasGeometry }
     /// Whether a subdivision preview surface is currently loaded (task 4.6).
     var hasSubdivisionPreview: Bool { subdivisionPreviewPath.hasGeometry }
+    var hasEditMeshFill: Bool { editMeshFillPath.hasGeometry }
 
     /// EditMesh overlay display state (opacity / x-ray / occlusion bias),
     /// pushed from the view-options popover.
@@ -97,6 +105,10 @@ final class ViewportRenderer: NSObject {
     /// Subdivision preview surface style (task 4.6); static by design.
     var subdivisionPreviewStyle = GhostStyle.subdivisionPreview {
         didSet { if subdivisionPreviewStyle != oldValue { invalidate() } }
+    }
+    /// Style for the committed EditMesh face fill.
+    var editMeshFillStyle = GhostStyle.editMeshFill {
+        didSet { if editMeshFillStyle != oldValue { invalidate() } }
     }
     /// Retains the engine mesh whose buffers the ghost path wrapped with
     /// `bytesNoCopy` (zero-copy lifetime contract: the aliasing MTLBuffers
@@ -256,9 +268,14 @@ final class ViewportRenderer: NSObject {
             device: device, commandQueue: queue,
             preferPrivateStorage: pool.usesPrivateStorage
         )
+        let editMeshFill = GhostRenderPath(
+            device: device, commandQueue: queue,
+            preferPrivateStorage: pool.usesPrivateStorage
+        )
 
         guard
             let path, let overlay, let ghost, let hoverGhost, let subdivisionPreview,
+            let editMeshFill,
             let depth = device.makeDepthStencilState(descriptor: depthDescriptor)
         else { return nil }
 
@@ -271,6 +288,7 @@ final class ViewportRenderer: NSObject {
         self.ghostPath = ghost
         self.hoverGhostPath = hoverGhost
         self.subdivisionPreviewPath = subdivisionPreview
+        self.editMeshFillPath = editMeshFill
         self.depthState = depth
         super.init()
     }
@@ -385,6 +403,14 @@ final class ViewportRenderer: NSObject {
                 positions: buffers.positions, edges: buffers.edgeIndices,
                 taggedEdges: buffers.taggedEdgeIndices
             )
+        }
+        // The fill is loaded from the SAME mesh on the SAME call so the two
+        // can never drift: a wireframe without its fill (or vice versa)
+        // would read as missing geometry.
+        if loaded {
+            loadEditMeshFill(mesh: mesh, opacity: overlaySettings.fillOpacity)
+        } else {
+            clearEditMeshFill()
         }
         guard loaded else {
             overlayCreationTime = nil
@@ -579,6 +605,50 @@ final class ViewportRenderer: NSObject {
     /// This method deliberately does NOT touch `bounds` or the camera: the
     /// preview hugs the same cage, and re-framing on a display-only toggle
     /// would move the user's view out from under them.
+    /// Uploads the committed EditMesh as filled faces under its wireframe
+    /// (spec: viewport-rendering / "Animated EditMesh overlay pipeline").
+    ///
+    /// Takes the SAME `withRenderBuffers` closure shape as the overlay: the
+    /// triangle indices the fill needs are already in the buffer set the
+    /// overlay opens for its edge indices, so this costs no extra engine
+    /// query — only the overlay path previously had no consumer for them.
+    ///
+    /// Fan-triangulated indices are correct here: an n-gon's interior
+    /// diagonals are invisible in a filled surface, and the wireframe on
+    /// top still draws only authored edges.
+    ///
+    /// Like `loadSubdivisionPreview`, this deliberately does NOT touch
+    /// `bounds` or the camera — it is a display layer over geometry the
+    /// overlay has already framed.
+    func loadEditMeshFill(mesh: Mesh, opacity: Float) {
+        guard opacity > 0 else {
+            clearEditMeshFill()
+            return
+        }
+        editMeshFillStyle = GhostStyle.editMeshFill(
+            sceneRadius: bounds.radius, opacity: opacity
+        )
+        mesh.withRenderBuffers { buffers in
+            editMeshFillPath.load(
+                positions: buffers.positions,
+                normals: buffers.normals,
+                indices: buffers.triangleIndices,
+                hasUnifiedMemory: capabilities.hasUnifiedMemory,
+                allowZeroCopy: false,
+                // Re-uploaded on every edit: keep the log quiet.
+                logsSharingDecision: false
+            )
+        }
+        invalidate()
+    }
+
+    /// Drops the fill (opacity 0, or the EditMesh went away).
+    func clearEditMeshFill() {
+        guard editMeshFillPath.hasGeometry else { return }
+        editMeshFillPath.clear()
+        invalidate()
+    }
+
     func loadSubdivisionPreview(mesh: Mesh) {
         // Reprojection puts the preview's vertices exactly ON the Target,
         // so without the normal lift the two coplanar surfaces z-fight into
@@ -746,6 +816,7 @@ final class ViewportRenderer: NSObject {
         }
         defer { encoder.endEncoding() }
         guard hasMesh || hasOverlay || hasGhost || hasHoverGhost || hasSubdivisionPreview
+            || hasEditMeshFill
         else { return }
 
         let view = camera.viewMatrix()
@@ -796,6 +867,16 @@ final class ViewportRenderer: NSObject {
             into: encoder,
             uniforms: GhostUniformsFactory.uniforms(
                 mvp: mvp, viewDirection: forward, style: hoverGhostStyle, time: time
+            )
+        )
+
+        // Committed EditMesh face fill: under its own wireframe (so the
+        // wire always reads on top) but ABOVE proposals and the hover hint,
+        // which must stay distinguishable from committed geometry.
+        editMeshFillPath.encode(
+            into: encoder,
+            uniforms: GhostUniformsFactory.uniforms(
+                mvp: mvp, viewDirection: forward, style: editMeshFillStyle, time: time
             )
         )
 

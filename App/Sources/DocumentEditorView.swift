@@ -39,6 +39,10 @@ struct DocumentEditorView: View {
     /// threshold, and true x-ray mode.
     @AppStorage(ViewportSettings.overlayOpacityKey)
     private var overlayOpacity = ViewportSettings.defaultOverlayOpacity
+    /// Translucent EditMesh face fill (spec: viewport-rendering /
+    /// "Animated EditMesh overlay pipeline"): 0 = wireframe only.
+    @AppStorage(ViewportSettings.fillOpacityKey)
+    private var fillOpacity = ViewportSettings.defaultFillOpacity
     @AppStorage(ViewportSettings.xrayKey)
     private var xrayEnabled = false
     @AppStorage(ViewportSettings.occlusionBiasKey)
@@ -211,6 +215,7 @@ struct DocumentEditorView: View {
                     orbitSpeed: $orbitSpeed,
                     zoomSpeed: $zoomSpeed,
                     overlayOpacity: $overlayOpacity,
+                    fillOpacity: $fillOpacity,
                     xrayEnabled: $xrayEnabled,
                     occlusionBias: $occlusionBias,
                     ghostDebugEnabled: $ghostDebugEnabled,
@@ -298,6 +303,7 @@ struct DocumentEditorView: View {
             overlayOpacity: overlayOpacity,
             xrayEnabled: xrayEnabled,
             occlusionBias: occlusionBias,
+            fillOpacity: fillOpacity,
             ghostDebugEnabled: ghostDebugEnabled,
             resolutionScale: resolutionScale,
             subdivisionPreviewLevel: subdivisionPreviewLevel,

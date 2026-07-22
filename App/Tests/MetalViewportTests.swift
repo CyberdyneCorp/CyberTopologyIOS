@@ -297,7 +297,8 @@ struct MetalViewportTests {
     @Test func settingsViewRendersSliders() {
         let view = ViewportSettingsView(
             orbitSpeed: .constant(1.5), zoomSpeed: .constant(0.5),
-            overlayOpacity: .constant(0.7), xrayEnabled: .constant(true),
+            overlayOpacity: .constant(0.7), fillOpacity: .constant(0.3),
+            xrayEnabled: .constant(true),
             occlusionBias: .constant(0.004), ghostDebugEnabled: .constant(true),
             resolutionScale: .constant(0.75), leftHandedToolbar: .constant(true),
             snapHapticsEnabled: .constant(true), strokeDebugHUD: .constant(true),
