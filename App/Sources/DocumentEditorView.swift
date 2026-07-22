@@ -23,7 +23,7 @@ struct DocumentEditorView: View {
     @State private var showingSaveVersion = false
     @State private var showingViewportSettings = false
     @State private var versionName = ""
-    @State private var importRole: DocumentManifest.Object.Role?
+    @State private var importRequest = FileImportRequest()
     @State private var statusMessage: String?
 
     /// Persisted camera sensitivity (spec: viewport-rendering / "Robust
@@ -129,14 +129,12 @@ struct DocumentEditorView: View {
             Text("Creates a named copy alongside the original document.")
         }
         .fileImporter(
-            isPresented: Binding(
-                get: { importRole != nil },
-                set: { if !$0 { importRole = nil } }
-            ),
+            isPresented: $importRequest.isPresented,
             allowedContentTypes: [.wavefrontOBJ, .fbx]
         ) { result in
-            if let role = importRole {
-                importRole = nil
+            // The role must be read from state that dismissal does NOT
+            // clear — see FileImportRequest for the regression this fixes.
+            if let role = importRequest.consumeRole() {
                 handleImport(result, role: role)
             }
         }
@@ -184,9 +182,9 @@ struct DocumentEditorView: View {
             .accessibilityIdentifier("redo")
 
             Menu {
-                Button("Import Target…") { importRole = .target }
+                Button("Import Target…") { importRequest.begin(.target) }
                     .accessibilityIdentifier("import-target")
-                Button("Import EditMesh…") { importRole = .editMesh }
+                Button("Import EditMesh…") { importRequest.begin(.editMesh) }
                     .accessibilityIdentifier("import-editmesh")
                 Button("Export EditMeshes") { exportNow() }
                     .accessibilityIdentifier("export-editmeshes")
