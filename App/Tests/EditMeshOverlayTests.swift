@@ -120,6 +120,109 @@ struct EditMeshOverlayTests {
         #expect(xray == expected)
     }
 
+    // MARK: - Screen-space feature sizing
+
+    /// REGRESSION: edge width and vertex-dot diameter were authored in
+    /// PIXELS, so the wire rendered a third as heavy on a 3x display as the
+    /// numbers implied — a hairline on the devices this app actually runs
+    /// on. Sizes are points now, resolved to pixels against the live
+    /// content scale.
+    @Test func screenFeaturesAreSizedInPointsNotPixels() {
+        let settings = OverlaySettings()
+        let retina = OverlayViewport(sizePixels: SIMD2(2048, 1536), scale: 2)
+        let uniforms = OverlayUniformsFactory.main(
+            mvp: matrix_identity_float4x4, settings: settings,
+            animationProgress: 1, vertexCount: 4, viewport: retina
+        )
+        #expect(uniforms.misc.x == OverlayUniformsFactory.pointSize * 2)
+        #expect(uniforms.line.x == OverlayUniformsFactory.edgeWidth * 2)
+        // The ribbon expansion is in pixels, so the shader needs the
+        // drawable size — zero here would collapse every edge to nothing.
+        #expect(uniforms.line.y == 2048)
+        #expect(uniforms.line.z == 1536)
+    }
+
+    /// A resolution-scale change must not thin the wire along with the
+    /// render target: the same edge is the same physical weight at 50%.
+    @Test func featureSizesTrackContentScaleNotDrawableSize() {
+        let settings = OverlaySettings()
+        let full = OverlayUniformsFactory.main(
+            mvp: matrix_identity_float4x4, settings: settings,
+            animationProgress: 1, vertexCount: 4,
+            viewport: OverlayViewport(sizePixels: SIMD2(2048, 1536), scale: 2)
+        )
+        let halved = OverlayUniformsFactory.main(
+            mvp: matrix_identity_float4x4, settings: settings,
+            animationProgress: 1, vertexCount: 4,
+            viewport: OverlayViewport(sizePixels: SIMD2(1024, 768), scale: 1)
+        )
+        // Half the pixels, half the scale: half the pixel width — which is
+        // the SAME width in points, and therefore on screen.
+        #expect(halved.line.x == full.line.x / 2)
+        #expect(halved.misc.x == full.misc.x / 2)
+    }
+
+    /// Passes that redraw edges the base wire already covered must be
+    /// heavier than it, or a tagged loop is invisible under its own wire.
+    @Test func markingPassesDrawHeavierThanTheBaseWire() {
+        let settings = OverlaySettings()
+        let viewport = OverlayViewport(sizePixels: SIMD2(1024, 768), scale: 1)
+        let wire = OverlayUniformsFactory.main(
+            mvp: matrix_identity_float4x4, settings: settings,
+            animationProgress: 1, vertexCount: 4, viewport: viewport
+        )
+        let tagged = OverlayUniformsFactory.tagged(
+            mvp: matrix_identity_float4x4, settings: settings,
+            animationProgress: 1, vertexCount: 4, viewport: viewport
+        )
+        let hover = OverlayUniformsFactory.hover(
+            mvp: matrix_identity_float4x4, settings: settings, viewport: viewport
+        )
+        #expect(tagged.line.x > wire.line.x)
+        #expect(hover.line.x > wire.line.x)
+        // Pins are THE element to spot: bigger than a plain vertex dot.
+        let pins = OverlayUniformsFactory.pins(
+            mvp: matrix_identity_float4x4, settings: settings, viewport: viewport
+        )
+        #expect(pins.misc.x > wire.misc.x)
+    }
+
+    /// The renderer must publish real metrics, or every screen-space size
+    /// silently falls back to the 1x1 placeholder viewport.
+    @Test func theRendererPublishesItsViewportMetrics() throws {
+        let renderer = try makeRenderer()
+        renderer.contentScale = 3
+        renderer.setViewportSize(CGSize(width: 1200, height: 900))
+
+        #expect(renderer.overlayViewport.sizePixels == SIMD2(1200, 900))
+        #expect(renderer.overlayViewport.scale == 3)
+    }
+
+    /// REGRESSION-guard for the MetalFX path: it renders into a texture
+    /// SMALLER than the drawable and upscales the result. Sizing ribbons
+    /// against the drawable there would expand them against a viewport
+    /// they are not rasterizing into, and the upscaler would magnify an
+    /// already-too-thin wire. Both terms scale together instead, so the
+    /// on-screen width is unchanged.
+    @Test func reducedResolutionRendersTheSameOnScreenWidth() throws {
+        let renderer = try makeRenderer()
+        renderer.contentScale = 2
+        renderer.setViewportSize(CGSize(width: 1000, height: 800))
+
+        let full = renderer.overlayViewport
+        let halved = renderer.overlayViewport(renderTargetPixels: SIMD2(500, 400))
+
+        #expect(halved.sizePixels == SIMD2(500, 400))
+        // Half the render pixels per point, so half the pixel width — the
+        // same fraction of the (half-sized) target, and the same width on
+        // screen once upscaled.
+        #expect(halved.scale == full.scale / 2)
+        #expect(
+            halved.pixels(OverlayUniformsFactory.edgeWidth) / halved.sizePixels.x
+                == full.pixels(OverlayUniformsFactory.edgeWidth) / full.sizePixels.x
+        )
+    }
+
     @Test func overlaySettingsDefaultsMatchPersistedDefaults() {
         let settings = OverlaySettings()
         #expect(settings.opacity == Float(ViewportSettings.defaultOverlayOpacity))
@@ -199,6 +302,42 @@ struct EditMeshOverlayTests {
             renderer.renderOffscreen(width: 128, height: 128, at: Self.settled)
         )
         #expect(differingPixels(withWire, targetOnly) > 50)
+    }
+
+    /// REGRESSION, and the end-to-end proof that edges are ribbons rather
+    /// than `.line` primitives: Metal exposes no line width, so a line list
+    /// rasterizes exactly one pixel wide no matter what any uniform says.
+    /// Every width assertion elsewhere in this suite is uniform math and
+    /// would still pass against the old one-pixel wire — only counting lit
+    /// pixels distinguishes them.
+    ///
+    /// Same geometry, same render size, three times the content scale: a
+    /// hardware line list renders identically (1px), the ribbon pipeline
+    /// renders visibly heavier.
+    @Test func edgeWidthActuallyChangesWhatIsRasterized() throws {
+        func wireCoverage(contentScale: Float) throws -> Int {
+            let renderer = try makeRenderer()
+            renderer.contentScale = contentScale
+            renderer.load(mesh: try seedMesh())
+            let targetOnly = try #require(
+                renderer.renderOffscreen(width: 256, height: 256, at: Self.settled)
+            )
+            renderer.loadOverlayGeometry(
+                positions: Self.quadPositions, edges: Self.quadEdges, at: 0
+            )
+            let withWire = try #require(
+                renderer.renderOffscreen(width: 256, height: 256, at: Self.settled)
+            )
+            return differingPixels(withWire, targetOnly)
+        }
+
+        let thin = try wireCoverage(contentScale: 1)
+        let thick = try wireCoverage(contentScale: 3)
+        #expect(thin > 0)
+        // Not asserted as an exact ratio: the dots, the antialiased ribbon
+        // edges and the depth test all contribute. A clear majority more
+        // coverage is the property that matters.
+        #expect(thick > thin * 2)
     }
 
     @Test func zeroOpacityHidesTheOverlay() throws {

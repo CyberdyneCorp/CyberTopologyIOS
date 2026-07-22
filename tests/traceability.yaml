@@ -468,6 +468,17 @@ scenarios:
     X-ray mode:
       - EditMeshOverlayTests/xrayRevealsFarSideWireframe
       - EditMeshOverlayTests/occlusionBiasKeepsNearbyBuriedEdgesVisible
+    # The fix is that a face fill takes the SAME occlusion bias as the wire
+    # outlining it, applied in depth space. Asserted as that equality plus
+    # its arrival in the uniform slot the shader reads — the grazing-angle
+    # geometry that exposed the bug cannot be reproduced by a normal-offset
+    # assertion, which is exactly why the old world-space lift passed tests
+    # while the feature was visibly broken. The companion test pins the
+    # lift back down to a coplanarity nudge so it cannot silently regrow
+    # into a floating face.
+    A face is not occluded where its own outline is drawn:
+      - EditMeshFillTests/theFillTakesTheSameOcclusionBiasAsItsWireframe
+      - EditMeshFillTests/theFillHugsTheSurfaceRatherThanFloatingOverIt
     # The reveal is asserted as a function of the time uniform (three
     # frames at progress 0 / 0.5 / 1 differ progressively) plus the pure
     # progress-math test; the no-frame-drop half of the scenario is
@@ -475,6 +486,17 @@ scenarios:
     Wireframe animation on creation:
       - EditMeshOverlayTests/creationAnimationProgressesWithTheTimeUniform
       - EditMeshOverlayTests/animationProgressIsClampedAndMonotonic
+    # Point-space sizing across display scale (2x vs 3x) and viewport
+    # resolution scale (the MetalFX path renders into a smaller target and
+    # upscales). The offscreen test is the load-bearing one: it counts lit
+    # pixels, so it fails against a hardware `.line` list, which ignores
+    # every width uniform and always rasterizes one pixel wide.
+    Cage weight is resolution-independent:
+      - EditMeshOverlayTests/edgeWidthActuallyChangesWhatIsRasterized
+      - EditMeshOverlayTests/screenFeaturesAreSizedInPointsNotPixels
+      - EditMeshOverlayTests/featureSizesTrackContentScaleNotDrawableSize
+      - EditMeshOverlayTests/reducedResolutionRendersTheSameOnScreenWidth
+      - EditMeshOverlayTests/theRendererPublishesItsViewportMetrics
     # Ghost render style (task 2.4): covers the scenario's render half —
     # a proposal displayed alongside committed topology is visually distinct
     # (pulsing translucent amber fill vs the cyan committed wireframe,

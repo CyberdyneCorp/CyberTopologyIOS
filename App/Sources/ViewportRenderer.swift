@@ -191,6 +191,36 @@ final class ViewportRenderer: NSObject {
         Float(viewportSize.width / max(viewportSize.height, 1))
     }
 
+    /// Screen metrics for the overlay's screen-space features (edge width,
+    /// vertex-dot diameter), which are authored in POINTS and resolved to
+    /// pixels per frame.
+    ///
+    /// Measured against the RENDER TARGET, not the drawable. The MetalFX
+    /// path renders small and upscales, so on that path the two differ by
+    /// the resolution scale — feeding the shader the drawable size would
+    /// expand every ribbon against a viewport larger than the one it is
+    /// rasterizing into, and the upscaler would then blow up a wire that
+    /// was already too thin. Scaling both terms by the same ratio keeps a
+    /// 1.6pt edge 1.6pt on screen at any resolution scale.
+    func overlayViewport(renderTargetPixels: SIMD2<Float>) -> OverlayViewport {
+        let drawableWidth = Float(max(viewportSize.width, 1))
+        let renderRatio = max(renderTargetPixels.x, 1) / drawableWidth
+        return OverlayViewport(
+            sizePixels: SIMD2(max(renderTargetPixels.x, 1), max(renderTargetPixels.y, 1)),
+            scale: max(contentScale, 1e-3) * renderRatio
+        )
+    }
+
+    /// The metrics for a frame rendered at the full drawable size (the
+    /// plain, non-upscaled path).
+    var overlayViewport: OverlayViewport {
+        overlayViewport(
+            renderTargetPixels: SIMD2(
+                Float(max(viewportSize.width, 1)), Float(max(viewportSize.height, 1))
+            )
+        )
+    }
+
     /// Current viewport aspect (width/height), for consumers that measure
     /// normalized screen-space geometry undistorted (the task-3.2 stroke
     /// recognizer).
@@ -863,10 +893,20 @@ final class ViewportRenderer: NSObject {
 
         // Hover ghost-quad hint (task 3.6): same slot as proposals — under
         // the committed wireframe, depth-tested against the Target.
+        //
+        // Both surfaces below are snapped ONTO the Target and are outlined
+        // by wireframe passes, so they take the wire's occlusion bias: a
+        // surface must survive the depth test exactly where its own outline
+        // does, or the user sees an empty outline with the Target showing
+        // through it. Applied here rather than baked into the style so the
+        // occlusion slider moves surface and wire together, live, without
+        // re-uploading geometry.
+        let surfaceBias = overlaySettings.occlusionBias
         hoverGhostPath.encode(
             into: encoder,
             uniforms: GhostUniformsFactory.uniforms(
-                mvp: mvp, viewDirection: forward, style: hoverGhostStyle, time: time
+                mvp: mvp, viewDirection: forward,
+                style: hoverGhostStyle.withDepthBias(surfaceBias), time: time
             )
         )
 
@@ -876,7 +916,8 @@ final class ViewportRenderer: NSObject {
         editMeshFillPath.encode(
             into: encoder,
             uniforms: GhostUniformsFactory.uniforms(
-                mvp: mvp, viewDirection: forward, style: editMeshFillStyle, time: time
+                mvp: mvp, viewDirection: forward,
+                style: editMeshFillStyle.withDepthBias(surfaceBias), time: time
             )
         )
 
@@ -886,6 +927,16 @@ final class ViewportRenderer: NSObject {
             into: encoder,
             mvp: mvp,
             settings: overlaySettings,
+            // The pass's own attachment is the only reliable render-target
+            // size: it is the drawable on the plain path, the reduced
+            // scene texture under MetalFX, and the requested size for an
+            // offscreen capture.
+            viewport: overlayViewport(
+                renderTargetPixels: SIMD2(
+                    Float(descriptor.colorAttachments[0].texture?.width ?? 1),
+                    Float(descriptor.colorAttachments[0].texture?.height ?? 1)
+                )
+            ),
             animationProgress: OverlayAnimation.progress(
                 creationTime: overlayCreationTime, now: time
             )

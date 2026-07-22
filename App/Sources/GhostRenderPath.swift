@@ -40,6 +40,24 @@ struct GhostStyle: Equatable {
     /// Displacement along the vertex normal in world units (used by the
     /// debug preview so a ghost of the committed EditMesh hovers above it).
     var normalOffset: Float = 0
+    /// Occlusion threshold in NDC depth units — the surface is pulled
+    /// toward the camera by this much before the depth test, exactly like
+    /// the overlay wireframe's `OverlaySettings.occlusionBias`.
+    ///
+    /// This, not `normalOffset`, is what keeps a surface snapped onto the
+    /// Target visible. A world-space lift along the normal only buys depth
+    /// clearance when the normal points at the camera: at a grazing angle
+    /// the normal is nearly perpendicular to the view direction, so the
+    /// offset slides the surface SIDEWAYS and gains no depth at all. That
+    /// is why an authored quad still read as buried inside the Target on
+    /// steep geometry after the offset was signed toward the viewer — the
+    /// sign was right, the axis was wrong.
+    ///
+    /// A depth-space pull has no such blind spot, and sharing the wire's
+    /// bias makes the fill and the wire that outlines it agree about
+    /// visibility by construction: wherever the outline is drawn, so is
+    /// its interior.
+    var depthBias: Float = 0
 
     /// Pulsing opacity at `time` (a monotone clock like CACurrentMediaTime):
     /// sinusoidal between `baseAlpha * pulseFloor` and `baseAlpha`.
@@ -47,6 +65,16 @@ struct GhostStyle: Equatable {
         guard pulsePeriod > 0 else { return baseAlpha }
         let wave = Float(0.5 * (1 + sin(2 * .pi * time / pulsePeriod)))
         return baseAlpha * (pulseFloor + (1 - pulseFloor) * wave)
+    }
+
+    /// A copy pulled toward the camera by `bias` NDC depth units. Applied
+    /// at encode time from the live `OverlaySettings.occlusionBias` so the
+    /// user's occlusion slider moves the fill and its wireframe together
+    /// without re-uploading geometry.
+    func withDepthBias(_ bias: Float) -> GhostStyle {
+        var style = self
+        style.depthBias = bias
+        return style
     }
 
     /// Time offset (within one period) of the pulse peak / trough — lets
@@ -67,13 +95,19 @@ struct GhostStyle: Equatable {
         return style
     }()
 
-    /// `hoverHint` lifted off the surface along its camera-facing normal
-    /// (same magnitude as `debugPreview`): the hint's flat quad spans
-    /// snapped corners, so its interior dips below convex Targets and
-    /// would lose the depth test without the lift.
+    /// `hoverHint` lifted off the surface along its camera-facing normal:
+    /// the hint's flat quad spans snapped corners, so its interior dips
+    /// below convex Targets and would lose the depth test without a lift.
+    ///
+    /// The lift is small (0.5% of the scene radius) because it is no longer
+    /// carrying the occlusion problem on its own — `depthBias`, applied at
+    /// encode time from the wire's occlusion setting, does that. The lift's
+    /// only remaining job is to break exact coplanarity with the Target so
+    /// the two surfaces do not z-fight into speckle. Sizing it to clear
+    /// facets (the old 2%) made the hint visibly hover off the surface.
     static func hoverHint(sceneRadius: Float) -> GhostStyle {
         var style = hoverHint
-        style.normalOffset = max(sceneRadius, 1e-6) * 0.02
+        style.normalOffset = max(sceneRadius, 1e-6) * 0.005
         return style
     }
 
@@ -138,24 +172,25 @@ struct GhostStyle: Equatable {
 
     /// `editMeshFill` at a caller-chosen opacity, lifted off the Target.
     ///
-    /// The lift must clear FACETS, not merely avoid z-fighting — same
-    /// magnitude and same reason as `hoverHint(sceneRadius:)`, whose flat
-    /// quad spans snapped corners and dips below convex Targets.
+    /// The lift only breaks coplanarity: authored faces are snapped ONTO
+    /// the Target, so a fill at exactly the same depth z-fights into
+    /// speckle. Keeping the surface VISIBLE where the Target is in front of
+    /// it is `depthBias`'s job, applied at encode time from the same
+    /// occlusion setting the wireframe uses.
     ///
-    /// This matters more here than for the wireframe, because the two get
-    /// DIFFERENT occlusion treatment: the overlay wire applies a
-    /// shader-side NDC depth pull (the occlusion-bias term) that keeps it
-    /// visible against the Target, while this fill is a ghost-pipeline pass
-    /// with no such term, depth-tested `.lessEqual`. An authored face
-    /// snapped into a slightly concave region of a faceted low-poly Target
-    /// therefore sank below the surface and was depth-rejected, leaving the
-    /// user looking at an outline with no fill inside it. 0.3% of the scene
-    /// radius did not clear typical facets; 2% does, and still reads as
-    /// lying on the surface rather than hovering above it.
+    /// That split matters because the fill and the wire are two different
+    /// pipelines: the overlay wire has always applied a shader-side NDC
+    /// depth pull, while this pass was depth-tested `.lessEqual` with no
+    /// such term. An authored face therefore lost the depth test exactly
+    /// where its own outline won it, and the user saw a wireframe with the
+    /// Target — not the fill — showing through. Growing the world-space
+    /// lift (0.3% → 2%) was an attempt to fix that in the wrong space: it
+    /// buys nothing at grazing angles and makes the face float at head-on
+    /// ones. 0.5% is enough for the coplanarity job it actually has.
     static func editMeshFill(sceneRadius: Float, opacity: Float) -> GhostStyle {
         var style = editMeshFill
         style.baseAlpha = max(0, min(1, opacity))
-        style.normalOffset = max(sceneRadius, 1e-6) * 0.02
+        style.normalOffset = max(sceneRadius, 1e-6) * 0.005
         return style
     }
 
@@ -176,7 +211,8 @@ struct GhostUniforms: Equatable {
     var mvp: simd_float4x4
     /// Tint (rgb) and pulsed opacity (a).
     var color: SIMD4<Float>
-    /// x: normal offset (world units), y: rim strength, z,w: reserved.
+    /// x: normal offset (world units), y: rim strength,
+    /// z: NDC occlusion depth bias, w: reserved.
     var params: SIMD4<Float>
     /// Camera forward direction (world space), w unused.
     var viewDir: SIMD4<Float>
@@ -193,7 +229,7 @@ enum GhostUniformsFactory {
         GhostUniforms(
             mvp: mvp,
             color: SIMD4(style.color, style.pulsedAlpha(at: time)),
-            params: SIMD4(style.normalOffset, style.rimStrength, 0, 0),
+            params: SIMD4(style.normalOffset, style.rimStrength, style.depthBias, 0),
             viewDir: SIMD4(viewDirection.x, viewDirection.y, viewDirection.z, 0)
         )
     }
@@ -470,7 +506,8 @@ final class GhostRenderPath {
     struct GhostUniforms {
         float4x4 mvp;
         float4   color;   // rgb tint, a = pulsed opacity
-        float4   params;  // x normal offset, y rim strength
+        float4   params;  // x normal offset, y rim strength,
+                          // z NDC occlusion depth bias
         float4   viewDir; // camera forward, world space
     };
 
@@ -493,15 +530,25 @@ final class GhostRenderPath {
         // authored by a Pencil gesture winds either way depending on which
         // direction the user drew it, so its normal may point INTO the
         // Target it is snapped onto — and offsetting along that normal
-        // buries the surface deeper inside, where the depth test rejects
-        // it. Rendering is double-sided already (cull mode none), so
-        // flipping the offset for back-facing vertices is consistent with
-        // how these surfaces are shaded.
+        // buries the surface deeper inside. Rendering is double-sided
+        // already (cull mode none), so flipping the offset for back-facing
+        // vertices is consistent with how these surfaces are shaded.
+        //
+        // This lift only separates the two surfaces so they do not z-fight.
+        // It cannot carry occlusion on its own: at a grazing view angle the
+        // normal is nearly perpendicular to the view direction, so the lift
+        // slides the surface sideways and gains no depth whatsoever.
         float3 n = float3(normals[vid]);
         float towardViewer = (dot(n, u.viewDir.xyz) > 0.0) ? -1.0 : 1.0;
         float3 p = float3(positions[vid]) + n * (u.params.x * towardViewer);
-        out.position = u.mvp * float4(p, 1.0);
-        out.normal = float3(normals[vid]);
+        float4 clip = u.mvp * float4(p, 1.0);
+        // Occlusion threshold, in depth space — no blind spot at any view
+        // angle. Same term and same units as the overlay wireframe's, so a
+        // filled face and the wire outlining it pass or fail the depth test
+        // together instead of the fill sinking into the Target.
+        clip.z -= u.params.z * clip.w;
+        out.position = clip;
+        out.normal = n;
         return out;
     }
 

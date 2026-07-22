@@ -52,8 +52,27 @@ enum OverlayAnimation {
     }
 }
 
+/// Screen metrics the overlay needs to size features in POINTS rather than
+/// drawable pixels.
+///
+/// Edge width and vertex-dot diameter are screen-space quantities, and the
+/// GPU only speaks pixels. Authoring them in pixels made the wire render
+/// three times thinner on a 3x iPad than the same number suggested — the
+/// wire was a hairline on exactly the devices this app targets. Authoring
+/// in points and converting here keeps a "1.5pt edge" 1.5pt at any
+/// `contentScale`, including the reduced ones the resolution-scale control
+/// selects.
+struct OverlayViewport: Equatable {
+    /// Drawable size in pixels.
+    var sizePixels = SIMD2<Float>(1, 1)
+    /// Drawable pixels per point (the view's `contentScaleFactor`).
+    var scale: Float = 1
+
+    func pixels(_ points: Float) -> Float { points * max(scale, 1e-3) }
+}
+
 /// Per-draw overlay uniforms. Layout must match the MSL `OverlayUniforms`
-/// struct: float4x4 then three float4s.
+/// struct: float4x4 then four float4s.
 struct OverlayUniforms: Equatable {
     var mvp: simd_float4x4
     /// Theme color (rgb) and effective opacity (a).
@@ -64,6 +83,9 @@ struct OverlayUniforms: Equatable {
     /// x: point size in pixels, y: 1 on the x-ray (far-side) pass else 0,
     /// z,w: reserved.
     var misc: SIMD4<Float>
+    /// x: line width in pixels, y,z: drawable size in pixels (the
+    /// screen-space ribbon expansion needs it), w: reserved.
+    var line: SIMD4<Float>
 }
 
 /// Pure uniform construction, unit-tested without a GPU.
@@ -82,44 +104,80 @@ enum OverlayUniformsFactory {
     /// hover family, since both mean "this element is special right now",
     /// but at full alpha and a larger dot so pins read at a glance.
     static let pinColor = SIMD3<Float>(1.0, 0.92, 0.15)
-    /// Pin-marker dot size in pixels — larger than both the wire's vertex
-    /// dots and the snap highlight so a pinned vertex is unmistakable.
-    static let pinPointSize: Float = 16
+    /// Pin-marker dot diameter in POINTS — larger than both the wire's
+    /// vertex dots and the snap highlight so a pinned vertex is
+    /// unmistakable.
+    static let pinPointSize: Float = 8
     /// Hover highlight opacity — independent of the user's wireframe
     /// opacity (a preview must stay readable at any wire setting).
     static let hoverAlpha: Float = 0.95
-    /// Snap-target dot size in pixels (larger than the wire's vertex dots
-    /// so the merge target reads as THE highlighted element).
-    static let hoverPointSize: Float = 14
+    /// Snap-target dot diameter in POINTS (larger than the wire's vertex
+    /// dots so the merge target reads as THE highlighted element).
+    static let hoverPointSize: Float = 7
     /// Alpha floor multiplier for the far-side x-ray pass.
     static let xrayAttenuation: Float = 0.45
-    /// Vertex dot size in pixels.
-    static let pointSize: Float = 6
+
+    // Screen-space feature sizes, all in POINTS (see `OverlayViewport`).
+    //
+    // The retopology reference (docs/COZYBLANKET_REFERENCE §4.1) renders
+    // the working cage as a substantial wire — chunky round vertices on
+    // visibly weighted edges — because the cage IS the artifact being
+    // authored, not an annotation over one. A hairline is legible on a
+    // dense import and useless on the handful of quads a user has just
+    // drawn: at 4-6 quads there is nothing to read but the wire itself.
+
+    /// Vertex dot diameter in POINTS.
+    static let pointSize: Float = 4.5
+    /// Wireframe edge width in POINTS.
+    static let edgeWidth: Float = 1.6
+    /// Tagged-loop and symmetry-rim width in POINTS — heavier than the
+    /// base wire, since those passes redraw edges the wire already covered
+    /// and must read as a deliberate marking on top of it.
+    static let tagEdgeWidth: Float = 2.4
+    /// Hover-preview segment width in POINTS.
+    static let hoverEdgeWidth: Float = 2.6
+
+    /// Screen-space sizes for one pass, resolved to pixels.
+    private static func screen(
+        _ viewport: OverlayViewport, points: Float, edge: Float
+    ) -> (misc: SIMD4<Float>, line: SIMD4<Float>) {
+        (
+            misc: SIMD4(viewport.pixels(points), 0, 0, 0),
+            line: SIMD4(
+                viewport.pixels(edge), viewport.sizePixels.x, viewport.sizePixels.y, 0
+            )
+        )
+    }
 
     /// Uniforms for the front (depth-tested, bias-forgiving) pass.
     static func main(
         mvp: simd_float4x4, settings: OverlaySettings,
-        animationProgress: Float, vertexCount: Int
+        animationProgress: Float, vertexCount: Int,
+        viewport: OverlayViewport = OverlayViewport()
     ) -> OverlayUniforms {
-        OverlayUniforms(
+        let sizes = screen(viewport, points: pointSize, edge: edgeWidth)
+        return OverlayUniforms(
             mvp: mvp,
             color: SIMD4(wireColor, settings.opacity),
             params: SIMD4(
                 animationProgress, settings.occlusionBias,
                 xrayAttenuation, Float(vertexCount)
             ),
-            misc: SIMD4(pointSize, 0, 0, 0)
+            misc: sizes.misc,
+            line: sizes.line
         )
     }
 
     /// Uniforms for the x-ray (far-side, depth-attenuated) pass.
     static func xray(
         mvp: simd_float4x4, settings: OverlaySettings,
-        animationProgress: Float, vertexCount: Int
+        animationProgress: Float, vertexCount: Int,
+        viewport: OverlayViewport = OverlayViewport()
     ) -> OverlayUniforms {
         var uniforms = main(
             mvp: mvp, settings: settings,
-            animationProgress: animationProgress, vertexCount: vertexCount
+            animationProgress: animationProgress, vertexCount: vertexCount,
+            viewport: viewport
         )
         uniforms.misc.y = 1
         return uniforms
@@ -129,13 +187,16 @@ enum OverlayUniformsFactory {
     /// slightly boosted so tags read over the base wire.
     static func tagged(
         mvp: simd_float4x4, settings: OverlaySettings,
-        animationProgress: Float, vertexCount: Int
+        animationProgress: Float, vertexCount: Int,
+        viewport: OverlayViewport = OverlayViewport()
     ) -> OverlayUniforms {
         var uniforms = main(
             mvp: mvp, settings: settings,
-            animationProgress: animationProgress, vertexCount: vertexCount
+            animationProgress: animationProgress, vertexCount: vertexCount,
+            viewport: viewport
         )
         uniforms.color = SIMD4(tagColor, min(1, settings.opacity * 1.2))
+        uniforms.line.x = viewport.pixels(tagEdgeWidth)
         return uniforms
     }
 
@@ -146,12 +207,17 @@ enum OverlayUniformsFactory {
     /// count 0) so a hover highlight never inherits a mid-animation fade,
     /// and the occlusion bias is kept so the highlight matches the wire's
     /// visibility rules.
-    static func hover(mvp: simd_float4x4, settings: OverlaySettings) -> OverlayUniforms {
-        OverlayUniforms(
+    static func hover(
+        mvp: simd_float4x4, settings: OverlaySettings,
+        viewport: OverlayViewport = OverlayViewport()
+    ) -> OverlayUniforms {
+        let sizes = screen(viewport, points: hoverPointSize, edge: hoverEdgeWidth)
+        return OverlayUniforms(
             mvp: mvp,
             color: SIMD4(hoverColor, hoverAlpha),
             params: SIMD4(1, settings.occlusionBias, xrayAttenuation, 0),
-            misc: SIMD4(hoverPointSize, 0, 0, 0)
+            misc: sizes.misc,
+            line: sizes.line
         )
     }
 
@@ -160,13 +226,16 @@ enum OverlayUniformsFactory {
     /// the creation sweep forced fully open (an annotation is document
     /// state — it must not fade in with a geometry animation).
     static func tagColor(
-        _ color: SIMD3<Float>, mvp: simd_float4x4, settings: OverlaySettings
+        _ color: SIMD3<Float>, mvp: simd_float4x4, settings: OverlaySettings,
+        viewport: OverlayViewport = OverlayViewport()
     ) -> OverlayUniforms {
-        OverlayUniforms(
+        let sizes = screen(viewport, points: pointSize, edge: tagEdgeWidth)
+        return OverlayUniforms(
             mvp: mvp,
             color: SIMD4(color, min(1, settings.opacity * 1.2)),
             params: SIMD4(1, settings.occlusionBias, xrayAttenuation, 0),
-            misc: SIMD4(pointSize, 0, 0, 0)
+            misc: sizes.misc,
+            line: sizes.line
         )
     }
 
@@ -174,12 +243,17 @@ enum OverlayUniformsFactory {
     /// alpha, independent of the wireframe opacity — pins stay visible
     /// even with the wire turned down, because they change what the NEXT
     /// Relax will do.
-    static func pins(mvp: simd_float4x4, settings: OverlaySettings) -> OverlayUniforms {
-        OverlayUniforms(
+    static func pins(
+        mvp: simd_float4x4, settings: OverlaySettings,
+        viewport: OverlayViewport = OverlayViewport()
+    ) -> OverlayUniforms {
+        let sizes = screen(viewport, points: pinPointSize, edge: tagEdgeWidth)
+        return OverlayUniforms(
             mvp: mvp,
             color: SIMD4(pinColor, 1),
             params: SIMD4(1, settings.occlusionBias, xrayAttenuation, 0),
-            misc: SIMD4(pinPointSize, 0, 0, 0)
+            misc: sizes.misc,
+            line: sizes.line
         )
     }
 }
@@ -268,8 +342,22 @@ struct AnnotationRenderState: Equatable {
 /// indices; same no-per-frame-allocation contract as the target pool).
 @MainActor
 final class EditMeshOverlayPath {
+    /// Six vertices per edge: the two triangles of its screen-space ribbon.
+    private static let verticesPerSegment = 6
+    /// Stride of one `packed_float3` position, in bytes. NOT
+    /// `MemoryLayout<SIMD3<Float>>.size` — Swift pads that to 16, which
+    /// would offset every sequential ribbon group into the wrong vertices.
+    private static let positionStride = MemoryLayout<Float>.stride * 3
+
     let bufferPool: GeometryBufferPool
-    private let pipelineState: MTLRenderPipelineState
+    /// Round vertex/pin dots (point primitives).
+    private let pointPipelineState: MTLRenderPipelineState
+    /// Thick edges expanded from an INDEXED line list (the wire, tagged
+    /// edges) into screen-space ribbons.
+    private let indexedLinePipelineState: MTLRenderPipelineState
+    /// Thick edges expanded from CONSECUTIVE vertex pairs (hover segments,
+    /// annotation groups), which carry no index buffer.
+    private let sequentialLinePipelineState: MTLRenderPipelineState
     /// Depth compare ≤, writes off: overlay never disturbs Target depth.
     private let occludedDepthState: MTLDepthStencilState
     /// Depth compare >, writes off: draws only what the Target hides.
@@ -310,17 +398,27 @@ final class EditMeshOverlayPath {
         guard let library = try? device.makeLibrary(source: Self.shaderSource, options: nil)
         else { return nil }
 
-        let descriptor = MTLRenderPipelineDescriptor()
-        descriptor.label = "editmesh-overlay"
-        descriptor.vertexFunction = library.makeFunction(name: "overlay_vertex")
-        descriptor.fragmentFunction = library.makeFunction(name: "overlay_fragment")
-        descriptor.colorAttachments[0].pixelFormat = ViewportRenderer.colorPixelFormat
-        descriptor.colorAttachments[0].isBlendingEnabled = true
-        descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        descriptor.colorAttachments[0].sourceAlphaBlendFactor = .one
-        descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        descriptor.depthAttachmentPixelFormat = ViewportRenderer.depthPixelFormat
+        // Three pipelines over one shader source: points, indexed ribbons
+        // and sequential ribbons differ only in their vertex function, but
+        // a fragment shader may only read `[[point_coord]]` when the
+        // primitive really is a point — which is why the round dots need a
+        // pipeline (and a fragment function) of their own.
+        func pipeline(vertex: String, fragment: String, label: String)
+            -> MTLRenderPipelineState?
+        {
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.label = label
+            descriptor.vertexFunction = library.makeFunction(name: vertex)
+            descriptor.fragmentFunction = library.makeFunction(name: fragment)
+            descriptor.colorAttachments[0].pixelFormat = ViewportRenderer.colorPixelFormat
+            descriptor.colorAttachments[0].isBlendingEnabled = true
+            descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+            descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            descriptor.colorAttachments[0].sourceAlphaBlendFactor = .one
+            descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            descriptor.depthAttachmentPixelFormat = ViewportRenderer.depthPixelFormat
+            return try? device.makeRenderPipelineState(descriptor: descriptor)
+        }
 
         let occluded = MTLDepthStencilDescriptor()
         occluded.depthCompareFunction = .lessEqual
@@ -331,13 +429,26 @@ final class EditMeshOverlayPath {
         xray.isDepthWriteEnabled = false
 
         guard
-            let pipeline = try? device.makeRenderPipelineState(descriptor: descriptor),
+            let points = pipeline(
+                vertex: "overlay_vertex", fragment: "overlay_point_fragment",
+                label: "editmesh-overlay-points"
+            ),
+            let indexedLines = pipeline(
+                vertex: "overlay_line_indexed_vertex", fragment: "overlay_line_fragment",
+                label: "editmesh-overlay-lines-indexed"
+            ),
+            let sequentialLines = pipeline(
+                vertex: "overlay_line_sequential_vertex", fragment: "overlay_line_fragment",
+                label: "editmesh-overlay-lines-sequential"
+            ),
             let occludedState = device.makeDepthStencilState(descriptor: occluded),
             let xrayState = device.makeDepthStencilState(descriptor: xray)
         else { return nil }
 
         self.device = device
-        self.pipelineState = pipeline
+        self.pointPipelineState = points
+        self.indexedLinePipelineState = indexedLines
+        self.sequentialLinePipelineState = sequentialLines
         self.occludedDepthState = occludedState
         self.xrayDepthState = xrayState
         self.bufferPool = GeometryBufferPool(
@@ -466,14 +577,15 @@ final class EditMeshOverlayPath {
         into encoder: MTLRenderCommandEncoder,
         mvp: simd_float4x4,
         settings: OverlaySettings,
+        viewport: OverlayViewport = OverlayViewport(),
         animationProgress: Float
     ) {
         encodeWire(
             into: encoder, mvp: mvp, settings: settings,
-            animationProgress: animationProgress
+            animationProgress: animationProgress, viewport: viewport
         )
-        encodeAnnotations(into: encoder, mvp: mvp, settings: settings)
-        encodeHoverHighlight(into: encoder, mvp: mvp, settings: settings)
+        encodeAnnotations(into: encoder, mvp: mvp, settings: settings, viewport: viewport)
+        encodeHoverHighlight(into: encoder, mvp: mvp, settings: settings, viewport: viewport)
     }
 
     /// Annotation pass (task 4.3): each tag colour group as a line list in
@@ -485,34 +597,31 @@ final class EditMeshOverlayPath {
     private func encodeAnnotations(
         into encoder: MTLRenderCommandEncoder,
         mvp: simd_float4x4,
-        settings: OverlaySettings
+        settings: OverlaySettings,
+        viewport: OverlayViewport
     ) {
         guard hasAnnotations, let buffer = annotationVertexBuffer else { return }
-        encoder.setRenderPipelineState(pipelineState)
         encoder.setDepthStencilState(occludedDepthState)
         encoder.setVertexBuffer(buffer, offset: 0, index: 0)
         for group in tagColorGroups {
             var uniforms = OverlayUniformsFactory.tagColor(
-                group.color, mvp: mvp, settings: settings
+                group.color, mvp: mvp, settings: settings, viewport: viewport
             )
-            encoder.setVertexBytes(
-                &uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 1
-            )
-            encoder.setFragmentBytes(
-                &uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 0
-            )
-            encoder.drawPrimitives(
-                type: .line, vertexStart: group.vertexStart, vertexCount: group.vertexCount
+            bind(&uniforms, into: encoder)
+            encodeRibbons(
+                sequentialIn: buffer, vertexStart: group.vertexStart,
+                vertexCount: group.vertexCount, into: encoder
             )
         }
         if pinPointCount > 0 {
-            var uniforms = OverlayUniformsFactory.pins(mvp: mvp, settings: settings)
-            encoder.setVertexBytes(
-                &uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 1
+            var uniforms = OverlayUniformsFactory.pins(
+                mvp: mvp, settings: settings, viewport: viewport
             )
-            encoder.setFragmentBytes(
-                &uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 0
-            )
+            bind(&uniforms, into: encoder)
+            // The ribbon groups above rebased the position buffer; pins
+            // live at the head of the same buffer.
+            encoder.setVertexBufferOffset(0, index: 0)
+            encoder.setRenderPipelineState(pointPipelineState)
             encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: pinPointCount)
         }
     }
@@ -521,7 +630,8 @@ final class EditMeshOverlayPath {
         into encoder: MTLRenderCommandEncoder,
         mvp: simd_float4x4,
         settings: OverlaySettings,
-        animationProgress: Float
+        animationProgress: Float,
+        viewport: OverlayViewport
     ) {
         guard
             hasGeometry,
@@ -531,12 +641,12 @@ final class EditMeshOverlayPath {
             let edges = bufferPool.buffer(for: .index)
         else { return }
 
-        encoder.setRenderPipelineState(pipelineState)
         encoder.setVertexBuffer(positions, offset: 0, index: 0)
 
         var uniforms = OverlayUniformsFactory.main(
             mvp: mvp, settings: settings,
-            animationProgress: animationProgress, vertexCount: vertexCount
+            animationProgress: animationProgress, vertexCount: vertexCount,
+            viewport: viewport
         )
         encoder.setDepthStencilState(occludedDepthState)
         draw(edges: edges, uniforms: &uniforms, into: encoder)
@@ -549,24 +659,18 @@ final class EditMeshOverlayPath {
         if taggedIndexCount > 0, tagColorGroups.isEmpty, let taggedBuffer = taggedIndexBuffer {
             var tagUniforms = OverlayUniformsFactory.tagged(
                 mvp: mvp, settings: settings,
-                animationProgress: animationProgress, vertexCount: vertexCount
+                animationProgress: animationProgress, vertexCount: vertexCount,
+                viewport: viewport
             )
-            encoder.setVertexBytes(
-                &tagUniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 1
-            )
-            encoder.setFragmentBytes(
-                &tagUniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 0
-            )
-            encoder.drawIndexedPrimitives(
-                type: .line, indexCount: taggedIndexCount, indexType: .uint32,
-                indexBuffer: taggedBuffer, indexBufferOffset: 0
-            )
+            bind(&tagUniforms, into: encoder)
+            encodeRibbons(indexedBy: taggedBuffer, indexCount: taggedIndexCount, into: encoder)
         }
 
         if settings.xrayEnabled {
             var xrayUniforms = OverlayUniformsFactory.xray(
                 mvp: mvp, settings: settings,
-                animationProgress: animationProgress, vertexCount: vertexCount
+                animationProgress: animationProgress, vertexCount: vertexCount,
+                viewport: viewport
             )
             encoder.setDepthStencilState(xrayDepthState)
             draw(edges: edges, uniforms: &xrayUniforms, into: encoder)
@@ -580,25 +684,25 @@ final class EditMeshOverlayPath {
     private func encodeHoverHighlight(
         into encoder: MTLRenderCommandEncoder,
         mvp: simd_float4x4,
-        settings: OverlaySettings
+        settings: OverlaySettings,
+        viewport: OverlayViewport
     ) {
         guard hasHoverHighlight, let buffer = hoverVertexBuffer else { return }
-        var uniforms = OverlayUniformsFactory.hover(mvp: mvp, settings: settings)
-        encoder.setRenderPipelineState(pipelineState)
+        var uniforms = OverlayUniformsFactory.hover(
+            mvp: mvp, settings: settings, viewport: viewport
+        )
         encoder.setDepthStencilState(occludedDepthState)
         encoder.setVertexBuffer(buffer, offset: 0, index: 0)
-        encoder.setVertexBytes(
-            &uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 1
+        bind(&uniforms, into: encoder)
+        encodeRibbons(
+            sequentialIn: buffer, vertexStart: 0,
+            vertexCount: hoverSegmentVertexCount, into: encoder
         )
-        encoder.setFragmentBytes(
-            &uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 0
-        )
-        if hoverSegmentVertexCount > 0 {
-            encoder.drawPrimitives(
-                type: .line, vertexStart: 0, vertexCount: hoverSegmentVertexCount
-            )
-        }
         if hoverPointVertexCount > 0 {
+            // Rebased by the ribbon draw above; the points are absolute
+            // offsets into the same buffer.
+            encoder.setVertexBufferOffset(0, index: 0)
+            encoder.setRenderPipelineState(pointPipelineState)
             encoder.drawPrimitives(
                 type: .point, vertexStart: hoverSegmentVertexCount,
                 vertexCount: hoverPointVertexCount
@@ -610,24 +714,69 @@ final class EditMeshOverlayPath {
         edges: MTLBuffer, uniforms: inout OverlayUniforms,
         into encoder: MTLRenderCommandEncoder
     ) {
+        bind(&uniforms, into: encoder)
+        encodeRibbons(indexedBy: edges, indexCount: edgeIndexCount, into: encoder)
+        // Vertex dots reuse the same bound buffers/uniforms as points.
+        encoder.setRenderPipelineState(pointPipelineState)
+        encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: vertexCount)
+    }
+
+    private func bind(
+        _ uniforms: inout OverlayUniforms, into encoder: MTLRenderCommandEncoder
+    ) {
         encoder.setVertexBytes(
             &uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 1
         )
         encoder.setFragmentBytes(
             &uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 0
         )
-        encoder.drawIndexedPrimitives(
-            type: .line, indexCount: edgeIndexCount, indexType: .uint32,
-            indexBuffer: edges, indexBufferOffset: 0
+    }
+
+    /// Draws an indexed line list as screen-space ribbons: six vertices per
+    /// edge, expanded in the vertex shader. Metal has no line width — a
+    /// `.line` primitive is always one pixel, which on a 3x display is a
+    /// third of a point.
+    private func encodeRibbons(
+        indexedBy indices: MTLBuffer, indexCount: Int,
+        into encoder: MTLRenderCommandEncoder
+    ) {
+        guard indexCount >= 2 else { return }
+        encoder.setRenderPipelineState(indexedLinePipelineState)
+        encoder.setVertexBuffer(indices, offset: 0, index: 2)
+        encoder.drawPrimitives(
+            type: .triangle, vertexStart: 0,
+            vertexCount: (indexCount / 2) * Self.verticesPerSegment
         )
-        // Vertex dots reuse the same bound buffers/uniforms as points.
-        encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: vertexCount)
+    }
+
+    /// Same, for vertex ranges that ARE the line list (consecutive pairs,
+    /// no index buffer). The group's start becomes a buffer offset so the
+    /// shader can index from zero — no per-group index buffer, no extra
+    /// uniform, and nothing allocated at frame time.
+    private func encodeRibbons(
+        sequentialIn positions: MTLBuffer, vertexStart: Int, vertexCount: Int,
+        into encoder: MTLRenderCommandEncoder
+    ) {
+        guard vertexCount >= 2 else { return }
+        encoder.setRenderPipelineState(sequentialLinePipelineState)
+        encoder.setVertexBufferOffset(vertexStart * Self.positionStride, index: 0)
+        encoder.drawPrimitives(
+            type: .triangle, vertexStart: 0,
+            vertexCount: (vertexCount / 2) * Self.verticesPerSegment
+        )
     }
 
     // MARK: - Shader
 
     /// Line/point overlay shader. Compiled at runtime like the target
     /// pipeline (works identically in app bundle and unit tests).
+    ///
+    /// Edges are drawn as screen-space RIBBONS, not `.line` primitives:
+    /// Metal exposes no line width, so a line list is always exactly one
+    /// pixel wide — a third of a point on the 3x displays this app targets,
+    /// and a hairline the user cannot judge topology by. Each edge is
+    /// expanded in the vertex shader into two triangles of a fixed pixel
+    /// width, with analytic edge antialiasing in the fragment shader.
     static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
@@ -637,7 +786,8 @@ final class EditMeshOverlayPath {
         float4   color;   // rgb theme, a = opacity
         float4   params;  // x anim progress, y NDC depth bias,
                           // z x-ray attenuation, w vertex count
-        float4   misc;    // x point size, y x-ray pass flag
+        float4   misc;    // x point size (px), y x-ray pass flag
+        float4   line;    // x line width (px), yz drawable size (px)
     };
 
     struct OverlayVertexOut {
@@ -646,38 +796,168 @@ final class EditMeshOverlayPath {
         float  sweep;   // per-vertex sweep coordinate for the creation anim
     };
 
+    struct OverlayLineVertexOut {
+        float4 position [[position]];
+        float  sweep;
+        float  edgePixels;  // signed distance from the ribbon's centerline
+    };
+
+    // Sweep coordinate: vertex order fraction (engine-compacted order is
+    // spatially coherent for imports). Time only moves the uniform.
+    static inline float overlay_sweep(uint vid, constant OverlayUniforms& u) {
+        return u.params.w > 0.0 ? float(vid) / u.params.w : 0.0;
+    }
+
+    // Occlusion threshold: pull the overlay toward the camera by a
+    // configurable NDC depth bias so edges slightly behind the Target
+    // surface stay visible (spec: occlusion depth threshold).
+    static inline float4 overlay_clip(float3 p, constant OverlayUniforms& u) {
+        float4 clip = u.mvp * float4(p, 1.0);
+        clip.z -= u.params.y * clip.w;
+        return clip;
+    }
+
+    // Expands one edge into a screen-space ribbon `u.line.x` pixels wide.
+    // `corner` is 0...5 over two triangles of the quad whose corners are
+    // (endpoint a | b) x (side - | +).
+    static OverlayLineVertexOut overlay_ribbon(
+        float3 pa, float3 pb, float sweepA, float sweepB,
+        uint corner, constant OverlayUniforms& u)
+    {
+        OverlayLineVertexOut out;
+        float4 ca = overlay_clip(pa, u);
+        float4 cb = overlay_clip(pb, u);
+
+        // Screen-space expansion is only meaningful in front of the eye.
+        // Line primitives got near-plane clipping from the hardware for
+        // free; ribbons must do it themselves, or an edge crossing behind
+        // the camera (routine — the user can orbit inside the mesh) smears
+        // across the viewport.
+        const float kNear = 1e-4;
+        if (ca.w < kNear && cb.w < kNear) {
+            // Wholly behind the eye: collapse outside NDC, rasterize nothing.
+            out.position = float4(0.0, 0.0, 2.0, 1.0);
+            out.sweep = 0.0;
+            out.edgePixels = 0.0;
+            return out;
+        }
+        if (ca.w < kNear) {
+            float t = (kNear - ca.w) / (cb.w - ca.w);
+            ca = mix(ca, cb, t);
+            sweepA = mix(sweepA, sweepB, t);
+        } else if (cb.w < kNear) {
+            float t = (kNear - cb.w) / (ca.w - cb.w);
+            cb = mix(cb, ca, t);
+            sweepB = mix(sweepB, sweepA, t);
+        }
+
+        float2 halfViewport = max(u.line.yz, float2(1.0)) * 0.5;
+        float2 screenA = (ca.xy / ca.w) * halfViewport;
+        float2 screenB = (cb.xy / cb.w) * halfViewport;
+        float2 delta = screenB - screenA;
+        float span = length(delta);
+        float2 direction = span > 1e-6 ? delta / span : float2(1.0, 0.0);
+        float2 sideways = float2(-direction.y, direction.x);
+
+        // Half a pixel of padding on each side is what the fragment
+        // shader's analytic antialiasing feathers across.
+        float reach = u.line.x * 0.5 + 0.5;
+        // Two triangles over quad corners (a-, a+, b-, b+) = (0, 1, 2, 3).
+        const uint kQuadCorner[6] = {0u, 1u, 2u, 2u, 1u, 3u};
+        uint quadCorner = kQuadCorner[corner];
+        bool atB = quadCorner >= 2u;
+        float side = (quadCorner & 1u) != 0u ? 1.0 : -1.0;
+
+        float4 clip = atB ? cb : ca;
+        clip.xy += (sideways * side * reach / halfViewport) * clip.w;
+        out.position = clip;
+        out.sweep = atB ? sweepB : sweepA;
+        out.edgePixels = side * reach;
+        return out;
+    }
+
+    // Ribbons over an INDEXED line list (the wireframe, tagged edges).
+    vertex OverlayLineVertexOut overlay_line_indexed_vertex(
+        uint vid [[vertex_id]],
+        const device packed_float3* positions [[buffer(0)]],
+        constant OverlayUniforms& u           [[buffer(1)]],
+        const device uint* lineIndices        [[buffer(2)]])
+    {
+        uint segment = vid / 6u;
+        uint ia = lineIndices[segment * 2u];
+        uint ib = lineIndices[segment * 2u + 1u];
+        return overlay_ribbon(
+            float3(positions[ia]), float3(positions[ib]),
+            overlay_sweep(ia, u), overlay_sweep(ib, u), vid % 6u, u);
+    }
+
+    // Ribbons over CONSECUTIVE vertex pairs (hover segments, annotation
+    // groups). The caller rebases the position buffer so segment 0 starts
+    // at vertex 0.
+    vertex OverlayLineVertexOut overlay_line_sequential_vertex(
+        uint vid [[vertex_id]],
+        const device packed_float3* positions [[buffer(0)]],
+        constant OverlayUniforms& u           [[buffer(1)]])
+    {
+        uint segment = vid / 6u;
+        uint ia = segment * 2u;
+        uint ib = ia + 1u;
+        return overlay_ribbon(
+            float3(positions[ia]), float3(positions[ib]),
+            overlay_sweep(ia, u), overlay_sweep(ib, u), vid % 6u, u);
+    }
+
     vertex OverlayVertexOut overlay_vertex(
         uint vid [[vertex_id]],
         const device packed_float3* positions [[buffer(0)]],
         constant OverlayUniforms& u           [[buffer(1)]])
     {
         OverlayVertexOut out;
-        float4 clip = u.mvp * float4(float3(positions[vid]), 1.0);
-        // Occlusion threshold: pull the overlay toward the camera by a
-        // configurable NDC depth bias so edges slightly behind the Target
-        // surface stay visible (spec: occlusion depth threshold).
-        clip.z -= u.params.y * clip.w;
-        out.position = clip;
+        out.position = overlay_clip(float3(positions[vid]), u);
         out.pointSize = u.misc.x;
-        // Sweep coordinate: vertex order fraction (engine-compacted order
-        // is spatially coherent for imports). Time only moves the uniform.
-        out.sweep = u.params.w > 0.0 ? float(vid) / u.params.w : 0.0;
+        out.sweep = overlay_sweep(vid, u);
         return out;
     }
 
-    fragment float4 overlay_fragment(
-        OverlayVertexOut in [[stage_in]],
-        constant OverlayUniforms& u [[buffer(0)]])
-    {
-        // Creation micro-animation: index-ordered sweep with a soft fade
-        // front, fully revealed at progress 1.
-        float reveal = clamp((u.params.x * 1.2 - in.sweep) / 0.2, 0.0, 1.0);
+    // Creation micro-animation: index-ordered sweep with a soft fade
+    // front, fully revealed at progress 1.
+    static inline float overlay_alpha(float sweep, float depth,
+                                      constant OverlayUniforms& u) {
+        float reveal = clamp((u.params.x * 1.2 - sweep) / 0.2, 0.0, 1.0);
         float alpha = u.color.a * reveal;
         if (u.misc.y > 0.5) {
             // X-ray pass: far-side wireframe, depth-attenuated (farther
             // fragments fade toward the attenuation floor).
-            alpha *= u.params.z * (1.0 - 0.5 * in.position.z);
+            alpha *= u.params.z * (1.0 - 0.5 * depth);
         }
+        return alpha;
+    }
+
+    fragment float4 overlay_line_fragment(
+        OverlayLineVertexOut in [[stage_in]],
+        constant OverlayUniforms& u [[buffer(0)]])
+    {
+        float alpha = overlay_alpha(in.sweep, in.position.z, u);
+        // Analytic antialiasing across the half pixel of padding the
+        // ribbon was expanded by: full alpha inside the nominal width,
+        // ramping to zero over the last pixel of the edge.
+        alpha *= saturate(u.line.x * 0.5 + 0.5 - abs(in.edgePixels));
+        return float4(u.color.rgb, alpha);
+    }
+
+    fragment float4 overlay_point_fragment(
+        OverlayVertexOut in [[stage_in]],
+        float2 pointCoord [[point_coord]],
+        constant OverlayUniforms& u [[buffer(0)]])
+    {
+        // Round dots. Square points read as blocky pixels beside an
+        // antialiased wire, and the reference app's vertices are circles.
+        float radius = length(pointCoord - 0.5) * 2.0;
+        if (radius > 1.0) { discard_fragment(); }
+        float alpha = overlay_alpha(in.sweep, in.position.z, u);
+        // Feather the outermost pixel of the dot (radius spans half the
+        // point size in pixels).
+        alpha *= saturate((1.0 - radius) * max(u.misc.x, 1.0) * 0.5);
         return float4(u.color.rgb, alpha);
     }
     """

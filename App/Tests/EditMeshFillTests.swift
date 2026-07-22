@@ -1,6 +1,7 @@
 import CyberKit
 import CyberKitTesting
 import Testing
+import simd
 @testable import CyberTopology
 
 /// Translucent EditMesh face fill (spec: viewport-rendering / "Animated
@@ -94,6 +95,46 @@ struct EditMeshFillTests {
         #expect(!renderer.hasEditMeshFill)
         // The wireframe is unaffected — they are separate reads.
         #expect(renderer.hasOverlay)
+    }
+
+    /// REGRESSION: an authored quad rendered as an outline with the TARGET
+    /// showing through it — the fill sank inside the surface it was
+    /// snapped onto — because occlusion was fought entirely in world space,
+    /// with a lift along the vertex normal.
+    ///
+    /// A normal lift buys depth clearance only in proportion to how much
+    /// the normal faces the camera: at a grazing angle it slides the
+    /// surface sideways and gains nothing, which is exactly where the
+    /// failure was visible. The wireframe never had the problem because it
+    /// has always pulled toward the camera in DEPTH space instead.
+    ///
+    /// So the invariant is not "the lift is big enough" — no lift is, at 90
+    /// degrees — but that the fill carries a depth bias at all, and that it
+    /// is the same one the wire outlining it uses. Same bias, same
+    /// visibility: the interior is drawn wherever the outline is.
+    @Test func theFillTakesTheSameOcclusionBiasAsItsWireframe() {
+        let settings = OverlaySettings(occlusionBias: 0.006)
+        let style = GhostStyle.editMeshFill(sceneRadius: 1, opacity: 0.5)
+            .withDepthBias(settings.occlusionBias)
+
+        #expect(style.depthBias == settings.occlusionBias)
+
+        // And it reaches the GPU, in the slot the shader reads.
+        let uniforms = GhostUniformsFactory.uniforms(
+            mvp: matrix_identity_float4x4, viewDirection: SIMD3(0, 0, -1),
+            style: style, time: 0
+        )
+        #expect(uniforms.params.z == settings.occlusionBias)
+    }
+
+    /// The lift's remaining job is only to break coplanarity with the
+    /// Target, so it stays small enough that a filled face reads as lying
+    /// ON the surface. It was inflated to 2% of the scene radius while it
+    /// was (wrongly) carrying occlusion, which made faces visibly float.
+    @Test func theFillHugsTheSurfaceRatherThanFloatingOverIt() {
+        let lift = GhostStyle.editMeshFill(sceneRadius: 10, opacity: 1).normalOffset
+        #expect(lift > 0)
+        #expect(lift < 0.01 * 10)
     }
 
     /// The fill has its OWN buffer pool, so adding it must not change the

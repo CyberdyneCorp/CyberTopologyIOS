@@ -517,15 +517,21 @@ struct SubdivisionPreviewViewportTests {
     }
 
     /// The normal lift that keeps the reprojected preview from z-fighting
-    /// with the Target it was projected onto: scale-free and strictly
-    /// positive, but far smaller than the hover hint's (the preview must
-    /// still read as hugging the surface, not floating over it).
+    /// with the Target it was projected onto: scale-free, strictly
+    /// positive, and a small enough fraction of the scene that the preview
+    /// still reads as hugging the surface rather than floating over it.
+    ///
+    /// The bound is stated against the SCENE, not against a sibling style.
+    /// It used to compare against the hover hint's lift, which only meant
+    /// something while that lift was oversized to carry occlusion; now that
+    /// occlusion is a depth-space term (`GhostStyle.depthBias`) every lift
+    /// is a plain anti-z-fight nudge and their relative order says nothing.
     @Test("The preview is lifted off the Target it was reprojected onto")
     func previewIsLiftedOffTheTarget() throws {
         #expect(GhostStyle.subdivisionPreview.normalOffset == 0)
         let lifted = GhostStyle.subdivisionPreview(sceneRadius: 2)
         #expect(lifted.normalOffset > 0)
-        #expect(lifted.normalOffset < GhostStyle.hoverHint(sceneRadius: 2).normalOffset)
+        #expect(lifted.normalOffset < 0.01 * 2)
         // Scale-free: twice the scene, twice the lift.
         #expect(
             abs(GhostStyle.subdivisionPreview(sceneRadius: 4).normalOffset
