@@ -5,16 +5,6 @@ import UIKit
 @testable import CyberTopology
 
 
-/// Closes a document from MainActor test code. UIDocument.close() is a
-/// nonisolated async method, and Xcode 26.6+ flags awaiting it on a
-/// non-Sendable document as a send; the nonisolated(unsafe) binding states
-/// the checked contract (UIDocument manages its own queues).
-@MainActor
-private func closeDocument(_ document: TopoDocument) async {
-    nonisolated(unsafe) let closing = document
-    _ = await closing.close()
-}
-
 @MainActor
 struct RootViewTests {
     @Test func rendersDocumentBrowser() {
@@ -62,7 +52,7 @@ struct TopoDocumentTests {
         try TopoDocument.writeNewDocument(at: url)
 
         let document = TopoDocument(fileURL: url)
-        #expect(await document.open())
+        #expect(await openForTest(document))
         #expect(document.bundle.manifest.stage == .retopology)
         #expect(document.documentName == "RoundTrip")
         await closeDocument(document)
@@ -74,13 +64,13 @@ struct TopoDocumentTests {
         try TopoDocument.writeNewDocument(at: url)
 
         let document = TopoDocument(fileURL: url)
-        #expect(await document.open())
+        #expect(await openForTest(document))
         document.updateBundle { $0.manifest.stage = .uv }
-        #expect(await document.autosave())
+        #expect(await autosaveForTest(document))
         await closeDocument(document)
 
         let reopened = TopoDocument(fileURL: url)
-        #expect(await reopened.open())
+        #expect(await openForTest(reopened))
         #expect(reopened.bundle.manifest.stage == .uv)
         await closeDocument(reopened)
     }
@@ -91,7 +81,7 @@ struct TopoDocumentTests {
         try TopoDocument.writeNewDocument(at: url)
 
         let document = TopoDocument(fileURL: url)
-        #expect(await document.open())
+        #expect(await openForTest(document))
         document.updateBundle { $0.manifest.stage = .baking }
         let copy = try document.saveNewVersion(named: "Milestone")
         await closeDocument(document)
@@ -100,7 +90,7 @@ struct TopoDocumentTests {
         #expect(FileManager.default.fileExists(atPath: url.path))
 
         let version = TopoDocument(fileURL: copy)
-        #expect(await version.open())
+        #expect(await openForTest(version))
         #expect(version.bundle.manifest.stage == .baking)
         await closeDocument(version)
     }
@@ -125,7 +115,7 @@ struct TopoDocumentUndoTests {
         let url = directory.appendingPathComponent("Undo.cybertopo")
         try TopoDocument.writeNewDocument(at: url)
         let document = TopoDocument(fileURL: url)
-        #expect(await document.open())
+        #expect(await openForTest(document))
         return document
     }
 
@@ -198,12 +188,12 @@ struct TopoDocumentUndoTests {
     @Test func journalSurvivesReopen() async throws {
         let document = try await openDocument()
         document.perform(.setStage(from: .retopology, to: .baking))
-        #expect(await document.autosave())
+        #expect(await autosaveForTest(document))
         let url = document.fileURL
         await closeDocument(document)
 
         let reopened = TopoDocument(fileURL: url)
-        #expect(await reopened.open())
+        #expect(await openForTest(reopened))
         #expect(reopened.bundle.manifest.stage == .baking)
         #expect(reopened.canUndo)
         reopened.undoLast()
@@ -230,7 +220,7 @@ struct TopoDocumentIOTests {
         let url = directory.appendingPathComponent("\(name).cybertopo")
         try TopoDocument.writeNewDocument(at: url)
         let document = TopoDocument(fileURL: url)
-        #expect(await document.open())
+        #expect(await openForTest(document))
         return document
     }
 
@@ -299,7 +289,7 @@ struct DocumentEditorViewTests {
         let url = directory.appendingPathComponent("Editor.cybertopo")
         try TopoDocument.writeNewDocument(at: url)
         let document = TopoDocument(fileURL: url)
-        #expect(await document.open())
+        #expect(await openForTest(document))
         return document
     }
 
@@ -432,7 +422,7 @@ struct DocumentBrowserCoordinatorTests {
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
         let document = TopoDocument(fileURL: url)
-        #expect(await document.open())
+        #expect(await openForTest(document))
         #expect(document.bundle.manifest.stage == .retopology)
         await closeDocument(document)
     }
