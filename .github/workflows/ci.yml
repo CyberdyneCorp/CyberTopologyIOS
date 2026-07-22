@@ -98,6 +98,11 @@ jobs:
         run: bash scripts/coverage_gate.sh
         env:
           RESULT_BUNDLE: ${{ runner.temp }}/CyberTopology.xcresult
+          # Virtualized runners cannot faithfully synthesize multi-finger
+          # taps or drive hardware Metal; interaction UI tests classify
+          # themselves as skipped here and are contractually required on
+          # the local simulator and the device plan (task 9.6) instead.
+          TEST_RUNNER_CYBERTOPOLOGY_SKIP_INTERACTION_UITESTS: "1"
       - name: Upload result bundle
         if: always()
         uses: actions/upload-artifact@v4

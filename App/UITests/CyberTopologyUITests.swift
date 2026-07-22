@@ -1,4 +1,3 @@
-import Metal
 import XCTest
 
 final class CyberTopologyUITests: XCTestCase {
@@ -23,6 +22,24 @@ final class CyberTopologyUITests: XCTestCase {
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
         }
         return condition()
+    }
+
+    /// Environment gate for interaction-dependent UI tests (spec:
+    /// quality-assurance / "Simulator test execution in CI" — skips must be
+    /// classified, never silent).
+    ///
+    /// GitHub's virtualized simulator hosts cannot faithfully run these:
+    /// synthesized 3/4-finger taps arbitrate unreliably under load, and the
+    /// software Metal stack cannot drive stroke unprojection. Document-flow
+    /// UI tests keep running there. Locally the flag is unset, so the full
+    /// suite is mandatory; the physical-device plan (task 9.6) is where
+    /// these are contractually required to pass.
+    private func skipIfInteractionUnsupported() throws {
+        try XCTSkipIf(
+            ProcessInfo.processInfo.environment["CYBERTOPOLOGY_SKIP_INTERACTION_UITESTS"] == "1",
+            "interaction UI test: requires a real simulator host "
+                + "(multi-touch synthesis + hardware Metal); runs locally and on device"
+        )
     }
 
     /// Spec: document-model / "Files app visibility" (browser entry point).
@@ -81,6 +98,7 @@ final class CyberTopologyUITests: XCTestCase {
     /// four-finger tap redoes; toolbar buttons mirror journal state.
     @MainActor
     func testUndoRedoGesturesAndButtons() throws {
+        try skipIfInteractionUnsupported()
         let app = launch(arguments: ["-UITestResetState", "-UITestOpenDocument"])
 
         let picker = app.segmentedControls["stage-picker"]
@@ -129,6 +147,7 @@ final class CyberTopologyUITests: XCTestCase {
     /// camera gestures.
     @MainActor
     func testCameraGesturesDoNotConflictWithUndoTaps() throws {
+        try skipIfInteractionUnsupported()
         let app = launch(arguments: [
             "-UITestResetState", "-UITestOpenDocument", "-UITestSeedEditMesh",
         ])
@@ -267,14 +286,7 @@ final class CyberTopologyUITests: XCTestCase {
     /// task 3.9 — and XCUITest cannot synthesize Pencil touches).
     @MainActor
     func testStrokeDebugHUDShowsInterpretationRecord() throws {
-        // Classified environment skip (QA spec: no silent skips): the
-        // stroke -> recognizer -> HUD path needs the Metal viewport for
-        // unprojection; virtualized CI simulators expose no Metal device
-        // (the render unit suites skip themselves there the same way).
-        try XCTSkipIf(
-            MTLCreateSystemDefaultDevice() == nil,
-            "requires a Metal-capable simulator host (stroke unprojection)"
-        )
+        try skipIfInteractionUnsupported()
         let app = launch(arguments: [
             "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
             "-UITestStrokeInjection",
@@ -391,6 +403,7 @@ final class CyberTopologyUITests: XCTestCase {
     /// (live authoring is Pencil-only — task 3.9).
     @MainActor
     func testDrawQuadOnSeededTargetJournalsAndUndoes() throws {
+        try skipIfInteractionUnsupported()
         let app = launch(arguments: [
             "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
             "-UITestStrokeInjection",
@@ -433,6 +446,7 @@ final class CyberTopologyUITests: XCTestCase {
     /// swap — no extra undo step.
     @MainActor
     func testInterpretationChipSwapsAlternativeInPlace() throws {
+        try skipIfInteractionUnsupported()
         let app = launch(arguments: [
             "-UITestResetState", "-UITestOpenDocument", "-UITestSeedEditMeshStrip",
             "-UITestStrokeInjection",
@@ -517,6 +531,7 @@ final class CyberTopologyUITests: XCTestCase {
     /// entry — a single three-finger undo restores it.
     @MainActor
     func testSurfaceCutToolProbeCutsSeededStripAndUndoRestores() throws {
+        try skipIfInteractionUnsupported()
         let app = launch(arguments: [
             "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
             "-UITestSeedEditMeshOnDome", "-UITestAutoTool", "surfaceCut",
@@ -557,6 +572,7 @@ final class CyberTopologyUITests: XCTestCase {
     /// single three-finger undo restores.
     @MainActor
     func testPatchCloneToolProbeSelectsOrbitsAndPastes() throws {
+        try skipIfInteractionUnsupported()
         let app = launch(arguments: [
             "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
             "-UITestSeedEditMeshOnDome", "-UITestAutoTool", "patchClone",
