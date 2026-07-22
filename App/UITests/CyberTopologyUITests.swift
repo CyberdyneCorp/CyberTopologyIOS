@@ -1,3 +1,4 @@
+import Metal
 import XCTest
 
 final class CyberTopologyUITests: XCTestCase {
@@ -266,6 +267,14 @@ final class CyberTopologyUITests: XCTestCase {
     /// task 3.9 — and XCUITest cannot synthesize Pencil touches).
     @MainActor
     func testStrokeDebugHUDShowsInterpretationRecord() throws {
+        // Classified environment skip (QA spec: no silent skips): the
+        // stroke -> recognizer -> HUD path needs the Metal viewport for
+        // unprojection; virtualized CI simulators expose no Metal device
+        // (the render unit suites skip themselves there the same way).
+        try XCTSkipIf(
+            MTLCreateSystemDefaultDevice() == nil,
+            "requires a Metal-capable simulator host (stroke unprojection)"
+        )
         let app = launch(arguments: [
             "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
             "-UITestStrokeInjection",

@@ -71,12 +71,16 @@ final class ActionGalleryUITests: XCTestCase {
         let app = launch(arguments: ["-UITestResetState", "-UITestOpenDocument"])
         openGallery(app)
 
+        // One predicate query instead of a per-action descendants sweep:
+        // on slow CI hierarchies each any-type query can hit XCUITest's
+        // evaluation timeout ("Timed out while evaluating UI query").
+        let rows = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'gallery-action-'")
+        )
+        let found = Set(rows.allElementsBoundByIndex.map(\.identifier))
         for id in Self.allActionIDs {
-            XCTAssertTrue(
-                app.descendants(matching: .any)["gallery-action-\(id)"]
-                    .firstMatch.exists,
-                "gallery is missing action \(id)"
-            )
+            XCTAssertTrue(found.contains("gallery-action-\(id)"),
+                          "gallery is missing action \(id)")
         }
 
         // Select a grammar action: the help panel switches to it.
