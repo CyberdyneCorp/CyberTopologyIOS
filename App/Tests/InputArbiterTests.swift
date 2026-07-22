@@ -301,4 +301,57 @@ struct InputArbiterTests {
         #expect(arbiter.touchBegan(1, kind: .pencil)
             == [.beginStroke(1, source: .pencil, verb: .tweak)])
     }
+
+    @Test func verbPressEndedReportsTapSelectionOnly() {
+        // Task 4.1: the tool layer disarms exactly on TAP-selection —
+        // spring-loaded holds must report false so a hold cannot kick the
+        // user out of an armed tool.
+        var arbiter = InputArbiter()
+        arbiter.verbPressBegan(.relax, at: 0)
+        #expect(arbiter.verbPressEnded(.relax, at: 0.1) == true)  // quick tap
+        arbiter.verbPressBegan(.erase, at: 1)
+        #expect(arbiter.verbPressEnded(.erase, at: 2) == false)  // hold
+        #expect(arbiter.activeVerb == .relax)  // tap selected, hold restored
+    }
+
+    // MARK: - Camera-as-manipulator routing (task 4.2)
+
+    @Test func cameraFeedsArmedToolExactlyWhileASessionIsArmed() {
+        // The camera→tool verdict lives in the arbiter (design D5): open
+        // only between arm and disarm.
+        var arbiter = InputArbiter()
+        #expect(!arbiter.cameraFeedsArmedTool)
+        arbiter.setCameraToolSessionArmed(true)
+        #expect(arbiter.cameraFeedsArmedTool)
+        arbiter.setCameraToolSessionArmed(false)
+        #expect(!arbiter.cameraFeedsArmedTool)
+    }
+
+    @Test func penDownClosesTheCameraToolFeed() {
+        // While the pen is down camera gestures are palm-rejected anyway;
+        // the tool feed must be closed too so a stray demoted touch can
+        // never steer a placement mid-stroke.
+        var arbiter = InputArbiter()
+        arbiter.setCameraToolSessionArmed(true)
+        _ = arbiter.touchBegan(1, kind: .pencil)
+        #expect(arbiter.isPenDown)
+        #expect(!arbiter.cameraFeedsArmedTool)
+        _ = arbiter.touchEnded(1)
+        #expect(arbiter.cameraFeedsArmedTool)
+    }
+
+    @Test func armedCameraSessionKeepsNavigationInvariantsIntact() {
+        // Arming the camera-as-manipulator mode must not loosen ANY of
+        // the pen-authors/fingers-navigate rules: fingers still navigate,
+        // palms still reject, the 3rd finger stays out.
+        var arbiter = InputArbiter()
+        arbiter.setCameraToolSessionArmed(true)
+        #expect(arbiter.touchBegan(1, kind: .finger) == [])
+        #expect(arbiter.allowsCameraTouch(kind: .finger, excluding: 1))
+        _ = arbiter.touchBegan(2, kind: .finger)
+        #expect(!arbiter.allowsCameraTouch(kind: .finger))  // 3rd finger
+        _ = arbiter.touchBegan(3, kind: .pencil)
+        #expect(arbiter.touchBegan(4, kind: .finger)
+            == [.rejectTouch(4), .cancelCameraGestures])  // palm rejection
+    }
 }

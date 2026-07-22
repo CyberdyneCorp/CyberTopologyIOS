@@ -33,9 +33,10 @@ import Observation
 //     (spec scenario "Toolbar persistence").
 
 /// Every action the toolbar and the Action Gallery know: the five verbs
-/// (task 3.1/3.3) plus the task-3.4 gesture-grammar entries. Raw values are
-/// the persistence and accessibility-identifier vocabulary — renaming one
-/// is a persisted-data migration.
+/// (task 3.1/3.3), the task-3.4 gesture-grammar entries, and the task-4.1
+/// build tools. Raw values are the persistence and
+/// accessibility-identifier vocabulary — renaming one is a persisted-data
+/// migration.
 enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     // The five verbs (spec: "Five coherent verbs across stages").
     case pencil
@@ -55,9 +56,24 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     case doubleTapTweak
     case visibilityLasso
     case visibilityLines
+    // The task-4.1 build tools (spec: retopology-tools / "Core RT action
+    // roster"). Selectable like verbs; their Pencil strokes drive the tool
+    // instead of the gesture grammar.
+    case buildQuad
+    case buildTriangle
+    case mergePair
+    case pathDistribute
+    case surfaceCut
+    // The task-4.2 camera-as-manipulator tools (same roster): a stroke
+    // selects, then camera movement manipulates until commit/cancel
+    // (Draw Strip stays stroke-driven).
+    case patchClone
+    case extendBoundary
+    case drawStrip
+    case transformVertices
 
     /// The verb a toolbar slot holding this action selects; nil for
-    /// gesture-grammar actions (drawn, not tapped).
+    /// gesture-grammar actions (drawn, not tapped) and tools.
     var verb: InputArbiter.Verb? {
         switch self {
         case .pencil: .pencil
@@ -65,6 +81,23 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
         case .move: .move
         case .tweak: .tweak
         case .erase: .erase
+        default: nil
+        }
+    }
+
+    /// The retopology tool a toolbar slot holding this action arms; nil
+    /// for verbs and gesture-grammar entries.
+    var tool: RetopoTool? {
+        switch self {
+        case .buildQuad: .buildQuad
+        case .buildTriangle: .buildTriangle
+        case .mergePair: .mergePair
+        case .pathDistribute: .pathDistribute
+        case .surfaceCut: .surfaceCut
+        case .patchClone: .patchClone
+        case .extendBoundary: .extendBoundary
+        case .drawStrip: .drawStrip
+        case .transformVertices: .transformVertices
         default: nil
         }
     }

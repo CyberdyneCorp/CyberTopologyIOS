@@ -81,6 +81,32 @@
 #         query point and would always win the unfiltered nearest query.
 #         Read-only; render cache untouched. TODO(upstream): fold into the
 #         0004 PR and drop the patch.
+#   0016  capi build ops (task 4.1): cyber_retopo_build_face (mixed
+#         existing/new-vertex ring with neighbor-consistent winding — the
+#         Build Quad/Build Triangle drag-from-edge and drag-from-corner
+#         creations) + cyber_retopo_grow_boundary_edge (triangle-edge drag
+#         -> quad) + the cyber_mesh_edge_faces adjacency query the tools
+#         dispatch on. TODO(upstream): PR to CyberRemesherAndUV and drop.
+#   0017  capi path distribute + surface cut (task 4.1): new engine header
+#         retopo/paths.hpp (deterministic Dijkstra shortest vertex path) +
+#         build_tools.hpp surfaceCutSegment (segment-slab-restricted knife
+#         cut with auto-triangulated n-gons); capi
+#         cyber_mesh_shortest_vertex_path / cyber_retopo_distribute_path /
+#         cyber_retopo_surface_cut. TODO(upstream): PR and drop.
+#   0018  capi boundary loop (task 4.2): new engine header
+#         retopo/boundary.hpp (deterministic boundary-chain walk over
+#         one-face edges, both directions, closed detection, non-manifold
+#         pinch stops) + capi cyber_mesh_boundary_loop — Extend Boundary's
+#         boundary auto-select. Read-only; render cache untouched.
+#         TODO(upstream): PR to CyberRemesherAndUV and drop.
+#   0019  capi placement ops (task 4.2, camera-as-manipulator tools):
+#         build_tools.hpp additions (extendBoundaryRings with closed
+#         chains, winding correction and outer-chain reporting;
+#         drawStripPath with per-station side frames from
+#         cross(view, tangent); patchClone flip/reverse-winding) + capi
+#         cyber_retopo_patch_clone / extend_boundary_grid /
+#         extend_boundary_fan / draw_strip / transform_vertices (with the
+#         re-snap report). TODO(upstream): PR and drop.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

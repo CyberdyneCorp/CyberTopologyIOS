@@ -277,6 +277,84 @@ public enum StrokeGestureCorpus {
         )
     }
 
+    // MARK: - Task 4.1 build-tool recordings
+    //
+    // Recorded against the tool-test seeding (MeshEditToolTests: plane
+    // Target [-5, 5] + the two-quad strip v0(0,0) v1(1.4,0) v2(4,0) /
+    // v3(0,2) v4(1.4,2) v5(4,2), all z = 0) under the harness camera's
+    // deterministic frame-to-fit. Tool strokes bypass the grammar — the
+    // stage-1 expectedOutcome documents what the classifier says about the
+    // raw polyline; the tool tests replay the same files with a tool armed
+    // and assert the resulting mesh state.
+
+    /// Build Quad edge drag: from the v0-v1 boundary edge midpoint
+    /// (0.7, 0, 0) outward to (0.7, -1.4, 0) — a triangle tents off the
+    /// left quad.
+    public static func toolBuildQuadEdgeDrag(
+        type: StrokeSample.TouchType = .pencil
+    ) -> StrokeFixture {
+        fixture(
+            name: type == .pencil ? "tool_build_quad_edge_pencil" : "tool_build_quad_edge_finger",
+            expectedOutcome: "line:toggleVisibility",
+            points: path(through: [Point(0.5337, 0.5111), Point(0.5327, 0.5894)]),
+            type: type
+        )
+    }
+
+    /// Build Triangle corner drag: from vertex v0 (0, 0, 0) diagonally
+    /// outward to (-1.4, -1.4, 0) — two triangles span the drag.
+    public static func toolBuildTriangleCornerDrag(
+        type: StrokeSample.TouchType = .pencil
+    ) -> StrokeFixture {
+        fixture(
+            name: type == .pencil
+                ? "tool_build_triangle_corner_pencil" : "tool_build_triangle_corner_finger",
+            expectedOutcome: "line:toggleVisibility",
+            points: path(through: [Point(0.5000, 0.5000), Point(0.4390, 0.5535)]),
+            type: type
+        )
+    }
+
+    /// Merge Pair line: vertex v0 to vertex v1 — the pair collapses at its
+    /// midpoint.
+    public static func toolMergePairLine(
+        type: StrokeSample.TouchType = .pencil
+    ) -> StrokeFixture {
+        fixture(
+            name: type == .pencil ? "tool_merge_pair_pencil" : "tool_merge_pair_finger",
+            expectedOutcome: "line:toggleVisibility",
+            points: path(through: [Point(0.5000, 0.5000), Point(0.5691, 0.5227)]),
+            type: type
+        )
+    }
+
+    /// Path Distribute line: vertex v0 to vertex v2 — the uneven bottom
+    /// row (v1 at x = 1.4 of 4) redistributes evenly.
+    public static func toolPathDistributeLine(
+        type: StrokeSample.TouchType = .pencil
+    ) -> StrokeFixture {
+        fixture(
+            name: type == .pencil
+                ? "tool_path_distribute_pencil" : "tool_path_distribute_finger",
+            expectedOutcome: "line:toggleVisibility",
+            points: path(through: [Point(0.5000, 0.5000), Point(0.7177, 0.5714)]),
+            type: type
+        )
+    }
+
+    /// Surface Cut knife: vertical line crossing the left quad's bottom
+    /// and top edges at x = 0.7 — the quad splits in two.
+    public static func toolSurfaceCutLine(
+        type: StrokeSample.TouchType = .pencil
+    ) -> StrokeFixture {
+        fixture(
+            name: type == .pencil ? "tool_surface_cut_pencil" : "tool_surface_cut_finger",
+            expectedOutcome: "line:toggleVisibility",
+            points: path(through: [Point(0.5333, 0.5396), Point(0.5358, 0.3579)]),
+            type: type
+        )
+    }
+
     /// The full committed corpus, in deterministic order. The finger square
     /// exists so the suite can assert recognizer parity between input types
     /// (the UI-test injection hooks replay finger-typed fixtures).
@@ -288,6 +366,9 @@ public enum StrokeGestureCorpus {
             grid(), lineDown(), lineUp(), ringInsertLine(), loopTagLine(),
             mergeLine(), dissolveScribble(), rotateCircle(), hideLasso(),
             doubleTap(),
+            // Task 4.1 build-tool corpus:
+            toolBuildQuadEdgeDrag(), toolBuildTriangleCornerDrag(),
+            toolMergePairLine(), toolPathDistributeLine(), toolSurfaceCutLine(),
         ]
     }
 

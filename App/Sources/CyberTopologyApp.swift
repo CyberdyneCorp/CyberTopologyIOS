@@ -66,6 +66,18 @@ enum UITestSupport {
     /// (task 3.8 screenshot hook — the same presentation the toolbar's
     /// gallery button drives).
     static let showActionGalleryArgument = "-UITestShowActionGallery"
+    /// With `openDocumentArgument`: imports a two-quad strip PRE-SNAPPED
+    /// onto the seeded dome Target (task 4.1) — the build tools pick
+    /// vertices/edges through Target raycasts, so a flat z=0 strip under
+    /// the domed Target would sit outside pick range everywhere but the
+    /// dome's rim.
+    static let seedEditMeshOnDomeArgument = "-UITestSeedEditMeshOnDome"
+    /// Arms a task-4.1 build tool ~2 s after the editor appears and drives
+    /// one real probe stroke computed from the live mesh and camera (the
+    /// simulator cannot synthesize Pencil drags). Value form:
+    /// `-UITestAutoTool buildQuad` (a `RetopoTool` raw value, read through
+    /// UserDefaults argument parsing).
+    static let autoToolArgument = "UITestAutoTool"
 
     static var openDocumentRequested: Bool {
         ProcessInfo.processInfo.arguments.contains(openDocumentArgument)
@@ -119,6 +131,16 @@ enum UITestSupport {
         ProcessInfo.processInfo.arguments.contains(showActionGalleryArgument)
     }
 
+    static var seedEditMeshOnDomeRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(seedEditMeshOnDomeArgument)
+    }
+
+    /// The build tool requested via `-UITestAutoTool <rawValue>`, if any.
+    static var autoToolRequested: RetopoTool? {
+        UserDefaults.standard.string(forKey: autoToolArgument)
+            .flatMap(RetopoTool.init(rawValue:))
+    }
+
     /// Minimal colored quad used by the seed hook.
     static func writeSeedOBJ() throws -> URL {
         let obj = """
@@ -152,6 +174,24 @@ enum UITestSupport {
         """
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("seed-strip.obj")
+        try obj.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    /// Two-quad strip PRE-SNAPPED onto the seed dome (task 4.1 tool
+    /// hooks): every strip vertex sits ON the Target surface, so the build
+    /// tools' Target-raycast picks resolve anywhere on the strip.
+    static func writeSeedDomeStripOBJ() throws -> URL {
+        var obj = ""
+        for y in [-0.25, 0.25] {
+            for x in [-0.5, 0.0, 0.5] {
+                let z = 0.45 * (1 - 0.5 * (x * x + y * y))
+                obj += "v \(x) \(y) \(z)\n"
+            }
+        }
+        obj += "f 1 2 5 4\nf 2 3 6 5\n"
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("seed-dome-strip.obj")
         try obj.write(to: url, atomically: true, encoding: .utf8)
         return url
     }

@@ -23,7 +23,7 @@ import SwiftUI
 /// "Toolbar persistence").
 ///
 /// Identifiers sit on leaf views only (container-identifier accessibility
-/// trap), and the tile grid is deliberately NON-lazy: 16 fixed tiles cost
+/// trap), and the tile grid is deliberately NON-lazy: 21 fixed tiles cost
 /// nothing, and every tile exists in the accessibility tree without
 /// scrolling, which the UI tests rely on.
 struct ActionGalleryView: View {

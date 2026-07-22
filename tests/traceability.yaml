@@ -47,6 +47,42 @@ scenarios:
       - MeshEditingTests/tweakVertexSnapsToTarget
       - MeshEditingTests/relaxKeepsVerticesOnTarget
       - MeshEditControllerTests/squareFixtureCreatesJournaledQuadOnSeededTarget
+  retopology-tools:
+    # Task 4.2: the spec scenario end to end — ONE selection stroke over
+    # the patch through the real capture pipeline, a REAL renderer camera
+    # orbit fed through the coordinator's arbiter-gated camera→tool
+    # routing, a tap-commit paste whose clone is projected onto the Target
+    # by the engine snapper (engine patch 0019 cyber_retopo_patch_clone),
+    # and the session surviving its own commit for REPEATED pastes (two
+    # pastes = two entries, byte-exact undo). The engine-op halves
+    # (shared-vertex dedup, snap, flip winding) run against real meshes in
+    # PlacementOpsTests; the UI test drives the auto-tool probe on the
+    # seeded dome (selection → real camera orbit → paste → one-entry undo)
+    # with a screenshot.
+    Patch Clone round-trip:
+      - MeshEditCameraToolTests/patchCloneRoundTripPastesProjectedCopiesRepeatably
+      - MeshEditCameraToolTests/patchCloneFlipPastesMirroredPatch
+      - MeshEditCameraToolTests/barrelRollRotatesArmedPatchClonePlacement
+      - MeshEditCameraToolTests/cameraFeedIsGatedByTheArbiter
+      - PlacementOpsTests/patchCloneSharesCloneVertices
+      - PlacementOpsTests/patchCloneSnapsToTarget
+      - PlacementOpsTests/patchCloneFlipReversesWinding
+      - CyberTopologyUITests/testPatchCloneToolProbeSelectsOrbitsAndPastes
+    # Task 4.2: hold on a boundary vertex auto-selects the whole closed
+    # rim (engine patch 0018 boundary walk), automatic mode steps
+    # quad-sized rows off the accumulated camera displacement while the
+    # user orbits (pure ExtendBoundaryPlan machine + the end-to-end feed
+    # through the real renderer camera), nothing journals until commit —
+    # then the WHOLE row stack lands as ONE entry (sequential engine
+    # rings via the reported outer chains) and cancel discards it all.
+    Extend Boundary automatic mode:
+      - MeshEditCameraToolTests/extendBoundaryAutomaticModeStepsRowsWithTheCameraIntoOneEntry
+      - MeshEditCameraToolTests/extendBoundaryCancelDiscardsAccumulatedRows
+      - ExtendBoundaryPlanTests/automaticModeStepsQuadSizedRowsWhileTheCameraMoves
+      - ExtendBoundaryPlanTests/onceModeStepsExactlyOneRowThenWantsAutoCommit
+      - PlacementOpsTests/extendBoundaryClosedChainWraps
+      - PlacementOpsTests/extendBoundaryStacksRings
+      - PlacementOpsTests/boundaryChainClosesAroundGrid
   pencil-interaction:
     # Task 3.1: XCUITest cannot synthesize Apple Pencil touches, so the
     # pen-side of the scenario is covered headless — the pure arbiter state
@@ -340,8 +376,6 @@ pending:
     - Hardware-path parity
     - Cross-environment determinism
   retopology-tools:
-    - Patch Clone round-trip
-    - Extend Boundary automatic mode
     # Engine-level pin immunity is already regression-tested (task 3.3:
     # MeshEditingTests/relaxPreservesPinnedVertices,
     # moveRespectsPinsAndValidatesSeed — the capi relax/move ops take

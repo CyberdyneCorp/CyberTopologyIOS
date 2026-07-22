@@ -48,6 +48,8 @@ struct ActionToolbarView: View {
         case .some(let action):
             if let verb = action.verb {
                 VerbButton(verb: verb, model: model)
+            } else if let tool = action.tool {
+                ToolButton(tool: tool, action: action, model: model)
             } else {
                 gestureActionButton(action)
             }
@@ -145,6 +147,38 @@ private struct VerbButton: View {
     private var pressGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .updating($isPressed) { _, state, _ in state = true }
+    }
+}
+
+/// One retopology-tool slot (task 4.1): tap arms the tool — Pencil strokes
+/// then drive it instead of the gesture grammar until a verb is selected.
+/// Highlighted only while BOTH the tool is armed and the Pencil verb is
+/// active (a spring-loaded verb hold visibly takes over, then restores).
+private struct ToolButton: View {
+    let tool: RetopoTool
+    let action: EditorAction
+    let model: ViewportInputModel
+
+    private var isActive: Bool {
+        model.activeTool == tool && model.activeVerb == .pencil
+    }
+
+    var body: some View {
+        Button {
+            model.selectTool(tool)
+        } label: {
+            Image(systemName: action.gallery.symbol)
+                .font(.system(size: 17, weight: .medium))
+                .frame(width: 40, height: 40)
+                .foregroundStyle(isActive ? Color.accentColor : .primary)
+                .background(
+                    isActive ? Color.accentColor.opacity(0.25) : .clear,
+                    in: RoundedRectangle(cornerRadius: 8)
+                )
+        }
+        .accessibilityLabel(action.gallery.title)
+        .accessibilityIdentifier("tool-\(action.rawValue)")
+        .accessibilityValue(isActive ? "active" : "inactive")
     }
 }
 

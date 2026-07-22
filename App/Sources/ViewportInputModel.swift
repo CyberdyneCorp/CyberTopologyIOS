@@ -39,6 +39,12 @@ final class ViewportInputModel {
 
     /// Mirror of the arbiter's active verb for toolbar highlighting.
     private(set) var activeVerb: InputArbiter.Verb = .pencil
+    /// Armed retopology tool (task 4.1): while set (and the Pencil verb is
+    /// active), Pencil strokes drive the tool instead of the gesture
+    /// grammar. Selecting any verb persistently — toolbar tap, quick-verb
+    /// palette, gesture-requested switch — disarms; spring-loaded verb
+    /// HOLDS override only for their duration and restore the tool after.
+    private(set) var activeTool: RetopoTool?
     /// One-line description of the last captured stroke (debug HUD; the
     /// task-3.5 interpretation chip is the user-facing surface, this stays
     /// as the raw capture-side diagnostic for ALL verbs).
@@ -74,12 +80,22 @@ final class ViewportInputModel {
 
     /// Pencil Pro barrel-roll angle in radians (task 3.7), forwarded from
     /// the viewport's hover recognizer — non-zero only on hardware that
-    /// reports it. Rotate-placed-element hook: `onBarrelRollChanged` is
-    /// the seam a placement tool subscribes to; no task-3.4 op has a free
-    /// orientation (quads/grids take theirs from the drawn stroke), so the
-    /// first real consumer is the 4.2 placement tools (tasks.md 3.7a).
+    /// reports it. Rotate-placed-element consumers (task 3.7a → 4.2): the
+    /// camera-as-manipulator sessions (Patch Clone spins the pending
+    /// patch, Transform Vertices spins the selection) receive it through
+    /// `MeshEditController.barrelRollChanged`; `onBarrelRollChanged`
+    /// stays as the observable test seam.
     private(set) var barrelRollAngle: Float = 0
     @ObservationIgnored var onBarrelRollChanged: ((Float) -> Void)?
+
+    /// Camera-as-manipulator session banner (task 4.2): non-nil while a
+    /// Patch Clone / Extend Boundary / Transform Vertices session is
+    /// armed; drives the editor's session controls and mirrors the
+    /// arbiter's camera→tool gate.
+    private(set) var cameraToolBanner: MeshEditController.CameraToolBanner?
+    /// Transient tool status line (the Transform Vertices re-snap
+    /// report); replaced by the next report, cleared with the session UI.
+    private(set) var cameraToolStatus: String?
 
     /// Fired the moment ANY stroke begins (before the verb layer sees it).
     /// Task 3.6: the viewport coordinator clears the hover preview here —
@@ -99,6 +115,7 @@ final class ViewportInputModel {
     /// and toolbar highlight stay in sync.
     @ObservationIgnored var meshEditor: MeshEditController? {
         didSet {
+            meshEditor?.activeTool = activeTool
             meshEditor?.onRequestVerb = { [weak self] verb in
                 self?.selectVerb(verb)
             }
@@ -106,6 +123,16 @@ final class ViewportInputModel {
             // into a chip — applied, inert, and unrecognized alike.
             meshEditor?.onPencilStrokeResolved = { [weak self] outcome in
                 self?.showChip(for: outcome)
+            }
+            // Camera-as-manipulator sessions (task 4.2): the banner drives
+            // the editor's session controls, and the arbiter's camera→tool
+            // gate opens exactly while a session is armed.
+            meshEditor?.onCameraSessionChanged = { [weak self] banner in
+                self?.cameraToolBanner = banner
+                self?.controller.setCameraToolSessionArmed(banner != nil)
+            }
+            meshEditor?.onCameraToolStatus = { [weak self] status in
+                self?.cameraToolStatus = status
             }
         }
     }
@@ -188,6 +215,7 @@ final class ViewportInputModel {
     }
 
     func selectVerb(_ verb: InputArbiter.Verb) {
+        disarmTool()
         controller.selectVerb(verb)
         refreshActiveVerb()
     }
@@ -198,8 +226,55 @@ final class ViewportInputModel {
     }
 
     func verbPressEnded(_ verb: InputArbiter.Verb, at time: TimeInterval = CACurrentMediaTime()) {
-        controller.verbPressEnded(verb, at: time)
+        // A quick TAP selects the verb persistently and therefore disarms
+        // the tool; releasing a spring-loaded HOLD restores the prior
+        // state, tool included (task 4.1).
+        if controller.verbPressEnded(verb, at: time) {
+            disarmTool()
+        }
         refreshActiveVerb()
+    }
+
+    // MARK: - Retopology tools (task 4.1)
+
+    /// Arms a build tool: the Pencil verb is selected (tool strokes route
+    /// as Pencil) and subsequent Pencil strokes drive the tool. Switching
+    /// tools discards any armed camera session (task 4.2).
+    func selectTool(_ tool: RetopoTool) {
+        if activeTool != tool {
+            meshEditor?.cancelCameraToolSession()
+        }
+        controller.selectVerb(.pencil)
+        refreshActiveVerb()
+        activeTool = tool
+        meshEditor?.activeTool = tool
+    }
+
+    private func disarmTool() {
+        guard activeTool != nil else { return }
+        meshEditor?.cancelCameraToolSession()
+        activeTool = nil
+        meshEditor?.activeTool = nil
+    }
+
+    // MARK: - Camera-as-manipulator session controls (task 4.2)
+
+    /// Banner commit (same path as the Pencil tap on an armed session).
+    func commitCameraToolSession() {
+        meshEditor?.commitCameraToolSession()
+    }
+
+    /// Banner cancel: discards the session, nothing journals.
+    func cancelCameraToolSession() {
+        meshEditor?.cancelCameraToolSession()
+    }
+
+    func setExtendBoundaryMode(_ mode: ExtendBoundaryPlan.Mode) {
+        meshEditor?.setExtendBoundaryMode(mode)
+    }
+
+    func togglePatchCloneFlip() {
+        meshEditor?.togglePatchCloneFlip()
     }
 
     private func refreshActiveVerb() {
@@ -334,9 +409,12 @@ final class ViewportInputModel {
 
     /// Roll-angle update from the viewport's hover recognizer. Dedupes so
     /// pointer hardware that always reports 0 never spams observation.
+    /// Consumed by the armed camera-as-manipulator session (task 3.7a/4.2:
+    /// barrel roll rotates the element being placed).
     func barrelRollChanged(_ angle: Float) {
         guard angle != barrelRollAngle else { return }
         barrelRollAngle = angle
+        meshEditor?.barrelRollChanged(angle)
         onBarrelRollChanged?(angle)
     }
 }

@@ -1,0 +1,575 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index 9e5f042..28ea69c 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -581,6 +581,95 @@ CyberStatus cyber_retopo_surface_cut(CyberMesh* mesh, const float a[3],
+                                      size_t* out_split_edges,
+                                      size_t* out_split_faces);
+ 
++/* ---- camera-as-manipulator placement ops (task 4.2) ---------------------
++ *
++ * The Patch Clone / Extend Boundary / Draw Strip / Transform Vertices
++ * mutations (retopo/build_tools.hpp + boundary.hpp). Affine transforms are
++ * passed as 12 floats: the COLUMN-MAJOR 3x3 linear part (col0 xyz, col1
++ * xyz, col2 xyz) followed by the translation (xyz) — the layout of
++ * cyber::retopo::Affine. All follow the runMeshEdit contract: render cache
++ * invalidated on success, argument failures leave the mesh unchanged. */
++
++/* Patch Clone (task 4.2): duplicates `faces` (shared vertices cloned
++ * once) transformed by `xf`, each new vertex snapped to the Target when
++ * `snapper` is non-NULL. Non-zero `flip` reverses every cloned face's
++ * winding (the flip option: a mirroring `xf` inverts orientation).
++ * `out_new_faces` (may be NULL) receives the new face ids — it must hold
++ * `face_count` entries; *out_new_face_count (may be NULL) receives the
++ * count (== face_count on success). Fails with CYBER_ERR_INVALID_ARG
++ * (mesh unchanged) on an empty list, dead ids, or repeated faces. */
++CyberStatus cyber_retopo_patch_clone(CyberMesh* mesh, const uint32_t* faces,
++                                     size_t face_count, const float xf[12], int flip,
++                                     const CyberSnapper* snapper,
++                                     uint32_t* out_new_faces,
++                                     size_t* out_new_face_count);
++
++/* Extend Boundary, quad strips (task 4.2): extrudes the ordered boundary
++ * vertex chain by `offset` in `rings` successive rows of quads, each row
++ * welded onto the previous (the first onto the chain itself) and snapped
++ * to the Target when `snapper` is non-NULL. Non-zero `closed` treats the
++ * chain as a closed loop (a wrap quad joins the last and first columns).
++ * Quad winding is corrected against the existing face on the chain's
++ * first edge. `out_outer_chain` (may be NULL, `count` entries) receives
++ * the OUTERMOST ring's vertex ids in chain order — feed it back as the
++ * next call's chain to stack rings with different offsets;
++ * *out_new_faces (may be NULL) receives the number of new faces. Fails
++ * with CYBER_ERR_INVALID_ARG (mesh unchanged) on chains shorter than 2,
++ * dead/repeated vertices, consecutive vertices not joined by a live edge,
++ * rings < 1, or a zero offset. */
++CyberStatus cyber_retopo_extend_boundary_grid(CyberMesh* mesh, const uint32_t* chain,
++                                              size_t count, int closed,
++                                              const float offset[3], int rings,
++                                              const CyberSnapper* snapper,
++                                              uint32_t* out_outer_chain,
++                                              size_t* out_new_faces);
++
++/* Extend Boundary, triangle fan (task 4.2): closes the ordered boundary
++ * chain onto a single apex at the chain centroid + `apex_offset` (snapped
++ * to the Target when `snapper` is non-NULL) with a fan of triangles, one
++ * per chain edge (plus the wrap edge when `closed`). Winding is corrected
++ * against the existing face on the chain's first edge. Writes the apex
++ * vertex id to *out_apex and the new face count to *out_new_faces (either
++ * may be NULL). Chain validation matches
++ * cyber_retopo_extend_boundary_grid. */
++CyberStatus cyber_retopo_extend_boundary_fan(CyberMesh* mesh, const uint32_t* chain,
++                                             size_t count, int closed,
++                                             const float apex_offset[3],
++                                             const CyberSnapper* snapper,
++                                             uint32_t* out_apex,
++                                             size_t* out_new_faces);
++
++/* Draw Strip (task 4.2): a quad strip welded onto the boundary edge
++ * start_a/start_b whose stations follow `path_xyz` (x,y,z per point —
++ * world-space stroke samples, typically resampled at quad-size arc
++ * length). Each station's rail pair spans `width` along
++ * cross(view_dir, tangent) with sign continuity (curved strokes never
++ * flip rails); rail vertices snap to the Target when `snapper` is
++ * non-NULL; winding is corrected against the start edge's face. Writes
++ * the number of new faces to *out_new_faces (may be NULL). Fails with
++ * CYBER_ERR_INVALID_ARG (mesh unchanged) on an empty path, width <= 0, a
++ * degenerate view direction, or when start_a/start_b are dead or not
++ * joined by a live BOUNDARY edge. */
++CyberStatus cyber_retopo_draw_strip(CyberMesh* mesh, const float* path_xyz,
++                                    size_t point_count, float width,
++                                    const float view_dir[3], uint32_t start_a,
++                                    uint32_t start_b, const CyberSnapper* snapper,
++                                    size_t* out_new_faces);
++
++/* Transform Vertices (task 4.2): applies `xf` to every vertex in
++ * `vertices` in place. When `snapper` is non-NULL each transformed vertex
++ * is then reprojected onto the Target, and the RE-SNAP REPORT counts the
++ * vertices whose reprojection moved them by more than `resnap_epsilon`
++ * (*out_resnapped) with the maximum such distance (*out_max_distance;
++ * either may be NULL). Fails with CYBER_ERR_INVALID_ARG (mesh unchanged)
++ * on an empty list, dead ids, or repeated vertices. */
++CyberStatus cyber_retopo_transform_vertices(CyberMesh* mesh, const uint32_t* vertices,
++                                            size_t count, const float xf[12],
++                                            const CyberSnapper* snapper,
++                                            float resnap_epsilon,
++                                            size_t* out_resnapped,
++                                            float* out_max_distance);
++
+ /* ---- gesture stroke interpretation (retopology phase 3, design D5) ------
+  *
+  * Two-stage recognizer: a cheap geometric shape classifier over the raw
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index 3ad0868..04305cc 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -1683,6 +1683,284 @@ CyberStatus cyber_retopo_surface_cut(CyberMesh* mesh, const float a[3], const fl
+     });
+ }
+ 
++// ---- camera-as-manipulator placement ops (task 4.2) ------------------------
++
++namespace {
++
++// 12-float column-major affine (see cyber_capi.h) -> engine Affine.
++cyber::retopo::Affine toAffine(const float xf[12]) {
++    cyber::retopo::Affine a;
++    a.col0 = {xf[0], xf[1], xf[2]};
++    a.col1 = {xf[3], xf[4], xf[5]};
++    a.col2 = {xf[6], xf[7], xf[8]};
++    a.translation = {xf[9], xf[10], xf[11]};
++    return a;
++}
++
++// Shared chain validation for the Extend Boundary ops: alive, distinct,
++// consecutive vertices joined by live edges (and the wrap edge when
++// closed). Writes the typed chain to `out` and returns CYBER_OK, or sets
++// the error and returns a failure status with `out` untouched.
++CyberStatus validateChain(const CyberMesh* mesh, const char* name, const uint32_t* chain,
++                          size_t count, int closed, std::vector<cyber::VertexId>& out) {
++    if (chain == nullptr || count < 2) {
++        setError(std::string(name) + ": need an ordered chain of >= 2 vertices");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    std::unordered_set<uint32_t> seen;
++    for (size_t i = 0; i < count; ++i) {
++        if (!mesh->mesh.isAlive(cyber::VertexId{chain[i]})) {
++            setError(std::string(name) + ": dead chain vertex");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        if (!seen.insert(chain[i]).second) {
++            setError(std::string(name) + ": repeated chain vertex");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        if (i > 0 && !mesh->mesh
++                          .edgeBetween(cyber::VertexId{chain[i - 1]},
++                                       cyber::VertexId{chain[i]})
++                          .valid()) {
++            setError(std::string(name) + ": chain break (no edge between consecutive "
++                                         "vertices)");
++            return CYBER_ERR_INVALID_ARG;
++        }
++    }
++    if (closed != 0) {
++        if (count < 3 || !mesh->mesh
++                              .edgeBetween(cyber::VertexId{chain[count - 1]},
++                                           cyber::VertexId{chain[0]})
++                              .valid()) {
++            setError(std::string(name) + ": closed chain needs >= 3 vertices and a live "
++                                         "wrap edge");
++            return CYBER_ERR_INVALID_ARG;
++        }
++    }
++    out.reserve(count);
++    for (size_t i = 0; i < count; ++i) {
++        out.push_back(cyber::VertexId{chain[i]});
++    }
++    return CYBER_OK;
++}
++
++}  // namespace
++
++CyberStatus cyber_retopo_patch_clone(CyberMesh* mesh, const uint32_t* faces,
++                                     size_t face_count, const float xf[12], int flip,
++                                     const CyberSnapper* snapper, uint32_t* out_new_faces,
++                                     size_t* out_new_face_count) {
++    return runMeshEdit(mesh, "cyber_retopo_patch_clone", [&] {
++        if (faces == nullptr || face_count == 0 || xf == nullptr) {
++            setError("cyber_retopo_patch_clone: null/empty faces or transform");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        std::vector<cyber::FaceId> ids;
++        ids.reserve(face_count);
++        std::unordered_set<uint32_t> seen;
++        for (size_t i = 0; i < face_count; ++i) {
++            if (!mesh->mesh.isAlive(cyber::FaceId{faces[i]})) {
++                setError("cyber_retopo_patch_clone: dead face id");
++                return CYBER_ERR_INVALID_ARG;
++            }
++            if (!seen.insert(faces[i]).second) {
++                setError("cyber_retopo_patch_clone: repeated face id");
++                return CYBER_ERR_INVALID_ARG;
++            }
++            ids.push_back(cyber::FaceId{faces[i]});
++        }
++        const std::vector<cyber::FaceId> cloned = cyber::retopo::patchClone(
++            mesh->mesh, ids, toAffine(xf), snapperOf(snapper), flip != 0);
++        if (out_new_faces != nullptr) {
++            for (size_t i = 0; i < cloned.size() && i < face_count; ++i) {
++                out_new_faces[i] = cloned[i].value;
++            }
++        }
++        if (out_new_face_count != nullptr) {
++            *out_new_face_count = cloned.size();
++        }
++        return CYBER_OK;
++    });
++}
++
++CyberStatus cyber_retopo_extend_boundary_grid(CyberMesh* mesh, const uint32_t* chain,
++                                              size_t count, int closed,
++                                              const float offset[3], int rings,
++                                              const CyberSnapper* snapper,
++                                              uint32_t* out_outer_chain,
++                                              size_t* out_new_faces) {
++    return runMeshEdit(mesh, "cyber_retopo_extend_boundary_grid", [&] {
++        std::vector<cyber::VertexId> verts;
++        const CyberStatus chainStatus = validateChain(
++            mesh, "cyber_retopo_extend_boundary_grid", chain, count, closed, verts);
++        if (chainStatus != CYBER_OK) {
++            return chainStatus;
++        }
++        if (offset == nullptr || cyber::lengthSquared(toVec3(offset)) <= 0.0f) {
++            setError("cyber_retopo_extend_boundary_grid: zero offset");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        if (rings < 1) {
++            setError("cyber_retopo_extend_boundary_grid: rings must be >= 1");
++            return CYBER_ERR_INVALID_PARAM;
++        }
++        const cyber::retopo::BoundaryExtension extension =
++            cyber::retopo::extendBoundaryRings(mesh->mesh, verts, closed != 0,
++                                               toVec3(offset), rings, snapperOf(snapper));
++        if (out_outer_chain != nullptr) {
++            for (size_t i = 0; i < extension.outerChain.size() && i < count; ++i) {
++                out_outer_chain[i] = extension.outerChain[i].value;
++            }
++        }
++        if (out_new_faces != nullptr) {
++            *out_new_faces = extension.faces.size();
++        }
++        return CYBER_OK;
++    });
++}
++
++CyberStatus cyber_retopo_extend_boundary_fan(CyberMesh* mesh, const uint32_t* chain,
++                                             size_t count, int closed,
++                                             const float apex_offset[3],
++                                             const CyberSnapper* snapper,
++                                             uint32_t* out_apex, size_t* out_new_faces) {
++    return runMeshEdit(mesh, "cyber_retopo_extend_boundary_fan", [&] {
++        std::vector<cyber::VertexId> verts;
++        const CyberStatus chainStatus = validateChain(
++            mesh, "cyber_retopo_extend_boundary_fan", chain, count, closed, verts);
++        if (chainStatus != CYBER_OK) {
++            return chainStatus;
++        }
++        if (apex_offset == nullptr) {
++            setError("cyber_retopo_extend_boundary_fan: null apex offset");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        // The engine fan emits {chain[i], chain[i+1], apex}: reverse the
++        // chain when the existing face already traverses it forward, and
++        // append the wrap pair for closed chains (ids, not clones).
++        if (cyber::retopo::detail::faceTraverses(mesh->mesh, verts[0], verts[1])) {
++            std::reverse(verts.begin(), verts.end());
++        }
++        if (closed != 0) {
++            verts.push_back(verts.front());
++        }
++        const std::vector<cyber::FaceId> faces = cyber::retopo::extendBoundaryFan(
++            mesh->mesh, verts, toVec3(apex_offset), snapperOf(snapper));
++        if (faces.empty()) {
++            setError("cyber_retopo_extend_boundary_fan: degenerate fan");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        if (out_apex != nullptr) {
++            // The apex is the fan's shared third corner.
++            const std::vector<cyber::VertexId> ring = mesh->mesh.faceVertices(faces.front());
++            if (ring.size() == 3) {
++                *out_apex = ring[2].value;
++            }
++        }
++        if (out_new_faces != nullptr) {
++            *out_new_faces = faces.size();
++        }
++        return CYBER_OK;
++    });
++}
++
++CyberStatus cyber_retopo_draw_strip(CyberMesh* mesh, const float* path_xyz,
++                                    size_t point_count, float width,
++                                    const float view_dir[3], uint32_t start_a,
++                                    uint32_t start_b, const CyberSnapper* snapper,
++                                    size_t* out_new_faces) {
++    return runMeshEdit(mesh, "cyber_retopo_draw_strip", [&] {
++        if (path_xyz == nullptr || point_count == 0 || view_dir == nullptr) {
++            setError("cyber_retopo_draw_strip: null/empty path or view direction");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        if (!(width > 0.0f)) {
++            setError("cyber_retopo_draw_strip: width must be positive");
++            return CYBER_ERR_INVALID_PARAM;
++        }
++        if (cyber::lengthSquared(toVec3(view_dir)) <= 0.0f) {
++            setError("cyber_retopo_draw_strip: degenerate view direction");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        const cyber::VertexId a{start_a};
++        const cyber::VertexId b{start_b};
++        if (!mesh->mesh.isAlive(a) || !mesh->mesh.isAlive(b) || start_a == start_b) {
++            setError("cyber_retopo_draw_strip: dead or identical start vertices");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        const cyber::EdgeId startEdge = mesh->mesh.edgeBetween(a, b);
++        if (!startEdge.valid() || mesh->mesh.edgeFaces(startEdge).size() != 1) {
++            setError("cyber_retopo_draw_strip: start vertices must span a boundary edge");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        std::vector<cyber::Vec3> path;
++        path.reserve(point_count);
++        for (size_t i = 0; i < point_count; ++i) {
++            path.push_back(toVec3(path_xyz + i * 3));
++        }
++        const cyber::retopo::StripResult strip = cyber::retopo::drawStripPath(
++            mesh->mesh, path, width, toVec3(view_dir), a, b, snapperOf(snapper));
++        if (strip.faces.empty()) {
++            setError("cyber_retopo_draw_strip: degenerate strip");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        if (out_new_faces != nullptr) {
++            *out_new_faces = strip.faces.size();
++        }
++        return CYBER_OK;
++    });
++}
++
++CyberStatus cyber_retopo_transform_vertices(CyberMesh* mesh, const uint32_t* vertices,
++                                            size_t count, const float xf[12],
++                                            const CyberSnapper* snapper,
++                                            float resnap_epsilon, size_t* out_resnapped,
++                                            float* out_max_distance) {
++    return runMeshEdit(mesh, "cyber_retopo_transform_vertices", [&] {
++        if (vertices == nullptr || count == 0 || xf == nullptr) {
++            setError("cyber_retopo_transform_vertices: null/empty vertices or transform");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        std::vector<cyber::VertexId> ids;
++        ids.reserve(count);
++        std::unordered_set<uint32_t> seen;
++        for (size_t i = 0; i < count; ++i) {
++            if (!mesh->mesh.isAlive(cyber::VertexId{vertices[i]})) {
++                setError("cyber_retopo_transform_vertices: dead vertex id");
++                return CYBER_ERR_INVALID_ARG;
++            }
++            if (!seen.insert(vertices[i]).second) {
++                setError("cyber_retopo_transform_vertices: repeated vertex id");
++                return CYBER_ERR_INVALID_ARG;
++            }
++            ids.push_back(cyber::VertexId{vertices[i]});
++        }
++        cyber::retopo::transformVertices(mesh->mesh, ids, toAffine(xf));
++        size_t resnapped = 0;
++        float maxDistance = 0.0f;
++        const cyber::retopo::SurfaceSnapper* snap = snapperOf(snapper);
++        if (snap != nullptr && !snap->empty()) {
++            const float eps = resnap_epsilon >= 0.0f ? resnap_epsilon : 0.0f;
++            for (const cyber::VertexId v : ids) {
++                const cyber::Vec3 p = mesh->mesh.position(v);
++                const cyber::Vec3 q = snap->snapToSurface(p).point;
++                const float moved = cyber::length(q - p);
++                if (moved > eps) {
++                    ++resnapped;
++                    maxDistance = std::max(maxDistance, moved);
++                }
++                mesh->mesh.setPosition(v, q);
++            }
++        }
++        if (out_resnapped != nullptr) {
++            *out_resnapped = resnapped;
++        }
++        if (out_max_distance != nullptr) {
++            *out_max_distance = maxDistance;
++        }
++        return CYBER_OK;
++    });
++}
++
+ // ---- gesture stroke interpretation -----------------------------------------
+ 
+ // Opaque record: owns the C++ interpretation verbatim (ids in the record are
+diff --git a/src/retopo/include/cyber/retopo/build_tools.hpp b/src/retopo/include/cyber/retopo/build_tools.hpp
+index ad5633e..a704a56 100644
+--- a/src/retopo/include/cyber/retopo/build_tools.hpp
++++ b/src/retopo/include/cyber/retopo/build_tools.hpp
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include <algorithm>
+ #include <array>
+ #include <cmath>
+ #include <cstddef>
+@@ -232,11 +233,163 @@ struct GridPatch {
+     return faces;
+ }
+ 
++namespace detail {
++
++// True when the single face on the live edge a-b traverses a -> b in its
++// stored ring order (cyclically). New faces welded onto that edge must then
++// traverse b -> a to keep normals coherent. False when no such edge/face
++// exists or the edge is interior (2 faces: orientation is ambiguous, keep
++// the caller's order).
++inline bool faceTraverses(const Mesh& mesh, VertexId a, VertexId b) {
++    const EdgeId e = mesh.edgeBetween(a, b);
++    if (!e.valid()) {
++        return false;
++    }
++    const std::vector<FaceId> faces = mesh.edgeFaces(e);
++    if (faces.size() != 1) {
++        return false;
++    }
++    const std::vector<VertexId> ring = mesh.faceVertices(faces.front());
++    for (std::size_t i = 0; i < ring.size(); ++i) {
++        if (ring[i].value == a.value) {
++            return ring[(i + 1) % ring.size()].value == b.value;
++        }
++    }
++    return false;
++}
++
++}  // namespace detail
++
++// ExtendBoundary rings (task 4.2): like extendBoundaryGrid, but supporting
++// CLOSED chains (a wrap-around quad joins the last and first columns each
++// ring), correcting the quad winding against the existing face on the
++// chain's first edge (coherent normals), and reporting the OUTERMOST ring's
++// vertex chain so camera-driven sessions can stack per-step calls with
++// different offsets (automatic mode journals ONCE with sequential rings).
++// Each ring offsets from the PREVIOUS ring's (possibly snapped) positions.
++struct BoundaryExtension {
++    std::vector<FaceId> faces;
++    std::vector<VertexId> outerChain;
++};
++
++[[nodiscard]] inline BoundaryExtension extendBoundaryRings(Mesh& mesh,
++                                                           std::span<const VertexId> chain,
++                                                           bool closed, Vec3 offset, int rings,
++                                                           const SurfaceSnapper* snap = nullptr) {
++    BoundaryExtension out;
++    out.outerChain.assign(chain.begin(), chain.end());
++    if (chain.size() < 2 || rings < 1) {
++        return out;
++    }
++    // New quads traverse prev[i] -> prev[i+1]; flip when the existing face
++    // already traverses the chain in that direction.
++    const bool flip = detail::faceTraverses(mesh, chain[0], chain[1]);
++    std::vector<VertexId> prev = out.outerChain;
++    for (int r = 1; r <= rings; ++r) {
++        std::vector<VertexId> cur;
++        cur.reserve(prev.size());
++        for (const VertexId v : prev) {
++            cur.push_back(detail::snapAdd(mesh, mesh.position(v) + offset, snap));
++        }
++        const auto emit = [&](std::size_t i, std::size_t j) {
++            const std::array<VertexId, 4> quad =
++                flip ? std::array<VertexId, 4>{prev[j], prev[i], cur[i], cur[j]}
++                     : std::array<VertexId, 4>{prev[i], prev[j], cur[j], cur[i]};
++            const FaceId f = mesh.addFace(quad);
++            if (f.valid()) {
++                out.faces.push_back(f);
++            }
++        };
++        for (std::size_t i = 0; i + 1 < prev.size(); ++i) {
++            emit(i, i + 1);
++        }
++        if (closed && prev.size() >= 3) {
++            emit(prev.size() - 1, 0);
++        }
++        prev = std::move(cur);
++    }
++    out.outerChain = std::move(prev);
++    return out;
++}
++
++// DrawStrip along a stroke path (task 4.2): a quad strip welded onto the
++// boundary edge startA-startB, whose stations follow `path` (world-space
++// stroke samples, typically resampled at quad-size arc length). Unlike the
++// constant-side drawStrip above, each station's rail pair spans the strip
++// width along cross(viewDir, tangent) — the screen-perpendicular direction
++// the stroke was drawn with — with sign continuity so curved strokes never
++// flip rails. Rail vertices snap to the Target when `snap` is given; quad
++// winding is corrected against the start edge's existing face.
++struct StripResult {
++    std::vector<FaceId> faces;
++    std::vector<VertexId> newVertices;
++};
++
++[[nodiscard]] inline StripResult drawStripPath(Mesh& mesh, std::span<const Vec3> path,
++                                               float width, Vec3 viewDir, VertexId startA,
++                                               VertexId startB,
++                                               const SurfaceSnapper* snap = nullptr) {
++    StripResult out;
++    if (path.empty() || !(width > 0.0f) || !mesh.isAlive(startA) || !mesh.isAlive(startB)) {
++        return out;
++    }
++    const Vec3 a = mesh.position(startA);
++    const Vec3 b = mesh.position(startB);
++    Vec3 sideRef = b - a;
++    if (lengthSquared(sideRef) <= 0.0f || lengthSquared(viewDir) <= 0.0f) {
++        return out;
++    }
++    sideRef = normalized(sideRef);
++    const bool flip = detail::faceTraverses(mesh, startA, startB);
++
++    std::vector<VertexId> left{startA};
++    std::vector<VertexId> right{startB};
++    const Vec3 start = (a + b) * 0.5f;
++    for (std::size_t i = 0; i < path.size(); ++i) {
++        const Vec3 previous = i == 0 ? start : path[i - 1];
++        const Vec3 next = i + 1 < path.size() ? path[i + 1] : path[i];
++        Vec3 tangent = next - previous;
++        if (lengthSquared(tangent) <= 1e-20f) {
++            tangent = path[i] - start;
++        }
++        Vec3 side = cross(viewDir, tangent);
++        if (lengthSquared(side) <= 1e-20f) {
++            side = sideRef;  // stroke along the view axis: keep the last rail
++        }
++        side = normalized(side);
++        if (dot(side, sideRef) < 0.0f) {
++            side = side * -1.0f;
++        }
++        sideRef = side;
++        const Vec3 half = side * (width * 0.5f);
++        const VertexId l = detail::snapAdd(mesh, path[i] - half, snap);
++        const VertexId r = detail::snapAdd(mesh, path[i] + half, snap);
++        out.newVertices.push_back(l);
++        out.newVertices.push_back(r);
++        left.push_back(l);
++        right.push_back(r);
++    }
++    for (std::size_t i = 0; i + 1 < left.size(); ++i) {
++        const std::array<VertexId, 4> quad =
++            flip ? std::array<VertexId, 4>{right[i], left[i], left[i + 1], right[i + 1]}
++                 : std::array<VertexId, 4>{left[i], right[i], right[i + 1], left[i + 1]};
++        const FaceId f = mesh.addFace(quad);
++        if (f.valid()) {
++            out.faces.push_back(f);
++        }
++    }
++    return out;
++}
++
+ // PatchClone: duplicate a set of faces (shared vertices cloned once) transformed
+ // by `xf`. The clone is a fresh disconnected copy. Returns the new faces.
++// `reverseWinding` reverses every cloned face's ring (the Patch Clone FLIP
++// option, task 4.2: a mirroring transform inverts orientation — reversing the
++// winding keeps the pasted patch's normals coherent).
+ [[nodiscard]] inline std::vector<FaceId> patchClone(Mesh& mesh, std::span<const FaceId> faces,
+                                                     const Affine& xf,
+-                                                    const SurfaceSnapper* snap = nullptr) {
++                                                    const SurfaceSnapper* snap = nullptr,
++                                                    bool reverseWinding = false) {
+     std::vector<FaceId> out;
+     std::unordered_map<Index, VertexId> clone;
+     const auto cloneVertex = [&](VertexId v) {
+@@ -258,6 +411,9 @@ struct GridPatch {
+         for (const VertexId v : verts) {
+             mapped.push_back(cloneVertex(v));
+         }
++        if (reverseWinding) {
++            std::reverse(mapped.begin(), mapped.end());
++        }
+         const FaceId nf = mesh.addFace(mapped);
+         if (nf.valid()) {
+             out.push_back(nf);

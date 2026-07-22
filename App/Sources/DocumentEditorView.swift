@@ -357,6 +357,28 @@ struct DocumentEditorView: View {
                 }
             }
         }
+        .overlay(alignment: .top) {
+            // Camera-as-manipulator session banner (task 4.2): commit /
+            // cancel / mode / flip controls plus the status line while a
+            // Patch Clone / Extend Boundary / Transform Vertices session
+            // is armed; the transient status keeps the Transform Vertices
+            // re-snap report visible after the session ends.
+            VStack(spacing: 6) {
+                if let banner = inputModel.cameraToolBanner {
+                    CameraToolBannerView(banner: banner, model: inputModel)
+                } else if let status = inputModel.cameraToolStatus {
+                    Text(status)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .accessibilityIdentifier("tool-session-status")
+                        .allowsHitTesting(false)
+                }
+            }
+            .padding(.top, 8)
+        }
         .overlay(alignment: .bottom) {
             // Post-stroke interpretation chip (task 3.5): transient, shows
             // what the recognizer did with one-tap alternatives when the
@@ -382,9 +404,10 @@ struct DocumentEditorView: View {
             let palette = UITestSupport.showQuickVerbPaletteRequested
             let snapDrag = UITestSupport.autoSnapDragRequested
             let gallery = UITestSupport.showActionGalleryRequested
+            let tool = UITestSupport.autoToolRequested
             guard
                 quad || grid || ring || hoverLoop || hoverGhost || palette
-                    || snapDrag || gallery
+                    || snapDrag || gallery || tool != nil
             else { return }
             try? await Task.sleep(for: .seconds(2))
             if quad { inputModel.injectSquareStroke() }
@@ -416,6 +439,14 @@ struct DocumentEditorView: View {
             // presentation the toolbar's gallery button drives.
             if gallery {
                 galleryPresentation = GalleryPresentation(focus: nil)
+            }
+            // Build-tool screenshot/UI-test hook (task 4.1): arm the tool
+            // through the model (toolbar highlight in sync) and drive one
+            // real probe stroke computed from the live mesh and camera.
+            if let tool {
+                try? await Task.sleep(for: .seconds(1))
+                inputModel.selectTool(tool)
+                inputModel.meshEditor?.probeToolStrokeForVisualVerification(tool)
             }
         }
         .overlay {

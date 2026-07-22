@@ -209,10 +209,11 @@ struct ToolbarConfigurationTests {
     // MARK: - Action Gallery catalog
 
     @Test func everyActionHasACompleteGalleryEntry() {
-        // The gallery SHALL list every action (verbs + 3.4 grammar) with
-        // help content and a demo-media slot; an empty field here would
-        // render as a blank help panel.
-        #expect(EditorAction.allCases.count == 16)
+        // The gallery SHALL list every action (verbs + 3.4 grammar + 4.1
+        // build tools + 4.2 camera-as-manipulator tools) with help content
+        // and a demo-media slot; an empty field here would render as a
+        // blank help panel.
+        #expect(EditorAction.allCases.count == 25)
         for action in EditorAction.allCases {
             let entry = action.gallery
             #expect(!entry.title.isEmpty, "\(action) title")
@@ -238,6 +239,21 @@ struct ToolbarConfigurationTests {
         // Gesture actions carry no verb.
         #expect(EditorAction.loopInsert.verb == nil)
         #expect(EditorAction.visibilityLines.verb == nil)
+    }
+
+    @Test func toolActionsMapBothWaysAndOnlyTools() {
+        // Task 4.1: exactly the five build tools are tool actions, each
+        // mapping 1:1 onto its RetopoTool; verbs and gesture entries carry
+        // no tool.
+        for tool in RetopoTool.allCases {
+            let action = EditorAction(rawValue: tool.rawValue)
+            #expect(action?.tool == tool, "\(tool.rawValue) needs a matching action")
+            #expect(action?.verb == nil)
+        }
+        let toolActions = EditorAction.allCases.filter { $0.tool != nil }
+        #expect(toolActions.count == RetopoTool.allCases.count)
+        #expect(EditorAction.pencil.tool == nil)
+        #expect(EditorAction.loopInsert.tool == nil)
     }
 
     // MARK: - Helpers

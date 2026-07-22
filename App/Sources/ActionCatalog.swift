@@ -218,6 +218,133 @@ extension EditorAction {
                     + "the escape hatch after a lasso-hide.",
                 demoFrames: ["eye.slash", "line.diagonal", "eye"]
             )
+        case .buildQuad:
+            GalleryEntry(
+                title: "Build quad",
+                symbol: "plus.rectangle.on.rectangle",
+                gesture: "Tool — drag from an edge or corner of the mesh",
+                notes: "Grows topology one step per drag: from a quad's "
+                    + "boundary edge a triangle tents out, from a "
+                    + "triangle's boundary edge the triangle becomes a "
+                    + "quad, and from a corner vertex a whole new quad "
+                    + "spans the drag. New vertices weld onto nearby "
+                    + "existing ones on release.",
+                demoFrames: [
+                    "square", "square.on.square.dashed",
+                    "plus.rectangle.on.rectangle", "rectangle.split.2x1",
+                ]
+            )
+        case .buildTriangle:
+            GalleryEntry(
+                title: "Build triangle",
+                symbol: "triangle",
+                gesture: "Tool — drag from an edge or corner of the mesh",
+                notes: "The triangle counterpart of Build quad: any "
+                    + "boundary edge tents out one triangle; a corner "
+                    + "vertex spawns two triangles spanning the drag. New "
+                    + "vertices weld onto nearby existing ones on release.",
+                demoFrames: ["triangle", "triangle.fill", "square.split.diagonal"]
+            )
+        case .mergePair:
+            GalleryEntry(
+                title: "Merge pair",
+                symbol: "arrow.triangle.merge",
+                gesture: "Tool — line between two vertices or across two triangles",
+                notes: "A stroke from vertex to vertex collapses the pair "
+                    + "at its midpoint; a stroke across the shared edge of "
+                    + "two triangles dissolves it, merging them into one "
+                    + "quad.",
+                demoFrames: [
+                    "circle.grid.2x1", "arrow.triangle.merge", "circle.fill",
+                ]
+            )
+        case .pathDistribute:
+            GalleryEntry(
+                title: "Path distribute",
+                symbol: "point.3.connected.trianglepath.dotted",
+                gesture: "Tool — stroke from one vertex to another",
+                notes: "Finds the closest edge path between the vertices "
+                    + "under the stroke's endpoints and spaces its "
+                    + "vertices evenly along it, re-snapped to the "
+                    + "Target. Endpoints stay fixed.",
+                demoFrames: [
+                    "point.3.filled.connected.trianglepath.dotted",
+                    "point.3.connected.trianglepath.dotted",
+                    "ellipsis",
+                ]
+            )
+        case .surfaceCut:
+            GalleryEntry(
+                title: "Surface cut",
+                symbol: "scissors",
+                gesture: "Tool — draw a straight knife line across faces",
+                notes: "Cuts new edges where the knife line crosses "
+                    + "existing faces; any n-gons the cut leaves behind "
+                    + "are triangulated automatically. New cut vertices "
+                    + "snap onto the Target.",
+                demoFrames: ["scissors", "square.split.diagonal", "scissors"]
+            )
+        case .patchClone:
+            GalleryEntry(
+                title: "Patch clone",
+                symbol: "square.on.square",
+                gesture: "Tool — stroke over faces, orbit, tap to paste",
+                notes: "Select a patch of faces with one stroke, then move "
+                    + "the CAMERA: the ghost patch stays locked to the "
+                    + "screen and travels over the model. Tap to paste it "
+                    + "projected onto the Target — repeatable for further "
+                    + "pastes; flip mirrors the patch; barrel roll "
+                    + "rotates it (Pencil Pro).",
+                demoFrames: [
+                    "square.dashed", "square.on.square.dashed",
+                    "square.on.square", "square.fill.on.square",
+                ]
+            )
+        case .extendBoundary:
+            GalleryEntry(
+                title: "Extend boundary",
+                symbol: "rectangle.expand.vertical",
+                gesture: "Tool — stroke or hold on a boundary, then orbit",
+                notes: "Select boundary vertices with a stroke (hold on "
+                    + "one to auto-select the whole boundary), then orbit "
+                    + "the camera to extrude quad strips: single row, one "
+                    + "automatic row, continuous automatic steps, or a "
+                    + "triangle fan. Tap or use Extrude to commit — the "
+                    + "whole extrusion journals as one entry.",
+                demoFrames: [
+                    "rectangle", "rectangle.expand.vertical",
+                    "square.grid.3x2", "square.grid.3x3",
+                ]
+            )
+        case .drawStrip:
+            GalleryEntry(
+                title: "Draw strip",
+                symbol: "point.topleft.filled.down.to.point.bottomright.curvepath",
+                gesture: "Tool — drag from a boundary quad edge",
+                notes: "Drag out of a boundary edge and a quad strip "
+                    + "follows the stroke, preserving the source quad "
+                    + "size and welding onto the edge you started from. "
+                    + "New vertices snap onto the Target.",
+                demoFrames: [
+                    "point.topleft.down.to.point.bottomright.curvepath",
+                    "rectangle.split.3x1", "rectangle.split.3x1.fill",
+                ]
+            )
+        case .transformVertices:
+            GalleryEntry(
+                title: "Transform vertices",
+                symbol: "move.3d",
+                gesture: "Tool — stroke over vertices, then move the camera",
+                notes: "Vertices under the stroke lock to the screen: "
+                    + "orbit moves them over the model, pinch scales, "
+                    + "barrel roll rotates (Pencil Pro). Tap to commit — "
+                    + "the vertices re-snap onto the Target and the "
+                    + "session reports how many moved.",
+                demoFrames: [
+                    "circle.grid.2x2", "move.3d", "arrow.up.and.down.and.arrow.left.and.right",
+                    "circle.grid.2x2.fill",
+                ]
+            )
         }
     }
 }

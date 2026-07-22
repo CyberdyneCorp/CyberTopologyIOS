@@ -132,14 +132,42 @@ struct InputArbiter {
     /// back to the most recently pressed button that is STILL held —
     /// `pressStart` contains exactly the held buttons — so a hold-chord
     /// never silently stops applying while its finger is still down.
-    mutating func verbPressEnded(_ verb: Verb, at time: TimeInterval) {
+    /// Returns whether the release TAP-SELECTED the verb persistently —
+    /// the task-4.1 tool layer disarms the active tool exactly then (a
+    /// spring-loaded hold must not kick the user out of a tool).
+    @discardableResult
+    mutating func verbPressEnded(_ verb: Verb, at time: TimeInterval) -> Bool {
         let start = pressStart.removeValue(forKey: verb)
         if heldVerb == verb {
             heldVerb = pressStart.max { $0.value < $1.value }?.key
         }
         if let start, time - start < Self.tapSelectThreshold {
             persistentVerb = verb
+            return true
         }
+        return false
+    }
+
+    // MARK: - Camera-as-manipulator sessions (task 4.2)
+
+    /// True while a camera-as-manipulator tool session is armed (Patch
+    /// Clone placing, Extend Boundary extruding, Transform Vertices
+    /// moving). Set by the input model when a session begins/ends.
+    private(set) var isCameraToolSessionArmed = false
+
+    mutating func setCameraToolSessionArmed(_ armed: Bool) {
+        isCameraToolSessionArmed = armed
+    }
+
+    /// The camera→tool routing verdict (design D5: the arbiter owns ALL
+    /// viewport input routing — the camera-as-manipulator tools
+    /// deliberately blur pen-authors/fingers-navigate, so the blurring is
+    /// decided HERE, never ad hoc in the UIKit layer): while a session is
+    /// armed, applied camera gestures ALSO feed the tool. Never while the
+    /// pen is down — palm rejection already blocks camera gestures then,
+    /// and a stray demoted touch must not steer a placement.
+    var cameraFeedsArmedTool: Bool {
+        isCameraToolSessionArmed && !isPenDown
     }
 
     // MARK: - Touch events

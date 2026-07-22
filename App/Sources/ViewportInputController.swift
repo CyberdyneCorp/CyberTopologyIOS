@@ -45,11 +45,24 @@ final class ViewportInputController {
         arbiter.verbPressBegan(verb, at: time)
     }
 
-    func verbPressEnded(_ verb: InputArbiter.Verb, at time: TimeInterval) {
+    /// Returns whether the release tap-selected the verb persistently
+    /// (see `InputArbiter.verbPressEnded`).
+    @discardableResult
+    func verbPressEnded(_ verb: InputArbiter.Verb, at time: TimeInterval) -> Bool {
         arbiter.verbPressEnded(verb, at: time)
     }
 
     var activeVerb: InputArbiter.Verb { arbiter.activeVerb }
+
+    /// Camera-as-manipulator session gate (task 4.2): the input model
+    /// arms it when a session begins; the coordinator asks
+    /// `cameraFeedsArmedTool` before feeding an applied camera gesture
+    /// into the tool session (the arbiter owns the routing, design D5).
+    func setCameraToolSessionArmed(_ armed: Bool) {
+        arbiter.setCameraToolSessionArmed(armed)
+    }
+
+    var cameraFeedsArmedTool: Bool { arbiter.cameraFeedsArmedTool }
 
     // MARK: - Touch events (from TouchObserverRecognizer)
 

@@ -65,6 +65,11 @@ struct RootView: View {
                 let seed = try? UITestSupport.writeSeedStripOBJ() {
                 try? document.importMesh(at: seed, role: .editMesh)
             }
+            if UITestSupport.seedEditMeshOnDomeRequested,
+                !objects.contains(where: { $0.role == .editMesh }),
+                let seed = try? UITestSupport.writeSeedDomeStripOBJ() {
+                try? document.importMesh(at: seed, role: .editMesh)
+            }
             journal.handle(.documentOpened(url))
             openDocument = document
         }

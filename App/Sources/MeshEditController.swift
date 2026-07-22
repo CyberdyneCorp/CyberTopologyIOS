@@ -60,6 +60,18 @@ final class MeshEditController {
         var sceneRadius: Float
         /// Normalized viewport point -> world ray through the camera.
         var ray: (SIMD2<Float>) -> Ray?
+        /// World position -> normalized viewport point (the inverse of
+        /// `ray`; nil when unavailable). The task-4.1 tool screenshot
+        /// probes derive stroke points from live mesh elements with it.
+        var project: ((SIMD3<Float>) -> SIMD2<Float>?)? = nil
+        /// Current camera pose (task 4.2): the camera-as-manipulator
+        /// sessions pin the view matrix at selection time and compute
+        /// placement against the latest pose at commit.
+        var camera: CameraState? = nil
+        /// Orbits the LIVE viewport camera by screen points (task 4.2
+        /// probes: the camera-tool screenshot hooks must move the real
+        /// camera the session and the frame both read; nil headless).
+        var orbitCamera: ((SIMD2<Float>) -> Void)? = nil
     }
 
     /// How a completed Pencil stroke resolved (task 3.5: drives the
@@ -164,8 +176,49 @@ final class MeshEditController {
 
     private var session: Session?
 
-    /// True while a brush-verb session is mutating the live mesh.
-    var isSessionActive: Bool { session != nil }
+    /// True while a session holds live (not yet journaled) mesh state a
+    /// document resync would clobber: a brush-verb scrub, or a Transform
+    /// Vertices camera session (task 4.2 — its camera feed mutates the
+    /// live mesh ahead of the journal exactly like a brush drag).
+    var isSessionActive: Bool { session != nil || cameraSessionHoldsLiveMesh }
+
+    // MARK: - Retopology tools (task 4.1)
+
+    /// Armed build tool (Build Quad / Build Triangle / Merge Pair / Path
+    /// Distribute / Surface Cut): while set, Pencil-verb strokes drive the
+    /// tool instead of the gesture grammar (spring-loaded verb holds still
+    /// override for their duration — their strokes arrive with the held
+    /// verb). Set by `ViewportInputModel.selectTool`; selecting any verb
+    /// disarms.
+    var activeTool: RetopoTool?
+    /// In-flight tool stroke (context pinned at stroke begin; the raw
+    /// polyline arrives with `strokeEnded`). The tools mutate ONLY at
+    /// stroke end, so cancellation just drops this state.
+    var toolStroke: ToolStroke?
+
+    // MARK: - Camera-as-manipulator sessions (task 4.2)
+
+    /// Active camera-as-manipulator session (Patch Clone / Extend
+    /// Boundary / Transform Vertices): a selection stroke arms it, camera
+    /// deltas drive it (routed through the InputArbiter), commit journals
+    /// ONCE, cancel discards. See `MeshEditCameraTools.swift`.
+    var cameraSession: CameraToolSession?
+    /// Sticky Extend Boundary mode across selections (banner picker).
+    var preferredExtendBoundaryMode: ExtendBoundaryPlan.Mode = .single
+    /// Session banner sink (nil = no session): the input model publishes
+    /// it for the editor overlay AND arms the arbiter's camera→tool feed.
+    var onCameraSessionChanged: ((CameraToolBanner?) -> Void)?
+    /// Session ghost-preview sink (task 4.2: previews render as ghost
+    /// geometry, never a committed mutation). nil = clear.
+    var onSessionPreviewChanged: ((HoverRenderState.GhostQuad?) -> Void)?
+    /// Transient status line sink (the Transform Vertices re-snap report).
+    var onCameraToolStatus: ((String) -> Void)?
+    /// Last Transform Vertices re-snap report (spec: "re-snap report").
+    private(set) var lastResnapReport: Mesh.ResnapReport?
+
+    func recordResnapReport(_ report: Mesh.ResnapReport) {
+        lastResnapReport = report
+    }
 
     /// Everything an alternative swap needs, captured when a Pencil stroke
     /// applies (task 3.5). The replacement command is rebuilt from the
@@ -191,7 +244,9 @@ final class MeshEditController {
 
     private var lastApplied: AppliedPencilStroke?
     /// Command committed by the most recent apply path (set by `send`).
-    private var lastCommit: DocumentCommand?
+    /// Internal (not private): the task-4.1 tool probes reset and read it
+    /// to report whether a driven stroke actually journaled.
+    var lastCommit: DocumentCommand?
 
     /// Every commit funnels through here so the pencil apply paths can
     /// observe whether a command actually reached the journal.
@@ -204,6 +259,7 @@ final class MeshEditController {
 
     func strokeBegan(verb: InputArbiter.Verb, sample: StrokeSample) {
         session = nil
+        toolStroke = nil
         // A new stroke invalidates the chip's swap context (the chip itself
         // dismisses on stroke begin; the expected-command guard would also
         // reject a stale swap, this just keeps the states aligned)…
@@ -212,7 +268,19 @@ final class MeshEditController {
         // the end/cancel paths already clear it).
         emitSnapEffects(snapFeedback.strokeCancelled())
         lastBrushPoint = point(of: sample)
-        guard verb != .pencil else { return }  // interpreted at stroke end
+        if verb == .pencil {
+            // Armed tool (task 4.1): pin the context now — the stroke must
+            // act on the document state and camera it started over. Tools
+            // need an existing EditMesh and a Target to unproject onto;
+            // without either the stroke stays inert.
+            if let tool = activeTool,
+                let context = contextProvider?(),
+                context.editObject != nil, context.editMesh != nil,
+                context.editPayload != nil, context.snapper != nil {
+                toolStroke = ToolStroke(tool: tool, context: context)
+            }
+            return  // interpreted (grammar) or committed (tool) at stroke end
+        }
         guard
             let context = contextProvider?(),
             let object = context.editObject,
@@ -265,6 +333,13 @@ final class MeshEditController {
             commit(finished)
             return
         }
+        if let stroke = toolStroke {
+            toolStroke = nil
+            if verb == .pencil {
+                commitToolStroke(stroke, samples: samples)
+            }
+            return
+        }
         guard verb == .pencil else { return }
         let outcome = applyPencilInterpretation(interpretation, samples: samples)
         onPencilStrokeResolved?(outcome)
@@ -272,6 +347,9 @@ final class MeshEditController {
 
     func strokeCancelled() {
         emitSnapEffects(snapFeedback.strokeCancelled())
+        // Tool strokes mutate only at commit: cancellation drops the
+        // pinned context and nothing else.
+        toolStroke = nil
         guard let cancelled = session else { return }
         session = nil
         if cancelled.mutated {
@@ -727,7 +805,8 @@ final class MeshEditController {
     /// surface-anchored create/brush verbs these need no Target. Everything
     /// from the first mutation to the journal entry runs inside
     /// `journalOrDiscard` (see that method for the failure contract).
-    private func applyElementEdit(
+    /// Internal (not private): the task-4.1 tool extension reuses it.
+    func applyElementEdit(
         verb: String, context: Context, _ mutate: @escaping (Mesh) throws -> Void
     ) {
         guard
@@ -960,7 +1039,7 @@ final class MeshEditController {
         return false
     }
 
-    private func probeSample(at point: SIMD2<Float>, time: TimeInterval) -> StrokeSample {
+    func probeSample(at point: SIMD2<Float>, time: TimeInterval) -> StrokeSample {
         StrokeSample(
             time: time, x: Double(point.x), y: Double(point.y),
             pressure: 0.5, type: .pencil
@@ -968,13 +1047,15 @@ final class MeshEditController {
     }
 
     // MARK: - Geometry helpers
+    // Internal (not private): the task-4.1 tool extension
+    // (MeshEditToolSession.swift) shares them.
 
-    private func point(of sample: StrokeSample) -> SIMD2<Float> {
+    func point(of sample: StrokeSample) -> SIMD2<Float> {
         SIMD2(Float(sample.x), Float(sample.y))
     }
 
     /// Where the sample's camera ray meets the Target surface.
-    private func surfacePoint(
+    func surfacePoint(
         at point: SIMD2<Float>, in context: Context
     ) -> SIMD3<Float>? {
         guard let snapper = context.snapper, let ray = context.ray(point) else { return nil }
@@ -1002,5 +1083,22 @@ enum ScreenRay {
         let length = simd_length(direction)
         guard length.isFinite, length > 0 else { return nil }
         return (near, direction / length)
+    }
+
+    /// Normalized viewport point of a world position under the column-major
+    /// world→clip matrix (the forward direction of `ray`; Metal NDC).
+    /// Returns nil for points at/behind the camera plane (w <= 0).
+    static func normalizedPoint(
+        of world: SIMD3<Float>, viewProjectionColumns m: [Float]
+    ) -> SIMD2<Float>? {
+        guard m.count == 16 else { return nil }
+        let cx = m[0] * world.x + m[4] * world.y + m[8] * world.z + m[12]
+        let cy = m[1] * world.x + m[5] * world.y + m[9] * world.z + m[13]
+        let cw = m[3] * world.x + m[7] * world.y + m[11] * world.z + m[15]
+        guard cw > .ulpOfOne else { return nil }
+        let x = cx / cw * 0.5 + 0.5
+        let y = 1 - (cy / cw * 0.5 + 0.5)
+        guard x.isFinite, y.isFinite else { return nil }
+        return SIMD2(x, y)
     }
 }

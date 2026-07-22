@@ -407,8 +407,30 @@ struct MetalViewport: UIViewRepresentable {
             snapHaptics = haptics
             meshEditor.haptics = haptics
 
+            // Camera-as-manipulator sessions (task 4.2): the session ghost
+            // preview renders through the hover ghost channel (transient
+            // arrays, pooled copies — same pipeline as the task-3.6 hint),
+            // and hover previews are suppressed while a session is armed
+            // so the two never fight over it.
+            meshEditor.onSessionPreviewChanged = { [weak self] ghost in
+                guard let renderer = self?.renderer else { return }
+                renderer.setHoverPreview(HoverRenderState(
+                    ghost: ghost, highlight: nil
+                ))
+            }
+
             installHoverPreview(on: view)
             installPencilInteraction(on: view)
+        }
+
+        /// Feeds the applied camera pose into the armed tool session —
+        /// but ONLY when the arbiter's camera→tool gate is open (task
+        /// 4.2, design D5: while a camera-as-manipulator session is
+        /// armed, camera input BOTH moves the camera AND drives the tool;
+        /// the arbiter owns that verdict, this method never bypasses it).
+        func feedCameraToArmedTool() {
+            guard inputController.cameraFeedsArmedTool, let renderer else { return }
+            meshEditor.cameraPoseChanged(camera: renderer.camera)
         }
 
         /// Pencil Pro squeeze (task 3.7): `UIPencilInteraction` delivers
@@ -442,6 +464,16 @@ struct MetalViewport: UIViewRepresentable {
                 sceneRadius: renderer.bounds.radius,
                 ray: { [weak renderer] point in
                     renderer?.cameraRay(atNormalizedPoint: point)
+                },
+                project: { [weak renderer] world in
+                    guard let renderer else { return nil }
+                    return ScreenRay.normalizedPoint(
+                        of: world, viewProjectionColumns: renderer.viewProjectionColumns()
+                    )
+                },
+                camera: renderer.camera,
+                orbitCamera: { [weak renderer] delta in
+                    renderer?.orbit(byPoints: delta)
                 }
             )
         }
@@ -480,10 +512,15 @@ struct MetalViewport: UIViewRepresentable {
             switch recognizer.state {
             case .began, .changed:
                 let location = recognizer.location(in: view)
-                hoverPreview.hoverChanged(at: SIMD2(
-                    Float(location.x / view.bounds.width),
-                    Float(location.y / view.bounds.height)
-                ))
+                // Hover previews pause while a camera-as-manipulator
+                // session is armed (task 4.2): the session's ghost preview
+                // owns the hover ghost channel for its duration.
+                if meshEditor.cameraSession == nil {
+                    hoverPreview.hoverChanged(at: SIMD2(
+                        Float(location.x / view.bounds.width),
+                        Float(location.y / view.bounds.height)
+                    ))
+                }
                 // Pencil Pro barrel roll (task 3.7): non-zero only on
                 // hardware that reports it; forwarded into the model's
                 // rotate-placed-element hook (first real consumer is the
@@ -628,6 +665,14 @@ struct MetalViewport: UIViewRepresentable {
                 object?.id != overlayObjectID || payload != overlayPayload {
                 meshEditor.strokeCancelled()
             }
+            // Camera-as-manipulator sessions (task 4.2): the session's own
+            // commit (a Patch Clone paste) re-pins and stays armed for the
+            // next paste; any EXTERNAL snapshot change invalidates the
+            // selection ids and discards the session. The live mesh is
+            // rebound below either way, so no separate discard is needed.
+            if object?.id != overlayObjectID || payload != overlayPayload {
+                meshEditor.editMeshSnapshotWillChange()
+            }
             guard let object, let payload else {
                 overlayObjectID = nil
                 overlayPayload = nil
@@ -760,12 +805,14 @@ struct MetalViewport: UIViewRepresentable {
             let translation = recognizer.translation(in: recognizer.view)
             recognizer.setTranslation(.zero, in: recognizer.view)
             renderer?.orbit(byPoints: SIMD2(Float(translation.x), Float(translation.y)))
+            feedCameraToArmedTool()
         }
 
         @objc func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
             trackInteraction(recognizer.state)
             renderer?.zoom(byPinchScale: Float(recognizer.scale))
             recognizer.scale = 1
+            feedCameraToArmedTool()
         }
 
         @objc func handleTwoFingerPan(_ recognizer: UIPanGestureRecognizer) {
@@ -773,6 +820,7 @@ struct MetalViewport: UIViewRepresentable {
             let translation = recognizer.translation(in: recognizer.view)
             recognizer.setTranslation(.zero, in: recognizer.view)
             renderer?.pan(byPoints: SIMD2(Float(translation.x), Float(translation.y)))
+            feedCameraToArmedTool()
         }
 
         @objc func handleDoubleTap(_ recognizer: UITapGestureRecognizer) {

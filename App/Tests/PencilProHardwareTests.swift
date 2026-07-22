@@ -45,6 +45,17 @@ final class PencilProHardwareTests: XCTestCase {
         throw XCTSkip(Self.barrelRollSkipReason)
     }
 
+    /// Task 4.2 / 3.7a: barrel roll ROTATES THE PATCH BEING PLACED in an
+    /// armed Patch Clone session. The whole consumer below the hardware
+    /// boundary is simulator-covered — the model forwards roll angles into
+    /// the armed session and the placement rotates about the view axis
+    /// (`MeshEditCameraToolTests/barrelRollRotatesArmedPatchClonePlacement`)
+    /// — but a REAL roll angle stream only exists on Pencil Pro hardware.
+    @MainActor
+    func testBarrelRollRotatesPatchClonePlacementOnHardware() throws {
+        throw XCTSkip(Self.barrelRollSkipReason)
+    }
+
     @MainActor
     func testSnapHapticTickActuatesOnHardware() throws {
         throw XCTSkip(Self.hapticSkipReason)

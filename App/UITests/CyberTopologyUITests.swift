@@ -508,6 +508,126 @@ final class CyberTopologyUITests: XCTestCase {
         return predicate(element.label)
     }
 
+    /// Task 4.1 end to end (spec: retopology-tools / "Core RT action
+    /// roster"): the Surface Cut tool armed and driven through the
+    /// auto-tool probe (XCUITest cannot synthesize Pencil drags; the probe
+    /// computes a real knife stroke from the live mesh + camera and drives
+    /// the REAL capture → tool-session → journal pipeline). The seeded
+    /// on-dome strip (2 faces) gains faces from the cut, journaled as one
+    /// entry — a single three-finger undo restores it.
+    @MainActor
+    func testSurfaceCutToolProbeCutsSeededStripAndUndoRestores() throws {
+        let app = launch(arguments: [
+            "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
+            "-UITestSeedEditMeshOnDome", "-UITestAutoTool", "surfaceCut",
+        ])
+
+        let viewport = app.otherElements["viewport"].firstMatch
+        XCTAssertTrue(viewport.waitForExistence(timeout: 15))
+        let row = app.descendants(matching: .any)["object-row-seed-dome-strip"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+
+        // The auto-tool hook fires ~3 s after the editor appears; the cut
+        // splits edges and faces of the 6 v / 2 f strip.
+        XCTAssertTrue(
+            waitForLabel(of: row, timeout: 15) { !$0.contains("2 f") },
+            "row: \(row.label)"
+        )
+        XCTAssertTrue(app.buttons["undo"].isEnabled)
+
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "surface-cut-tool"
+        shot.lifetime = .keepAlways
+        add(shot)
+
+        // ONE journal entry for the whole knife stroke.
+        viewport.tap(withNumberOfTaps: 1, numberOfTouches: 3)
+        XCTAssertTrue(
+            waitForLabel(of: row, timeout: 5) { $0.contains("2 f") && $0.contains("6 v") },
+            "row: \(row.label)"
+        )
+    }
+
+    /// Task 4.2 end to end (spec: retopology-tools / "Core RT action
+    /// roster", scenario "Patch Clone round-trip"): the Patch Clone tool
+    /// armed and driven through the auto-tool probe — a real selection
+    /// stroke over the seeded on-dome strip, a REAL viewport camera orbit
+    /// fed through the arbiter-gated camera→tool routing, and a paste
+    /// projected onto the dome Target, journaled as ONE entry that a
+    /// single three-finger undo restores.
+    @MainActor
+    func testPatchCloneToolProbeSelectsOrbitsAndPastes() throws {
+        let app = launch(arguments: [
+            "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
+            "-UITestSeedEditMeshOnDome", "-UITestAutoTool", "patchClone",
+        ])
+
+        let viewport = app.otherElements["viewport"].firstMatch
+        XCTAssertTrue(viewport.waitForExistence(timeout: 15))
+        let row = app.descendants(matching: .any)["object-row-seed-dome-strip"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+
+        // The auto-tool hook fires ~3 s after the editor appears; the
+        // paste clones the selected faces of the 6 v / 2 f strip.
+        XCTAssertTrue(
+            waitForLabel(of: row, timeout: 15) { !$0.contains("2 f") },
+            "row: \(row.label)"
+        )
+        XCTAssertTrue(app.buttons["undo"].isEnabled)
+        // The session stays armed after its own paste (repeatable): the
+        // banner's paste/cancel controls are on screen.
+        XCTAssertTrue(app.buttons["tool-session-commit"].waitForExistence(timeout: 5))
+
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "patch-clone-tool"
+        shot.lifetime = .keepAlways
+        add(shot)
+
+        // ONE journal entry for the whole paste.
+        viewport.tap(withNumberOfTaps: 1, numberOfTouches: 3)
+        XCTAssertTrue(
+            waitForLabel(of: row, timeout: 5) { $0.contains("2 f") && $0.contains("6 v") },
+            "row: \(row.label)"
+        )
+    }
+
+    /// Task 4.1 toolbar wiring (spec: pencil-interaction / "Customizable
+    /// toolbar and Action Gallery" + retopology-tools): a build tool
+    /// assigned from the Action Gallery via the tap path becomes a
+    /// selectable toolbar slot that arms the tool; selecting a verb
+    /// disarms it.
+    @MainActor
+    func testBuildToolAssignsFromGalleryAndArms() throws {
+        let app = launch(arguments: ["-UITestResetState", "-UITestOpenDocument"])
+
+        let galleryButton = app.buttons["action-gallery-button"]
+        XCTAssertTrue(galleryButton.waitForExistence(timeout: 15))
+        galleryButton.tap()
+
+        // Tap path: select the Build quad tile, place it into slot 6.
+        let tile = app.descendants(matching: .any)["gallery-action-buildQuad"].firstMatch
+        XCTAssertTrue(tile.waitForExistence(timeout: 5))
+        tile.tap()
+        XCTAssertTrue(waitUntil { tile.value as? String == "selected" })
+        app.buttons["gallery-slot-5"].tap()
+        XCTAssertTrue(waitUntil {
+            app.buttons["gallery-slot-5"].value as? String == "buildQuad"
+        })
+        app.buttons["gallery-done"].tap()
+
+        // The slot arms the tool; the Pencil verb stays the active verb.
+        let toolButton = app.buttons["tool-buildQuad"]
+        XCTAssertTrue(toolButton.waitForExistence(timeout: 5))
+        XCTAssertEqual(toolButton.value as? String, "inactive")
+        toolButton.tap()
+        XCTAssertTrue(waitUntil { toolButton.value as? String == "active" })
+        XCTAssertEqual(app.buttons["verb-pencil"].value as? String, "active")
+
+        // Selecting a verb persistently disarms the tool.
+        app.buttons["verb-relax"].tap()
+        XCTAssertTrue(waitUntil { toolButton.value as? String == "inactive" })
+    }
+
     /// Spec: document-model / "Save new version": creates a named sibling
     /// copy while the original stays open.
     @MainActor
