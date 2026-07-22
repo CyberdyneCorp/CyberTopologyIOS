@@ -1187,10 +1187,10 @@ enum ViewportSettings {
     /// toggle only appears in DEBUG builds of the settings popover.
     static let strokeDebugHUDKey = "strokeDebugHUD"
     /// EditMesh face-fill opacity (spec: viewport-rendering / "Animated
-    /// EditMesh overlay pipeline"). Default 0.28: enough to read the face
-    /// as a surface, light enough to keep the Target visible through it.
+    /// EditMesh overlay pipeline"). 0.45 reads clearly against a light
+    /// Target; 0.28 was measured too faint on a near-white reference mesh.
     static let fillOpacityKey = "overlayFillOpacity"
-    static let defaultFillOpacity = 0.28
+    static let defaultFillOpacity = 0.45
 
     // Performance controls (task 2.5, spec: "Performance controls"):
     // resolution scale for battery/thermals; MetalFX upscaling engages

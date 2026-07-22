@@ -130,7 +130,7 @@ struct GhostStyle: Equatable {
     static let editMeshFill: GhostStyle = {
         var style = GhostStyle()
         style.color = SIMD3(0.42, 0.45, 0.68)
-        style.baseAlpha = 0.28
+        style.baseAlpha = 0.45
         style.pulsePeriod = 0
         style.rimStrength = 0.25
         return style
@@ -138,15 +138,24 @@ struct GhostStyle: Equatable {
 
     /// `editMeshFill` at a caller-chosen opacity, lifted off the Target.
     ///
-    /// The lift is REQUIRED for the same reason the subdivision preview
-    /// needs one: authored faces are snapped ONTO the Target, so the two
-    /// coplanar surfaces z-fight into speckle without it. Smaller than the
-    /// preview's lift (the fill must read as lying on the surface, not
-    /// hovering above it) but the same scale-free fraction-of-radius form.
+    /// The lift must clear FACETS, not merely avoid z-fighting — same
+    /// magnitude and same reason as `hoverHint(sceneRadius:)`, whose flat
+    /// quad spans snapped corners and dips below convex Targets.
+    ///
+    /// This matters more here than for the wireframe, because the two get
+    /// DIFFERENT occlusion treatment: the overlay wire applies a
+    /// shader-side NDC depth pull (the occlusion-bias term) that keeps it
+    /// visible against the Target, while this fill is a ghost-pipeline pass
+    /// with no such term, depth-tested `.lessEqual`. An authored face
+    /// snapped into a slightly concave region of a faceted low-poly Target
+    /// therefore sank below the surface and was depth-rejected, leaving the
+    /// user looking at an outline with no fill inside it. 0.3% of the scene
+    /// radius did not clear typical facets; 2% does, and still reads as
+    /// lying on the surface rather than hovering above it.
     static func editMeshFill(sceneRadius: Float, opacity: Float) -> GhostStyle {
         var style = editMeshFill
         style.baseAlpha = max(0, min(1, opacity))
-        style.normalOffset = max(sceneRadius, 1e-6) * 0.003
+        style.normalOffset = max(sceneRadius, 1e-6) * 0.02
         return style
     }
 
@@ -479,7 +488,18 @@ final class GhostRenderPath {
         GhostVertexOut out;
         // Normal offset applied on the GPU: the shared engine buffers stay
         // untouched (zero-copy contract) and the offset costs one uniform.
-        float3 p = float3(positions[vid]) + float3(normals[vid]) * u.params.x;
+        //
+        // Pushed toward the VIEWER, not blindly along the normal. A face
+        // authored by a Pencil gesture winds either way depending on which
+        // direction the user drew it, so its normal may point INTO the
+        // Target it is snapped onto — and offsetting along that normal
+        // buries the surface deeper inside, where the depth test rejects
+        // it. Rendering is double-sided already (cull mode none), so
+        // flipping the offset for back-facing vertices is consistent with
+        // how these surfaces are shaded.
+        float3 n = float3(normals[vid]);
+        float towardViewer = (dot(n, u.viewDir.xyz) > 0.0) ? -1.0 : 1.0;
+        float3 p = float3(positions[vid]) + n * (u.params.x * towardViewer);
         out.position = u.mvp * float4(p, 1.0);
         out.normal = float3(normals[vid]);
         return out;
