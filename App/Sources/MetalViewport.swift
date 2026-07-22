@@ -13,7 +13,7 @@ import UIKit
 ///   - one-finger 2-tap  → reframe-to-fit (camera rescue)
 ///
 /// Gesture arbitration with undo/redo: the `UndoGestureView`-configured tap
-/// overlay (two-finger tap undo, three-finger tap redo) sits INSIDE this
+/// overlay (three-finger tap undo, four-finger tap redo) sits INSIDE this
 /// view's UIKit hierarchy as the topmost subview. Camera recognizers attach
 /// to the MTKView itself — an ancestor of the overlay — so every touch is
 /// seen by both: taps land on the overlay recognizers, drags/pinches move
@@ -22,8 +22,18 @@ import UIKit
 /// MTKView and dead-zone all camera input.
 struct MetalViewport: UIViewRepresentable {
     let bundle: DocumentBundle
+    /// Live accessor for the CURRENT document bundle (journal integrity,
+    /// task 3.3): `bundle` is the SwiftUI snapshot of the last update pass,
+    /// but touches can drain before the next pass runs (a queued pen-down
+    /// right after a commit or an undo tap). The coordinator re-syncs from
+    /// this accessor at stroke start so `MeshEditTransaction` always pins
+    /// the document's true current payload — never a stale snapshot.
+    var currentBundle: (@MainActor () -> DocumentBundle)? = nil
     var orbitSpeed: Double
     var zoomSpeed: Double
+    /// Shared input arbitration model (task 3.1, design D5): the editor owns
+    /// it so the verb toolbar and the viewport touches feed one arbiter.
+    var inputModel = ViewportInputModel()
     /// EditMesh overlay display options (task 2.3).
     var overlayOpacity: Double = ViewportSettings.defaultOverlayOpacity
     var xrayEnabled: Bool = false
@@ -33,8 +43,22 @@ struct MetalViewport: UIViewRepresentable {
     var ghostDebugEnabled: Bool = false
     /// Viewport resolution scale (task 2.5, spec: "Performance controls").
     var resolutionScale: Double = ViewportSettings.defaultResolutionScale
+    /// Snap haptics on/off (task 3.7, spec: "haptics SHALL be
+    /// user-disableable"). Disabling silences ticks only — the snap
+    /// pre-highlight and the merge behavior itself are unaffected.
+    var snapHapticsEnabled: Bool = true
     let onUndo: @MainActor () -> Void
     let onRedo: @MainActor () -> Void
+    /// Journal sink for the verb layer (task 3.3): every mesh mutation
+    /// arrives here as one `DocumentCommand` for `TopoDocument.perform`.
+    var onCommit: @MainActor (DocumentCommand) -> Void = { _ in }
+    /// Interpretation-chip swap sink (task 3.5): `(replacement, expected
+    /// current)` for `TopoDocument.performReplacingLast` — the atomic
+    /// revert-apply-replace that leaves exactly one journal entry. Returns
+    /// whether the swap happened.
+    var onReplaceCommit: @MainActor (DocumentCommand, DocumentCommand) -> Bool = { _, _ in
+        false
+    }
 
     /// The overlay display options as renderer settings (pushed on every
     /// `updateUIView`).
@@ -53,7 +77,7 @@ struct MetalViewport: UIViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onUndo: onUndo, onRedo: onRedo)
+        Coordinator(onUndo: onUndo, onRedo: onRedo, inputModel: inputModel)
     }
 
     func makeUIView(context: Context) -> UIView {
@@ -64,6 +88,10 @@ struct MetalViewport: UIViewRepresentable {
         let coordinator = context.coordinator
         coordinator.undoCoordinator.onUndo = onUndo
         coordinator.undoCoordinator.onRedo = onRedo
+        coordinator.onCommit = onCommit
+        coordinator.onReplaceCommit = onReplaceCommit
+        coordinator.bundleProvider = currentBundle
+        coordinator.meshEditor.snapHapticsEnabled = snapHapticsEnabled
         coordinator.renderer?.orbitSpeed = Float(orbitSpeed)
         coordinator.renderer?.zoomSpeed = Float(zoomSpeed)
         coordinator.renderer?.overlaySettings = overlaySettings
@@ -89,16 +117,70 @@ struct MetalViewport: UIViewRepresentable {
         /// Last applied resolution scale; guards redundant reapplication
         /// on every SwiftUI update pass.
         private var appliedResolutionScale: Double?
-        /// Manifest objects backing the currently loaded GPU mesh; reloads
-        /// happen only when this changes (imports, undo/redo of imports).
-        private var loadedObjects: [DocumentManifest.Object]?
+        /// Identity + payload of the object in the solid render path;
+        /// reloads happen only when either changes (imports, undo/redo,
+        /// mesh edits of a target-less document's EditMesh).
+        private var renderedObjectID: UUID?
+        private var renderedPayload: Data?
         /// Identity of the EditMesh currently in the overlay pipeline; the
         /// creation micro-animation replays only when this changes (a newly
         /// imported/created EditMesh), not on every manifest touch.
         private var overlayObjectID: UUID?
-        /// Identity of the EditMesh currently rendered as the DEBUG ghost
-        /// preview; nil while the preview is off (task 2.4 demo path).
+        /// The overlay EditMesh's document payload bytes: mesh edits change
+        /// them (the reload signal), and a cancelled verb stroke restores
+        /// the live mesh from them (task 3.3).
+        private var overlayPayload: Data?
+        /// Manifest entry of the overlay EditMesh (verb transactions).
+        /// Invariant: `editObject`/`overlayObjectID`/`overlayPayload`/
+        /// `recognizerEditMesh` always describe ONE consistent snapshot —
+        /// all four are set together or cleared together (`syncOverlay`).
+        private(set) var editObject: DocumentManifest.Object?
+        /// Annotations (loop tags + hidden faces, task 3.4) last pushed
+        /// into the live mesh's render filters; annotation edits change the
+        /// manifest without touching payload bytes, so they need their own
+        /// change signal.
+        private var overlayAnnotations: MeshAnnotations?
+        /// Whether the document manifest currently contains an EditMesh
+        /// object AT ALL — independent of whether its payload deserialized
+        /// (`editObject` is nil in that failure case). The pencil verb's
+        /// create-first-quad fallback keys on this so a broken snapshot can
+        /// never journal a duplicate `.editMesh` object.
+        private(set) var documentHasEditMesh = false
+        /// Identity + payload of the EditMesh currently rendered as the
+        /// DEBUG ghost preview; nil while the preview is off (task 2.4 demo
+        /// path). Payload changes (mesh edits, undo/redo) reload the ghost
+        /// so it never diverges from the wireframe overlay.
         private var ghostPreviewObjectID: UUID?
+        private var ghostPreviewPayload: Data?
+        /// EditMesh handle the stroke recognizer resolves context against
+        /// (task 3.2) and the verbs mutate (task 3.3): the same
+        /// deserialized mesh the overlay pipeline uploaded, retained so
+        /// stage 2 and the edits run on live engine element ids.
+        private(set) var recognizerEditMesh: Mesh?
+        /// Target snapper + the mesh it snapshots (task 3.3): continuous
+        /// snap projection for every verb. Rebuilt when the Target object
+        /// changes (Targets are immutable, so identity suffices).
+        private var targetObjectID: UUID?
+        private var targetMesh: Mesh?
+        private(set) var targetSnapper: SurfaceSnapper?
+        /// Verb layer (task 3.3): applies the five verbs to the live mesh
+        /// and journals every mutation through `onCommit`.
+        let meshEditor = MeshEditController()
+        /// Hover previews (task 3.6): ghost quad on empty surface, slide-
+        /// loop highlight on interior edges, snap-target vertex highlight —
+        /// fed by the UIKit hover recognizer below (Pencil hover on
+        /// hover-capable hardware, pointer devices elsewhere) and rendered
+        /// through the renderer's hover paths. Queries run against the SAME
+        /// context the verbs use, and never mutate the mesh.
+        let hoverPreview = HoverPreviewController()
+        /// Journal sink, pushed from `updateUIView`.
+        var onCommit: (@MainActor (DocumentCommand) -> Void)?
+        /// Chip swap sink (task 3.5), pushed from `updateUIView`.
+        var onReplaceCommit: (@MainActor (DocumentCommand, DocumentCommand) -> Bool)?
+        /// Live document accessor, pushed from `updateUIView` (journal
+        /// integrity): stroke starts re-sync through it so verb
+        /// transactions never pin a stale SwiftUI snapshot as `before`.
+        var bundleProvider: (@MainActor () -> DocumentBundle)?
 
         // Retained for tests and for arbitration wiring.
         private(set) var orbitRecognizer: UIPanGestureRecognizer?
@@ -106,8 +188,31 @@ struct MetalViewport: UIViewRepresentable {
         private(set) var twoFingerPanRecognizer: UIPanGestureRecognizer?
         private(set) var doubleTapRecognizer: UITapGestureRecognizer?
 
-        init(onUndo: @escaping @MainActor () -> Void, onRedo: @escaping @MainActor () -> Void) {
+        /// Input arbitration (task 3.1, design D5): shared with the editor's
+        /// verb toolbar; the observer recognizer feeds it every touch and
+        /// every other recognizer is gated through it (`shouldReceive`).
+        let inputModel: ViewportInputModel
+        var inputController: ViewportInputController { inputModel.controller }
+        private(set) var observerRecognizer: TouchObserverRecognizer?
+        private(set) var undoTapRecognizers: [UITapGestureRecognizer] = []
+        private(set) var hoverRecognizer: UIHoverGestureRecognizer?
+        /// Pencil Pro squeeze delivery (task 3.7): squeeze opens the radial
+        /// quick-verb palette at the pen tip. Hardware-only — the simulator
+        /// never fires it (graceful no-op by construction); everything
+        /// below the delegate callback is driven directly in tests and by
+        /// the UI-test launch hook.
+        private(set) var pencilInteraction: UIPencilInteraction?
+        /// Production snap haptics (task 3.7), capability-gated inside the
+        /// engine; the mesh editor's `haptics` seam stays injectable.
+        private(set) var snapHaptics: SnapHapticsEngine?
+
+        init(
+            onUndo: @escaping @MainActor () -> Void,
+            onRedo: @escaping @MainActor () -> Void,
+            inputModel: ViewportInputModel = ViewportInputModel()
+        ) {
             undoCoordinator = UndoGestureView.Coordinator(onUndo: onUndo, onRedo: onRedo)
+            self.inputModel = inputModel
         }
 
         /// Builds the viewport hierarchy: MTKView + undo tap overlay +
@@ -123,6 +228,7 @@ struct MetalViewport: UIViewRepresentable {
                 fallback.backgroundColor = .darkGray
                 fallback.accessibilityIdentifier = "viewport"
                 installUndoOverlay(on: fallback)
+                installInputArbitration(on: fallback)
                 return fallback
             }
             self.renderer = renderer
@@ -163,6 +269,7 @@ struct MetalViewport: UIViewRepresentable {
 
             installUndoOverlay(on: view)
             installCameraGestures(on: view)
+            installInputArbitration(on: view)
             return view
         }
 
@@ -194,13 +301,212 @@ struct MetalViewport: UIViewRepresentable {
             renderer.contentScale = Float(contentScale)
         }
 
-        /// Mounts the two/three-finger tap undo/redo overlay as the topmost
-        /// subview (spec: document-model / "Gesture undo/redo").
+        /// Mounts the three/four-finger tap undo/redo overlay as the topmost
+        /// subview (spec: document-model / "Gesture undo/redo"). Its tap
+        /// recognizers are gated through the arbiter (palm rejection: a palm
+        /// resting during a pen stroke must not fire undo).
         private func installUndoOverlay(on view: UIView) {
             let undoOverlay = UndoGestureView.makeConfiguredView(coordinator: undoCoordinator)
             undoOverlay.frame = view.bounds
             undoOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             view.addSubview(undoOverlay)
+            let taps = (undoOverlay.gestureRecognizers ?? [])
+                .compactMap { $0 as? UITapGestureRecognizer }
+            for tap in taps {
+                tap.delegate = self
+            }
+            undoTapRecognizers = taps
+        }
+
+        /// Installs the single touch/Pencil arbiter over the whole viewport
+        /// (task 3.1, design D5): one observing recognizer feeds every touch
+        /// to the pure `InputArbiter`; pen strokes go to stroke capture,
+        /// fingers stay with the camera/undo recognizers, which are
+        /// individually gated in `shouldReceive` (authoring is Pencil-only,
+        /// task 3.9).
+        private func installInputArbitration(on view: UIView) {
+            inputController.referenceView = view
+            inputController.onCancelCameraGestures = { [weak self] in
+                self?.cancelInFlightGestures()
+            }
+            let observer = TouchObserverRecognizer(controller: inputController)
+            observer.delegate = self
+            view.addGestureRecognizer(observer)
+            observerRecognizer = observer
+
+            // Stage-2 mesh context for the engine recognizer (task 3.2,
+            // design D5): fetched at stroke end so every interpretation
+            // resolves against the CURRENT EditMesh and the exact camera
+            // matrix the user is looking through. Without a renderer
+            // (Metal-unavailable fallback) the recognizer stays stage-1.
+            inputModel.setRecognizerContext { [weak self] in
+                guard let self, let renderer = self.renderer else {
+                    return (editMesh: nil, viewProjection: nil, aspect: 1)
+                }
+                self.resyncFromDocumentIfIdle()
+                return (
+                    editMesh: self.recognizerEditMesh,
+                    viewProjection: renderer.viewProjectionColumns(),
+                    aspect: renderer.viewportAspect
+                )
+            }
+
+            // Verb layer (task 3.3): the mesh-edit controller consumes the
+            // stroke events the model forwards, mutates the SAME live mesh
+            // handle the overlay/recognizer use, and journals through the
+            // document's command path.
+            inputModel.meshEditor = meshEditor
+            meshEditor.contextProvider = { [weak self] in
+                self?.makeEditContext()
+            }
+            meshEditor.onCommit = { [weak self] command in
+                self?.onCommit?(command)
+            }
+            // Chip alternative swap (task 3.5): the document swaps the last
+            // command atomically; its bundle update re-syncs the live mesh
+            // through the normal payload/annotation-changed path.
+            meshEditor.onReplaceCommit = { [weak self] replacement, expected in
+                self?.onReplaceCommit?(replacement, expected) ?? false
+            }
+            // Coalesced to ONCE PER RENDERED FRAME (not per input sample):
+            // brush verbs fire this at up to 240 Hz of coalesced Pencil
+            // samples, and every upload rebuilds the invalidated engine
+            // render cache (O(mesh)) and runs the geometry pool's reuse
+            // fence — a synchronous GPU drain on the main thread. The
+            // refresh is parked on the renderer and flushed at the top of
+            // the next frame; it reads live state at flush time, so the
+            // frame always shows the newest sample's mesh.
+            meshEditor.onLiveEdit = { [weak self] in
+                guard let self, let renderer = self.renderer else { return }
+                if renderer.pendingGeometryRefresh == nil {
+                    renderer.pendingGeometryRefresh = { [weak self] in
+                        self?.refreshLiveEditGeometry()
+                    }
+                }
+                renderer.invalidate()
+            }
+            meshEditor.onDiscardLiveEdits = { [weak self] in
+                self?.reloadLiveEditMesh()
+            }
+
+            // Snap feedback (task 3.7, spec scenario "Snap feedback"): the
+            // Tweak/Move merge-snap pre-highlight renders through the same
+            // warm-yellow overlay highlight pass as the hover snap target
+            // (a stroke clears any hover preview the instant it begins, so
+            // the channel is free for the whole drag), and haptic ticks go
+            // through the capability-gated engine (simulator: no-op).
+            meshEditor.onSnapHighlightChanged = { [weak self] target in
+                guard let self, let renderer = self.renderer else { return }
+                renderer.setHoverPreview(HoverPreviewGeometry.renderState(
+                    for: target.map { HoverPreviewState.Preview.snapTarget($0) },
+                    edgeEndpoints: { _ in nil },
+                    vertexPosition: { _ in nil }
+                ))
+            }
+            let haptics = SnapHapticsEngine(view: view)
+            snapHaptics = haptics
+            meshEditor.haptics = haptics
+
+            installHoverPreview(on: view)
+            installPencilInteraction(on: view)
+        }
+
+        /// Pencil Pro squeeze (task 3.7): `UIPencilInteraction` delivers
+        /// squeezes on supporting hardware only; the delegate maps the
+        /// user's SYSTEM squeeze preference to the quick-verb palette
+        /// policy. Barrel roll rides on the hover recognizer (see
+        /// `handleHover`), not on this interaction.
+        private func installPencilInteraction(on view: UIView) {
+            let interaction = UIPencilInteraction(delegate: self)
+            view.addInteraction(interaction)
+            pencilInteraction = interaction
+        }
+
+        /// Everything the verb layer AND the hover previews need, fetched
+        /// fresh per event. Journal integrity: the coordinator's snapshot is
+        /// only refreshed by SwiftUI update passes, but this context is
+        /// fetched from touch/hover handling that can drain BEFORE the next
+        /// pass (pen-down queued behind a commit or an undo tap in the same
+        /// runloop drain). Re-sync from the live document first so verb
+        /// transactions pin the true current payload as `before` and every
+        /// consumer sees current state.
+        private func makeEditContext() -> MeshEditController.Context? {
+            guard let renderer else { return nil }
+            resyncFromDocumentIfIdle()
+            return MeshEditController.Context(
+                editObject: editObject,
+                editMesh: recognizerEditMesh,
+                editPayload: overlayPayload,
+                documentHasEditMesh: documentHasEditMesh,
+                snapper: targetSnapper,
+                sceneRadius: renderer.bounds.radius,
+                ray: { [weak renderer] point in
+                    renderer?.cameraRay(atNormalizedPoint: point)
+                }
+            )
+        }
+
+        /// Hover previews (task 3.6, spec: pencil-interaction / "Hover
+        /// gesture preview"): a `UIHoverGestureRecognizer` feeds the hover
+        /// controller — Apple Pencil hover on hover-capable iPads, trackpad
+        /// /mouse pointers elsewhere; actual Pencil hover delivery is
+        /// hardware-only (device test plan, task 9.6). The queries resolve
+        /// through `makeEditContext` (read-only engine queries; the mesh is
+        /// never modified), and a beginning stroke clears any preview
+        /// instantly so it cannot linger under live authoring.
+        private func installHoverPreview(on view: UIView) {
+            hoverPreview.contextProvider = { [weak self] in
+                self?.makeEditContext()
+            }
+            hoverPreview.onRenderStateChanged = { [weak self] state in
+                self?.renderer?.setHoverPreview(state)
+            }
+            inputModel.onStrokeWillBegin = { [weak self] in
+                self?.hoverPreview.strokeBegan()
+            }
+            inputModel.hoverPreview = hoverPreview
+            let hover = UIHoverGestureRecognizer(
+                target: self, action: #selector(handleHover)
+            )
+            view.addGestureRecognizer(hover)
+            hoverRecognizer = hover
+        }
+
+        @objc func handleHover(_ recognizer: UIHoverGestureRecognizer) {
+            guard
+                let view = recognizer.view,
+                view.bounds.width > 0, view.bounds.height > 0
+            else { return }
+            switch recognizer.state {
+            case .began, .changed:
+                let location = recognizer.location(in: view)
+                hoverPreview.hoverChanged(at: SIMD2(
+                    Float(location.x / view.bounds.width),
+                    Float(location.y / view.bounds.height)
+                ))
+                // Pencil Pro barrel roll (task 3.7): non-zero only on
+                // hardware that reports it; forwarded into the model's
+                // rotate-placed-element hook (first real consumer is the
+                // 4.2 placement tools — see tasks.md 3.7a).
+                inputModel.barrelRollChanged(Float(recognizer.rollAngle))
+            default:
+                hoverPreview.hoverEnded()
+            }
+        }
+
+        /// Pen priority: the pen landed while finger gestures were in
+        /// flight — reset every non-observer recognizer so a resting palm
+        /// cannot keep steering the camera or complete an undo tap.
+        private func cancelInFlightGestures() {
+            let cameraRecognizers: [UIGestureRecognizer?] = [
+                orbitRecognizer, pinchRecognizer, twoFingerPanRecognizer, doubleTapRecognizer,
+            ]
+            var recognizers: [UIGestureRecognizer] = cameraRecognizers.compactMap { $0 }
+            recognizers.append(contentsOf: undoTapRecognizers)
+            for recognizer in recognizers {
+                recognizer.isEnabled = false
+                recognizer.isEnabled = true
+            }
         }
 
         private func installCameraGestures(on view: UIView) {
@@ -221,13 +527,14 @@ struct MetalViewport: UIViewRepresentable {
 
             // Deliberate arbitration (see type comment): pinch and two-finger
             // pan may run simultaneously (natural zoom+pan camera feel); the
-            // two/three-finger undo taps need no explicit requirement against
+            // three/four-finger undo taps need no explicit requirement against
             // pinch/pan because taps complete within the movement slop that
-            // pans/pinches need to even begin.
-            pinch.delegate = self
-            twoFingerPan.delegate = self
-
+            // pans/pinches need to even begin. All four are delegated so the
+            // InputArbiter can veto touches per recognizer (`shouldReceive`:
+            // pencil never drives the camera, palm rejection while the pen
+            // is down, 3rd+ finger never admitted to camera gestures).
             for recognizer in [orbit, pinch, twoFingerPan, doubleTap] {
+                recognizer.delegate = self
                 view.addGestureRecognizer(recognizer)
             }
             orbitRecognizer = orbit
@@ -236,54 +543,200 @@ struct MetalViewport: UIViewRepresentable {
             doubleTapRecognizer = doubleTap
         }
 
-        /// (Re)loads the render mesh when the document's object list changed.
+        /// (Re)loads the render mesh, Target snapper, and EditMesh overlay
+        /// when the document changed. Change detection is per concern:
+        /// mesh edits (task 3.3) touch only the EditMesh payload, so the
+        /// solid Target render — and the camera — stay put.
         func syncMesh(from bundle: DocumentBundle) {
-            guard loadedObjects != bundle.manifest.objects else { return }
-            loadedObjects = bundle.manifest.objects
             guard let renderer else { return }
-            if let object = MetalViewport.renderableObject(in: bundle.manifest),
-                let mesh = try? bundle.mesh(for: object) {
-                renderer.load(mesh: mesh)
-            } else {
-                renderer.clearMesh()
-            }
+            syncRenderMesh(from: bundle, renderer: renderer)
+            syncTargetSnapper(from: bundle)
             syncOverlay(from: bundle, renderer: renderer)
         }
 
+        /// Re-syncs the viewport state from the CURRENT document (via
+        /// `bundleProvider`) unless a brush session is mid-stroke. Called
+        /// when a stroke needs document state (stroke begin / pencil apply /
+        /// recognizer stage 2) because those run off touch handling, which
+        /// can drain before the SwiftUI update pass that normally refreshes
+        /// the snapshot. The session guard matters: at brush-stroke end the
+        /// live mesh intentionally runs AHEAD of the document (uncommitted
+        /// edits) — reloading it from the payload would discard them.
+        func resyncFromDocumentIfIdle() {
+            guard !meshEditor.isSessionActive, let bundle = bundleProvider?() else { return }
+            syncMesh(from: bundle)
+        }
+
+        private func syncRenderMesh(from bundle: DocumentBundle, renderer: ViewportRenderer) {
+            let object = MetalViewport.renderableObject(in: bundle.manifest)
+            let payload = object.flatMap { bundle.payloads[$0.payloadFile] }
+            guard object?.id != renderedObjectID || payload != renderedPayload else { return }
+            // A payload-only change of the SAME object is a mesh edit:
+            // update the geometry without snapping the camera back to
+            // frame-to-fit.
+            let sameObject = object != nil && object?.id == renderedObjectID
+            renderedObjectID = object?.id
+            renderedPayload = payload
+            if let object, let mesh = try? bundle.mesh(for: object) {
+                renderer.load(mesh: mesh, preservingCamera: sameObject)
+            } else {
+                renderer.clearMesh()
+            }
+        }
+
+        /// Builds the Target surface snapper (task 3.3: continuous snap
+        /// projection for every verb). Targets are immutable, so the
+        /// object's identity is the only change signal.
+        private func syncTargetSnapper(from bundle: DocumentBundle) {
+            let target = bundle.manifest.objects.first { $0.role == .target }
+            guard target?.id != targetObjectID else { return }
+            targetObjectID = target?.id
+            guard let target, let mesh = try? bundle.mesh(for: target) else {
+                targetMesh = nil
+                targetSnapper = nil
+                return
+            }
+            targetMesh = mesh
+            targetSnapper = try? SurfaceSnapper(target: mesh)
+        }
+
         /// Loads the first EditMesh into the wireframe overlay pipeline
-        /// (task 2.3). The creation animation restarts only for a new
-        /// EditMesh object, not for reloads of the same one.
+        /// (task 2.3) and (re)binds the live mesh handle the recognizer and
+        /// the verbs share. The creation animation restarts only for a new
+        /// EditMesh object; payload changes (mesh edits, undo/redo) reload
+        /// silently.
         private func syncOverlay(from bundle: DocumentBundle, renderer: ViewportRenderer) {
-            let editMesh = bundle.manifest.objects.first { $0.role == .editMesh }
-            guard let editMesh, let mesh = try? bundle.mesh(for: editMesh) else {
+            let object = bundle.manifest.objects.first { $0.role == .editMesh }
+            documentHasEditMesh = object != nil
+            let payload = object.flatMap { bundle.payloads[$0.payloadFile] }
+            // Externally-driven EditMesh change landing MID-BRUSH-STROKE
+            // (e.g. an iCloud conflict revert reloading the document while
+            // a relax scrub is in flight): the session still holds the old
+            // mesh handle and its pinned before-payload, so later samples
+            // would mutate an orphaned handle (edits stop rendering) and
+            // the stroke-end commit would journal a `before` the document
+            // no longer contains — reverting it would restore pre-reload
+            // bytes instead of the document's actual prior state. The
+            // external reload wins: cancel the session (discarding its
+            // live edits) before rebinding the snapshot. A mid-stroke pass
+            // with an UNCHANGED document (the normal SwiftUI update) never
+            // triggers this — object identity and payload bytes match the
+            // pinned snapshot, and mid-session the document payload only
+            // moves via this coordinator's own commits, which end the
+            // session first.
+            if meshEditor.isSessionActive,
+                object?.id != overlayObjectID || payload != overlayPayload {
+                meshEditor.strokeCancelled()
+            }
+            guard let object, let payload else {
                 overlayObjectID = nil
+                overlayPayload = nil
+                editObject = nil
+                overlayAnnotations = nil
+                recognizerEditMesh = nil
                 renderer.clearOverlay()
                 return
             }
-            let isNewObject = editMesh.id != overlayObjectID
-            overlayObjectID = editMesh.id
+            let isNewObject = object.id != overlayObjectID
+            let payloadChanged = payload != overlayPayload
+            editObject = object  // counts/revision may move without a reload
+            guard isNewObject || payloadChanged else {
+                // Annotation-only change (loop tag / hide / show commands,
+                // task 3.4): payload bytes are untouched, so refresh just
+                // the live handle's render filters and the overlay upload.
+                if object.annotations != overlayAnnotations,
+                    let mesh = recognizerEditMesh {
+                    overlayAnnotations = object.annotations
+                    try? mesh.applyAnnotations(object.annotations)
+                    renderer.loadOverlay(mesh: mesh, restartAnimation: false)
+                    if renderedObjectID == overlayObjectID {
+                        renderer.load(mesh: mesh, preservingCamera: true)
+                    }
+                }
+                return
+            }
+            guard let mesh = try? Mesh(payloadData: payload) else {
+                // Deserialize failure: clear ALL four snapshot fields —
+                // leaving `editObject` set would break the one-consistent-
+                // snapshot invariant (brush verbs must go inert, and the
+                // pencil fallback must not treat this as "no EditMesh").
+                overlayObjectID = nil
+                overlayPayload = nil
+                editObject = nil
+                overlayAnnotations = nil
+                recognizerEditMesh = nil
+                renderer.clearOverlay()
+                return
+            }
+            overlayObjectID = object.id
+            overlayPayload = payload
+            overlayAnnotations = object.annotations
+            try? mesh.applyAnnotations(object.annotations)
+            recognizerEditMesh = mesh
             renderer.loadOverlay(mesh: mesh, restartAnimation: isNewObject)
+        }
+
+        /// Uploads the CURRENT live EditMesh into the overlay (and, for a
+        /// target-less document, the solid) pipeline. Runs at most once per
+        /// rendered frame via `ViewportRenderer.pendingGeometryRefresh` —
+        /// see `meshEditor.onLiveEdit` for why it is never called per
+        /// input sample.
+        private func refreshLiveEditGeometry() {
+            guard let renderer, let mesh = recognizerEditMesh else { return }
+            renderer.loadOverlay(mesh: mesh, restartAnimation: false)
+            // A target-less document renders the EditMesh solid too.
+            if renderedObjectID == overlayObjectID {
+                renderer.load(mesh: mesh, preservingCamera: true)
+            }
+        }
+
+        /// Reloads the live EditMesh from the pinned document payload —
+        /// the discard path for cancelled/failed verb strokes (task 3.3).
+        private func reloadLiveEditMesh() {
+            guard let renderer else { return }
+            guard let payload = overlayPayload, let mesh = try? Mesh(payloadData: payload)
+            else {
+                recognizerEditMesh = nil
+                renderer.clearOverlay()
+                return
+            }
+            try? mesh.applyAnnotations(overlayAnnotations)
+            recognizerEditMesh = mesh
+            renderer.loadOverlay(mesh: mesh, restartAnimation: false)
         }
 
         /// DEBUG-only demo path for task 2.4: mirrors the first EditMesh
         /// into the ghost pipeline (small normal-offset, pulsing translucent
         /// style) so the ghost render style is visually verifiable before
         /// the Weave solver (phase 5) produces real proposals. Reloads only
-        /// when toggled on/off or when the EditMesh object changes.
+        /// when toggled on/off, when the EditMesh object changes, or when
+        /// its payload changes (mesh edits, undo/redo) — and deserializes
+        /// only when a reload is actually due, never on every update pass.
         func syncGhostPreview(from bundle: DocumentBundle, enabled: Bool) {
             guard let renderer else { return }
             let editMesh = bundle.manifest.objects.first { $0.role == .editMesh }
-            guard enabled, let editMesh, let mesh = try? bundle.mesh(for: editMesh) else {
-                if ghostPreviewObjectID != nil {
-                    ghostPreviewObjectID = nil
-                    renderer.clearGhost()
-                }
+            let payload = editMesh.flatMap { bundle.payloads[$0.payloadFile] }
+            guard enabled, let editMesh, let payload else {
+                clearGhostPreview(renderer: renderer)
                 return
             }
-            guard editMesh.id != ghostPreviewObjectID else { return }
+            guard editMesh.id != ghostPreviewObjectID || payload != ghostPreviewPayload
+            else { return }
+            guard let mesh = try? Mesh(payloadData: payload) else {
+                clearGhostPreview(renderer: renderer)
+                return
+            }
             ghostPreviewObjectID = editMesh.id
+            ghostPreviewPayload = payload
             renderer.ghostStyle = .debugPreview(sceneRadius: renderer.bounds.radius)
             renderer.loadGhost(mesh: mesh)
+        }
+
+        private func clearGhostPreview(renderer: ViewportRenderer) {
+            guard ghostPreviewObjectID != nil else { return }
+            ghostPreviewObjectID = nil
+            ghostPreviewPayload = nil
+            renderer.clearGhost()
         }
 
         // MARK: - Gesture handlers
@@ -359,13 +812,84 @@ final class ViewportMetalView: MTKView {
 
 extension MetalViewport.Coordinator: UIGestureRecognizerDelegate {
     /// Only pinch + two-finger pan combine; everything else stays exclusive.
+    /// The touch observer pairs with everything: it never recognizes, and
+    /// exempting it here keeps UIKit from force-failing it mid-gesture (the
+    /// arbiter would stop seeing touch end events).
     func gestureRecognizer(
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
     ) -> Bool {
         let pair = [gestureRecognizer, other]
+        if pair.contains(where: { $0 === observerRecognizer }) { return true }
         return pair.contains { $0 === pinchRecognizer }
             && pair.contains { $0 === twoFingerPanRecognizer }
+    }
+
+    /// Central routing gate (task 3.1, design D5): every recognizer asks the
+    /// arbiter before accepting a touch.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch
+    ) -> Bool {
+        inputController.shouldReceive(touch, for: gate(for: gestureRecognizer))
+    }
+
+    private func gate(for recognizer: UIGestureRecognizer) -> ViewportInputController.RecognizerGate {
+        if recognizer === observerRecognizer { return .observer }
+        if undoTapRecognizers.contains(where: { $0 === recognizer }) { return .undoTap }
+        return .camera
+    }
+}
+
+// MARK: - Pencil Pro squeeze (task 3.7)
+
+extension MetalViewport.Coordinator: UIPencilInteractionDelegate {
+    /// Squeeze completed: open/dismiss the radial quick-verb palette at
+    /// the pen tip (spec: "Pencil Pro squeeze SHALL open a radial Action
+    /// Gallery at the pen tip"; the minimal five-verb ring — the full
+    /// gallery is task 3.8). The user's SYSTEM squeeze preference is
+    /// honored via the pure policy mapping below.
+    func pencilInteraction(
+        _ interaction: UIPencilInteraction,
+        didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze
+    ) {
+        guard squeeze.phase == .ended else { return }
+        var location: SIMD2<Float>?
+        if let view = interaction.view, let pose = squeeze.hoverPose,
+            view.bounds.width > 0, view.bounds.height > 0 {
+            let point = pose.location
+            location = SIMD2(
+                Float(point.x / view.bounds.width),
+                Float(point.y / view.bounds.height)
+            )
+        }
+        inputModel.pencilSqueezed(
+            action: QuickVerbPaletteState.SqueezeAction(
+                systemPreference: UIPencilInteraction.preferredSqueezeAction
+            ),
+            atNormalized: location
+        )
+    }
+}
+
+extension QuickVerbPaletteState.SqueezeAction {
+    /// Maps the user's system-wide squeeze preference to the app policy:
+    /// `.ignore` is honored verbatim, `.switchEraser` selects the Erase
+    /// verb, and every palette-flavored preference opens the quick-verb
+    /// ring — the app's only contextual palette (it has no ink/color
+    /// attributes to show). `.switchPrevious` is honestly ignored until
+    /// the arbiter tracks a previous-verb history.
+    init(systemPreference: UIPencilPreferredAction) {
+        switch systemPreference {
+        case .ignore, .switchPrevious:
+            self = .ignore
+        case .switchEraser:
+            self = .selectEraser
+        case .showContextualPalette, .showColorPalette, .showInkAttributes,
+            .runSystemShortcut:
+            self = .showPalette
+        @unknown default:
+            self = .showPalette
+        }
     }
 }
 
@@ -394,6 +918,23 @@ enum ViewportSettings {
     /// feed arrives with the Weave solver in phase 5).
     static let ghostDebugKey = "viewportGhostDebugPreview"
 
+    /// Left-handed mirror stub (task 3.1; spec: "Hold-chord spring-loaded
+    /// modifiers" — left-handed mode SHALL be supported). For now it mirrors
+    /// the minimal verb toolbar to the trailing edge; full repositioning
+    /// lands with the customizable toolbar (task 3.8).
+    static let leftHandedToolbarKey = "leftHandedToolbar"
+
+    /// Snap haptics toggle (task 3.7; spec: "haptics SHALL be
+    /// user-disableable"). Off silences the merge-snap ticks only — the
+    /// snap-target pre-highlight and the merge behavior are unaffected.
+    static let snapHapticsKey = "snapHapticsEnabled"
+
+    /// DEBUG-only recognizer HUD (task 3.2, design D5: "interpretation
+    /// records + debug HUD from day one"): overlays the last stroke's
+    /// polyline and its full interpretation record on the viewport. The
+    /// toggle only appears in DEBUG builds of the settings popover.
+    static let strokeDebugHUDKey = "strokeDebugHUD"
+
     // Performance controls (task 2.5, spec: "Performance controls"):
     // resolution scale for battery/thermals; MetalFX upscaling engages
     // automatically below 100% where the device supports it.
@@ -413,6 +954,9 @@ struct ViewportSettingsView: View {
     @Binding var occlusionBias: Double
     @Binding var ghostDebugEnabled: Bool
     @Binding var resolutionScale: Double
+    @Binding var leftHandedToolbar: Bool
+    @Binding var snapHapticsEnabled: Bool
+    @Binding var strokeDebugHUD: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -453,6 +997,20 @@ struct ViewportSettingsView: View {
 
             Divider()
 
+            // Input (task 3.1): left-handed mirror stub — moves the verb
+            // toolbar to the trailing edge (full repositioning is task 3.8).
+            Text("Input")
+                .font(.headline)
+            Toggle("Left-handed toolbar", isOn: $leftHandedToolbar)
+                .accessibilityIdentifier("left-handed-toggle")
+            // Task 3.7 (spec: "haptics SHALL be user-disableable"): off
+            // silences snap/merge ticks; the pre-highlight and the merge
+            // behavior itself are unaffected.
+            Toggle("Snap haptics", isOn: $snapHapticsEnabled)
+                .accessibilityIdentifier("snap-haptics-toggle")
+
+            Divider()
+
             // Performance controls (task 2.5): drawable resolution only —
             // UI chrome stays at native scale and gestures are unaffected.
             Text("Performance")
@@ -479,6 +1037,10 @@ struct ViewportSettingsView: View {
                     .font(.headline)
                 Toggle("Ghost preview (DEBUG)", isOn: $ghostDebugEnabled)
                     .accessibilityIdentifier("ghost-debug-toggle")
+                // Recognizer HUD (task 3.2): last stroke polyline +
+                // interpretation record over the viewport.
+                Toggle("Stroke recognizer HUD (DEBUG)", isOn: $strokeDebugHUD)
+                    .accessibilityIdentifier("stroke-debug-toggle")
                 Text(
                     """
                     Development aid: renders the EditMesh as ghost geometry \

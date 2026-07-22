@@ -83,15 +83,44 @@ struct MetalViewportTests {
         #expect(doubleTap.numberOfTapsRequired == 2)
         #expect(doubleTap.numberOfTouchesRequired == 1)
 
-        #expect(coordinator.pinchRecognizer != nil)
+        let pinch = try #require(coordinator.pinchRecognizer)
+        // 4 camera recognizers + the arbiter's touch observer (task 3.1)
+        // + the hover-preview recognizer (task 3.6) + the INTERNAL
+        // recognizer UIKit installs alongside the `UIPencilInteraction`
+        // for squeeze delivery (task 3.7 — not ours, not touch-driven).
         let installed = view.gestureRecognizers ?? []
-        #expect(installed.count == 4)
+        #expect(installed.count == 7)
+        let observer = try #require(coordinator.observerRecognizer)
+        #expect(installed.contains { $0 === observer })
+        let hover = try #require(coordinator.hoverRecognizer)
+        #expect(installed.contains { $0 === hover })
+        let pencil = try #require(coordinator.pencilInteraction)
+        #expect(view.interactions.contains { $0 === pencil })
+        // Exactly one installed recognizer is not ours: the pencil
+        // interaction's internal one.
+        let ours: [UIGestureRecognizer] = [
+            orbit, pinch, twoFingerPan, doubleTap, observer, hover,
+        ]
+        let foreign = installed.filter { candidate in
+            !ours.contains { $0 === candidate }
+        }
+        #expect(foreign.count == 1)
+        // Every TOUCH recognizer of ours is delegated so the arbiter can
+        // gate its touches; the hover recognizer consumes hover events —
+        // not touches — and the pencil interaction's internal recognizer
+        // consumes squeezes, so both stay outside the arbiter's touch gate.
+        #expect(installed.allSatisfy { recognizer in
+            recognizer === hover
+                || foreign.contains { $0 === recognizer }
+                || recognizer.delegate === coordinator
+        })
+        #expect(coordinator.undoTapRecognizers.allSatisfy { $0.delegate === coordinator })
 
         // The undo/redo tap overlay is embedded as the topmost subview with
-        // its two- and three-finger recognizers intact.
+        // its three- and four-finger recognizers intact.
         let overlay = try #require(view.subviews.first)
         let taps = overlay.gestureRecognizers?.compactMap { $0 as? UITapGestureRecognizer } ?? []
-        #expect(taps.map(\.numberOfTouchesRequired).sorted() == [2, 3])
+        #expect(taps.map(\.numberOfTouchesRequired).sorted() == [3, 4])
     }
 
     @Test func onlyPinchAndTwoFingerPanRecognizeSimultaneously() throws {
@@ -107,6 +136,12 @@ struct MetalViewportTests {
         #expect(!coordinator.gestureRecognizer(pinch, shouldRecognizeSimultaneouslyWith: orbit))
         #expect(!coordinator.gestureRecognizer(orbit, shouldRecognizeSimultaneouslyWith: doubleTap))
         #expect(!coordinator.gestureRecognizer(orbit, shouldRecognizeSimultaneouslyWith: twoFingerPan))
+
+        // The touch observer pairs with everything (it must never be
+        // force-failed, or the arbiter would miss touch end events).
+        let observer = try #require(coordinator.observerRecognizer)
+        #expect(coordinator.gestureRecognizer(observer, shouldRecognizeSimultaneouslyWith: orbit))
+        #expect(coordinator.gestureRecognizer(pinch, shouldRecognizeSimultaneouslyWith: observer))
     }
 
     @Test func makeViewFallsBackWithoutMetal() throws {
@@ -134,7 +169,7 @@ struct MetalViewportTests {
 
         let overlay = try #require(view.subviews.first)
         let taps = overlay.gestureRecognizers?.compactMap { $0 as? UITapGestureRecognizer } ?? []
-        #expect(taps.map(\.numberOfTouchesRequired).sorted() == [2, 3])
+        #expect(taps.map(\.numberOfTouchesRequired).sorted() == [3, 4])
         #expect(overlay.autoresizingMask == [.flexibleWidth, .flexibleHeight])
 
         // The overlay is wired to the same undo coordinator the document
@@ -225,6 +260,38 @@ struct MetalViewportTests {
         #expect(redone == 1)
     }
 
+    // MARK: - Recognizer context wiring (task 3.2)
+
+    @Test func syncMeshInstallsRecognizerEditMeshContext() throws {
+        let coordinator = makeViewport().makeCoordinator()
+        _ = coordinator.makeView()
+        try #require(coordinator.renderer != nil, "Metal device unavailable")
+
+        coordinator.syncMesh(from: DocumentBundle())
+        #expect(coordinator.recognizerEditMesh == nil)
+
+        let bundle = try seededBundle(roles: [.editMesh])
+        coordinator.syncMesh(from: bundle)
+        #expect(coordinator.recognizerEditMesh != nil)
+
+        // A stroke captured now interprets with the coordinator-installed
+        // context (live camera matrix + EditMesh). Deterministic element
+        // resolution with a pinned matrix is covered by
+        // StrokeRecognitionWiringTests; here the wiring must produce a
+        // record end to end.
+        let capture = coordinator.inputModel.controller.capture
+        capture.begin(
+            source: .pencil, verb: .pencil, sample: .init(time: 0, x: 0.2, y: 0.2)
+        )
+        capture.append(sample: .init(time: 0.1, x: 0.8, y: 0.8))
+        capture.end()
+        #expect(coordinator.inputModel.lastInterpretation != nil)
+
+        // Removing the EditMesh clears the recognizer context again.
+        coordinator.syncMesh(from: DocumentBundle())
+        #expect(coordinator.recognizerEditMesh == nil)
+    }
+
     // MARK: - Settings view
 
     @Test func settingsViewRendersSliders() {
@@ -232,7 +299,8 @@ struct MetalViewportTests {
             orbitSpeed: .constant(1.5), zoomSpeed: .constant(0.5),
             overlayOpacity: .constant(0.7), xrayEnabled: .constant(true),
             occlusionBias: .constant(0.004), ghostDebugEnabled: .constant(true),
-            resolutionScale: .constant(0.75)
+            resolutionScale: .constant(0.75), leftHandedToolbar: .constant(true),
+            snapHapticsEnabled: .constant(true), strokeDebugHUD: .constant(true)
         )
         let host = UIHostingController(rootView: view)
         host.view.frame = CGRect(x: 0, y: 0, width: 400, height: 500)
@@ -341,6 +409,28 @@ struct MetalViewportTests {
         // Enabled but no EditMesh in the document: stays clear.
         coordinator.syncGhostPreview(from: DocumentBundle(), enabled: true)
         #expect(!renderer.hasGhost)
+    }
+
+    /// Regression: the preview must key reloads on the PAYLOAD too, not
+    /// just the EditMesh object identity — verb edits and undo/redo change
+    /// the payload under the same object id, and a stale ghost would
+    /// visibly diverge from the wireframe overlay.
+    @Test func ghostPreviewReloadsWhenTheEditMeshPayloadChanges() throws {
+        let coordinator = makeViewport().makeCoordinator()
+        _ = coordinator.makeView()
+        let renderer = try #require(coordinator.renderer)
+        var bundle = try seededBundle(roles: [.editMesh])
+        coordinator.syncGhostPreview(from: bundle, enabled: true)
+        #expect(renderer.ghostPath.indexCount == 6)  // seed quad
+
+        // Same object id, new payload (a mesh edit / undo-redo): the ghost
+        // reloads to the edited geometry.
+        let object = try #require(bundle.manifest.objects.first)
+        let edited = try Mesh.loadOBJ(at: UITestSupport.writeSeedTargetOBJ())
+        bundle.payloads[object.payloadFile] = try edited.payloadData()
+        coordinator.syncGhostPreview(from: bundle, enabled: true)
+        // 10x10 quad grid = 200 triangles = 600 indices.
+        #expect(renderer.ghostPath.indexCount == 600)
     }
 
     /// `updateUIView` pushes these values through `overlaySettings`; the

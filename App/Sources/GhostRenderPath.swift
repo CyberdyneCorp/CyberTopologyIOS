@@ -54,6 +54,29 @@ struct GhostStyle: Equatable {
     var pulsePeakPhase: Double { pulsePeriod * 0.25 }
     var pulseTroughPhase: Double { pulsePeriod * 0.75 }
 
+    /// Hover ghost-quad hint (task 3.6, spec: pencil-interaction / "Hover
+    /// gesture preview"): the quad a stroke at the hover point would
+    /// create. Cool cyan-white — matching the EditMesh wire family, clearly
+    /// apart from the amber Weave-proposal ghosts — pulsing slightly
+    /// faster and fainter than a proposal (a hint, not a pending result).
+    static let hoverHint: GhostStyle = {
+        var style = GhostStyle()
+        style.color = SIMD3(0.55, 0.9, 1.0)
+        style.baseAlpha = 0.4
+        style.pulsePeriod = 0.9
+        return style
+    }()
+
+    /// `hoverHint` lifted off the surface along its camera-facing normal
+    /// (same magnitude as `debugPreview`): the hint's flat quad spans
+    /// snapped corners, so its interior dips below convex Targets and
+    /// would lose the depth test without the lift.
+    static func hoverHint(sceneRadius: Float) -> GhostStyle {
+        var style = hoverHint
+        style.normalOffset = max(sceneRadius, 1e-6) * 0.02
+        return style
+    }
+
     /// DEBUG-only demo style (task 2.4): until the Weave solver exists
     /// (phase 5) the viewport-settings popover can render the committed
     /// EditMesh as a ghost, lifted off the surface by a small fraction of
@@ -185,6 +208,9 @@ final class GhostRenderPath {
     /// `EngineBufferSharing.engineRenderCachesAreVMAllocated`) must pass
     /// false. Returns false and clears on undrawable input or allocation
     /// failure.
+    /// `logsSharingDecision` silences the per-load sharing log for callers
+    /// that legitimately reload at input rate (the task-3.6 hover ghost
+    /// hint follows the hover point); one-shot loads keep the default.
     @discardableResult
     func load(
         positions: UnsafeBufferPointer<Float>,
@@ -192,7 +218,8 @@ final class GhostRenderPath {
         indices: UnsafeBufferPointer<UInt32>,
         hasUnifiedMemory: Bool,
         allowZeroCopy: Bool,
-        pageSize: Int = Int(getpagesize())
+        pageSize: Int = Int(getpagesize()),
+        logsSharingDecision: Bool = true
     ) -> Bool {
         guard !positions.isEmpty, !normals.isEmpty, !indices.isEmpty else {
             clear()
@@ -220,7 +247,9 @@ final class GhostRenderPath {
             // Stale pooled data must never be bindable alongside wrappers.
             bufferPool.clear()
             activeSharing = .zeroCopy
-            Self.log.info("ghost geometry sharing: zero-copy (bytesNoCopy wrap)")
+            if logsSharingDecision {
+                Self.log.info("ghost geometry sharing: zero-copy (bytesNoCopy wrap)")
+            }
             loaded = true
         } else {
             zeroCopyBuffers = [:]
@@ -228,7 +257,7 @@ final class GhostRenderPath {
                 && bufferPool.upload(floats: normals, to: .normal) != nil
                 && bufferPool.upload(indices: indices) != nil
             activeSharing = loaded ? .pooledCopy : nil
-            if loaded {
+            if loaded, logsSharingDecision {
                 let reason: String
                 if !allowZeroCopy {
                     reason = "caller memory transient or not VM-allocated"

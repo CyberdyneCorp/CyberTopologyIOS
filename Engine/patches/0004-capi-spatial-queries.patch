@@ -1,0 +1,388 @@
+--- a/capi/CMakeLists.txt
++++ b/capi/CMakeLists.txt
+@@ -9,7 +9,7 @@
+ add_library(cyber::capi ALIAS cyber_capi)
+ 
+ target_include_directories(cyber_capi PUBLIC include)
+-target_link_libraries(cyber_capi PUBLIC cyber_core cyber_bake cyber_imageio cyber_quadrangulate)
++target_link_libraries(cyber_capi PUBLIC cyber_core cyber_bake cyber_imageio cyber_quadrangulate cyber_retopo)
+ 
+ # The C-facing version mirrors the CMake project() version.
+ target_compile_definitions(cyber_capi PRIVATE
+@@ -28,7 +28,7 @@
+         src/capi.cpp
+     )
+     target_include_directories(cyber_capi_shared PUBLIC include)
+-    target_link_libraries(cyber_capi_shared PRIVATE cyber_core cyber_bake cyber_imageio cyber_quadrangulate)
++    target_link_libraries(cyber_capi_shared PRIVATE cyber_core cyber_bake cyber_imageio cyber_quadrangulate cyber_retopo)
+     set_target_properties(cyber_capi_shared PROPERTIES
+         OUTPUT_NAME cyber_capi
+         POSITION_INDEPENDENT_CODE ON
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -218,6 +218,79 @@
+ const float* cyber_mesh_normals_ptr(const CyberMesh* mesh, size_t* out_count);
+ const float* cyber_mesh_colors_ptr(const CyberMesh* mesh, size_t* out_count);
+ 
++/* ---- spatial queries (retopology phase 3) ------------------------------
++ *
++ * All entry points in this section are READ-ONLY: they never mutate a mesh
++ * handle, so the render cache and the zero-copy pointer views above stay
++ * valid across them. */
++
++/* Element ids used by the spatial and gesture APIs are the engine's stable
++ * per-element ids (cyber::VertexId/EdgeId/FaceId values) — NOT compacted
++ * render-buffer indices. They stay stable across unrelated mutations. */
++#define CYBER_INVALID_ID 0xFFFFFFFFu
++
++/* Opaque snapshot snapper over an immutable Target mesh: a BVH for
++ * closest-surface/raycast queries plus a vertex table for the vertex-snap
++ * modifier (wraps cyber::retopo::SurfaceSnapper). Snapshot semantics: it
++ * does NOT observe later changes to the source mesh; recreate it if the
++ * Target ever changes. Free with cyber_snapper_free. */
++typedef struct CyberSnapper CyberSnapper;
++
++/* Builds a snapper from `target`. Fails with CYBER_ERR_EMPTY when the mesh
++ * has no faces. */
++CyberStatus cyber_snapper_create(const CyberMesh* target, CyberSnapper** out);
++void cyber_snapper_free(CyberSnapper* snapper);
++
++/* Closest point on the Target surface to `query` (x,y,z). Writes the hit
++ * position to out_point and the owning face id to out_face (either may be
++ * NULL). Returns 1 on a hit, 0 when the snapper is NULL/empty. */
++int cyber_snapper_snap_to_surface(const CyberSnapper* snapper, const float query[3],
++                                  float out_point[3], uint32_t* out_face);
++
++/* Nearest Target vertex within `radius` of `query`. Returns 1 and fills
++ * out_point/out_vertex (either may be NULL) when one exists, else 0. */
++int cyber_snapper_snap_to_vertex(const CyberSnapper* snapper, const float query[3],
++                                 float radius, float out_point[3], uint32_t* out_vertex);
++
++/* First Target surface hit along the ray origin + t*direction, t in
++ * (0, max_distance]. `direction` need not be normalized (it is normalized
++ * internally; a zero direction misses). Returns 1 on a hit filling
++ * out_point/out_t/out_face (each may be NULL), else 0. */
++int cyber_snapper_raycast(const CyberSnapper* snapper, const float origin[3],
++                          const float direction[3], float max_distance,
++                          float out_point[3], float* out_t, uint32_t* out_face);
++
++/* ---- EditMesh element queries (world space, brute force at cage scale) --
++ *
++ * Deterministic: distance ties break toward the lower element id. */
++
++/* Nearest live vertex within `max_distance` of `query`. Returns 1 and fills
++ * out_vertex/out_position (either may be NULL) when found, else 0. */
++int cyber_mesh_nearest_vertex(const CyberMesh* mesh, const float query[3],
++                              float max_distance, uint32_t* out_vertex,
++                              float out_position[3]);
++
++/* Nearest live edge (closest point on its segment) within `max_distance` of
++ * `query`. Returns 1 and fills out_edge/out_point (either may be NULL) when
++ * found, else 0. */
++int cyber_mesh_nearest_edge(const CyberMesh* mesh, const float query[3],
++                            float max_distance, uint32_t* out_edge,
++                            float out_point[3]);
++
++/* Endpoint vertex ids of a live edge. Returns 1 on success, 0 when the mesh
++ * is NULL or the edge id is not alive. */
++int cyber_mesh_edge_endpoints(const CyberMesh* mesh, uint32_t edge,
++                              uint32_t out_vertices[2]);
++
++/* 1 when the live edge borders exactly one face, 0 when interior, -1 when
++ * the mesh is NULL or the edge id is not alive. */
++int cyber_mesh_is_boundary_edge(const CyberMesh* mesh, uint32_t edge);
++
++/* Position of a live vertex. Returns 1 on success, 0 when the mesh is NULL
++ * or the vertex id is not alive. */
++int cyber_mesh_vertex_position(const CyberMesh* mesh, uint32_t vertex,
++                               float out_position[3]);
++
+ /* ---- surface baking (group 11) --------------------------------------- */
+ 
+ /* Bakeable map types (surface-baking spec). */
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -30,6 +30,8 @@
+ #include "cyber/imageio/image.hpp"
+ #include "cyber/core/progress.hpp"
+ #include "cyber/core/remesh_params.hpp"
++#include "cyber/retopo/picking.hpp"
++#include "cyber/retopo/snapping.hpp"
+ 
+ // Version numbers are injected from the CMake project() version so this file
+ // stays the single C-facing mirror of the engine version.
+@@ -643,8 +645,176 @@
+ const float* cyber_mesh_colors_ptr(const CyberMesh* mesh, size_t* out_count) {
+     const CyberRenderCache* cache = ensureRenderCache(mesh);
+     return bufferView(cache == nullptr ? nullptr : &cache->colors, out_count);
++}
++
++// ---- spatial queries (retopology phase 3) ---------------------------------
++//
++// Everything here is read-only over the mesh handle: no render-cache
++// invalidation is ever needed (see the LIFETIME note in cyber_capi.h).
++
++// Opaque snapper handle: wraps the engine's BVH-backed SurfaceSnapper (its
++// BVH doubles as the raycast structure via SurfaceSnapper::bvh()).
++struct CyberSnapper {
++    cyber::retopo::SurfaceSnapper snapper;
++};
++
++namespace {
++
++cyber::Vec3 toVec3(const float v[3]) { return {v[0], v[1], v[2]}; }
++
++void writeVec3(float out[3], cyber::Vec3 v) {
++    if (out != nullptr) {
++        out[0] = v.x;
++        out[1] = v.y;
++        out[2] = v.z;
++    }
++}
++
++void writeId(uint32_t* out, cyber::Index id) {
++    if (out != nullptr) {
++        *out = id;
++    }
++}
++
++}  // namespace
++
++CyberStatus cyber_snapper_create(const CyberMesh* target, CyberSnapper** out) {
++    if (target == nullptr || out == nullptr) {
++        setError("cyber_snapper_create: null argument");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    *out = nullptr;
++    try {
++        auto handle = std::make_unique<CyberSnapper>();
++        handle->snapper = cyber::retopo::SurfaceSnapper(target->mesh);
++        if (handle->snapper.empty()) {
++            setError("cyber_snapper_create: target mesh has no faces");
++            return CYBER_ERR_EMPTY;
++        }
++        clearError();
++        *out = handle.release();
++        return CYBER_OK;
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_snapper_create: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    } catch (...) {
++        setError("cyber_snapper_create: unknown error");
++        return CYBER_ERR_RUNTIME;
++    }
++}
++
++void cyber_snapper_free(CyberSnapper* snapper) { delete snapper; }
++
++int cyber_snapper_snap_to_surface(const CyberSnapper* snapper, const float query[3],
++                                  float out_point[3], uint32_t* out_face) {
++    if (snapper == nullptr || query == nullptr || snapper->snapper.empty()) {
++        return 0;
++    }
++    const cyber::retopo::SurfaceHit hit = snapper->snapper.snapToSurface(toVec3(query));
++    writeVec3(out_point, hit.point);
++    writeId(out_face, hit.face.value);
++    return 1;
++}
++
++int cyber_snapper_snap_to_vertex(const CyberSnapper* snapper, const float query[3],
++                                 float radius, float out_point[3], uint32_t* out_vertex) {
++    if (snapper == nullptr || query == nullptr) {
++        return 0;
++    }
++    const std::optional<cyber::retopo::VertexHit> hit =
++        snapper->snapper.snapToVertex(toVec3(query), radius);
++    if (!hit) {
++        return 0;
++    }
++    writeVec3(out_point, hit->point);
++    writeId(out_vertex, hit->vertex.value);
++    return 1;
+ }
+ 
++int cyber_snapper_raycast(const CyberSnapper* snapper, const float origin[3],
++                          const float direction[3], float max_distance,
++                          float out_point[3], float* out_t, uint32_t* out_face) {
++    if (snapper == nullptr || origin == nullptr || direction == nullptr) {
++        return 0;
++    }
++    const cyber::Vec3 dir = cyber::normalized(toVec3(direction));
++    if (cyber::lengthSquared(dir) == 0.0f) {
++        return 0;
++    }
++    const std::optional<cyber::Bvh::RayHit> hit =
++        snapper->snapper.bvh().raycast(toVec3(origin), dir, max_distance);
++    if (!hit) {
++        return 0;
++    }
++    writeVec3(out_point, hit->point);
++    if (out_t != nullptr) {
++        *out_t = hit->t;
++    }
++    writeId(out_face, hit->face.value);
++    return 1;
++}
++
++int cyber_mesh_nearest_vertex(const CyberMesh* mesh, const float query[3],
++                              float max_distance, uint32_t* out_vertex,
++                              float out_position[3]) {
++    if (mesh == nullptr || query == nullptr) {
++        return 0;
++    }
++    const std::optional<cyber::retopo::VertexPick> pick =
++        cyber::retopo::nearestVertex(mesh->mesh, toVec3(query), max_distance);
++    if (!pick) {
++        return 0;
++    }
++    writeId(out_vertex, pick->vertex.value);
++    writeVec3(out_position, pick->position);
++    return 1;
++}
++
++int cyber_mesh_nearest_edge(const CyberMesh* mesh, const float query[3],
++                            float max_distance, uint32_t* out_edge,
++                            float out_point[3]) {
++    if (mesh == nullptr || query == nullptr) {
++        return 0;
++    }
++    const std::optional<cyber::retopo::EdgePick> pick =
++        cyber::retopo::nearestEdge(mesh->mesh, toVec3(query), max_distance);
++    if (!pick) {
++        return 0;
++    }
++    writeId(out_edge, pick->edge.value);
++    writeVec3(out_point, pick->point);
++    return 1;
++}
++
++int cyber_mesh_edge_endpoints(const CyberMesh* mesh, uint32_t edge,
++                              uint32_t out_vertices[2]) {
++    if (mesh == nullptr || out_vertices == nullptr ||
++        !mesh->mesh.isAlive(cyber::EdgeId{edge})) {
++        return 0;
++    }
++    const auto [v0, v1] = mesh->mesh.edgeVertices(cyber::EdgeId{edge});
++    out_vertices[0] = v0.value;
++    out_vertices[1] = v1.value;
++    return 1;
++}
++
++int cyber_mesh_is_boundary_edge(const CyberMesh* mesh, uint32_t edge) {
++    if (mesh == nullptr || !mesh->mesh.isAlive(cyber::EdgeId{edge})) {
++        return -1;
++    }
++    return mesh->mesh.isBoundaryEdge(cyber::EdgeId{edge}) ? 1 : 0;
++}
++
++int cyber_mesh_vertex_position(const CyberMesh* mesh, uint32_t vertex,
++                               float out_position[3]) {
++    if (mesh == nullptr || out_position == nullptr ||
++        !mesh->mesh.isAlive(cyber::VertexId{vertex})) {
++        return 0;
++    }
++    writeVec3(out_position, mesh->mesh.position(cyber::VertexId{vertex}));
++    return 1;
++}
++
+ // ---- surface baking ------------------------------------------------------
+ 
+ struct CyberImage {
+--- a/src/retopo/include/cyber/retopo/snapping.hpp
++++ b/src/retopo/include/cyber/retopo/snapping.hpp
+@@ -67,6 +67,10 @@
+     // Nearest Target vertex within `radius`; nullopt if none is close enough.
+     [[nodiscard]] std::optional<VertexHit> snapToVertex(Vec3 query, float radius) const;
+ 
++    // The underlying Target BVH, for callers that also need raycast picking
++    // (viewport tap→surface queries) without building a second hierarchy.
++    [[nodiscard]] const Bvh& bvh() const { return m_bvh; }
++
+ private:
+     struct VertexRecord {
+         VertexId id;
+--- /dev/null
++++ b/src/retopo/include/cyber/retopo/picking.hpp
+@@ -0,0 +1,82 @@
++#pragma once
++
++#include <optional>
++#include <utility>
++
++#include "cyber/core/math.hpp"
++#include "cyber/core/mesh.hpp"
++
++// EditMesh element picking (manual-retopology spec, "Pencil stroke grammar"
++// context resolution): nearest-vertex and nearest-edge queries against the
++// *EditMesh*. Deliberately brute force — the EditMesh is the low-poly cage
++// (hundreds to a few thousand elements), a linear scan is faster than
++// (re)building an acceleration structure after every mutation, and results
++// are deterministic (ties break toward the lower element id). The Target
++// keeps using the BVH-backed SurfaceSnapper.
++namespace cyber::retopo {
++
++struct VertexPick {
++    VertexId vertex;
++    Vec3 position;
++    float distanceSquared = 0.0f;
++};
++
++struct EdgePick {
++    EdgeId edge;
++    Vec3 point;  // closest point on the edge segment
++    float distanceSquared = 0.0f;
++};
++
++// Closest point on segment [a, b] to `p`.
++[[nodiscard]] inline Vec3 closestPointOnSegment(Vec3 a, Vec3 b, Vec3 p) {
++    const Vec3 ab = b - a;
++    const float len2 = lengthSquared(ab);
++    if (len2 <= 0.0f) {
++        return a;
++    }
++    const float t = std::fmax(0.0f, std::fmin(1.0f, dot(p - a, ab) / len2));
++    return a + ab * t;
++}
++
++// Nearest live vertex within `maxDistance` of `query`; nullopt if none.
++[[nodiscard]] inline std::optional<VertexPick> nearestVertex(const Mesh& mesh, Vec3 query,
++                                                             float maxDistance) {
++    std::optional<VertexPick> best;
++    const float limit = maxDistance * maxDistance;
++    for (Index i = 0; i < mesh.vertexCapacity(); ++i) {
++        const VertexId v{i};
++        if (!mesh.isAlive(v)) {
++            continue;
++        }
++        const Vec3 p = mesh.position(v);
++        const float d2 = lengthSquared(p - query);
++        if (d2 <= limit && (!best || d2 < best->distanceSquared)) {
++            best = VertexPick{v, p, d2};
++        }
++    }
++    return best;
++}
++
++// Nearest live edge (closest point on its segment) within `maxDistance` of
++// `query`; nullopt if none.
++[[nodiscard]] inline std::optional<EdgePick> nearestEdge(const Mesh& mesh, Vec3 query,
++                                                         float maxDistance) {
++    std::optional<EdgePick> best;
++    const float limit = maxDistance * maxDistance;
++    for (Index i = 0; i < mesh.edgeCapacity(); ++i) {
++        const EdgeId e{i};
++        if (!mesh.isAlive(e)) {
++            continue;
++        }
++        const auto [v0, v1] = mesh.edgeVertices(e);
++        const Vec3 point =
++            closestPointOnSegment(mesh.position(v0), mesh.position(v1), query);
++        const float d2 = lengthSquared(point - query);
++        if (d2 <= limit && (!best || d2 < best->distanceSquared)) {
++            best = EdgePick{e, point, d2};
++        }
++    }
++    return best;
++}
++
++}  // namespace cyber::retopo

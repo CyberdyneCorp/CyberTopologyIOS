@@ -26,6 +26,61 @@
 #   0003  capi unique face-edge indices (wireframe topology without fan
 #         diagonals) for the EditMesh overlay pipeline (task 2.3).
 #         TODO(upstream): fold into the 0002 PR and drop the patch.
+#   0004  capi spatial queries (task 3.2 prereq, phase-3 recon "0005"):
+#         CyberSnapper (SurfaceSnapper wrapper: snap-to-surface/vertex +
+#         BVH raycast) and EditMesh nearest-vertex/edge element queries
+#         (new retopo/picking.hpp). Read-only; render cache untouched.
+#         TODO(upstream): PR to CyberRemesherAndUV and drop the patch.
+#   0005  engine two-stage stroke interpreter (task 3.2, design D5):
+#         retopo/stroke_interpreter.hpp (shape classifier + mesh-context
+#         resolver producing interpretation records with ranked
+#         alternatives) + capi cyber_stroke_interpret surface.
+#         TODO(upstream): PR to CyberRemesherAndUV and drop the patch.
+#   0006  capi mesh-editing ops (task 3.3): mutating cyber_retopo_* entry
+#         points (create-face with Target snapping, tweak, geodesic move,
+#         relax, pressure-scaled erase, delete-faces) wrapping the engine's
+#         retopo operators, each invalidating the render cache per the 0002
+#         LIFETIME contract; plus quad-corner estimates on the stroke
+#         interpretation record for applying CreateQuad.
+#         TODO(upstream): PR to CyberRemesherAndUV and drop the patch.
+#   0007  capi mesh-edit exception-path cache invalidation (task 3.3 review
+#         fix): runMeshEdit also drops the render cache when an engine op
+#         throws mid-mutation (partial mutation must never serve the stale
+#         pre-mutation cache). TODO(upstream): fold into the 0006 PR.
+#   0008  stroke quad-corner dedup (task 3.3 review fix): the inscribed-quad
+#         fallback in quadCorners excludes already-picked samples from the
+#         per-diagonal argmax, so one sharp extreme sample (teardrop tip)
+#         can no longer fill two ring slots and produce a degenerate quad
+#         create-face rejects. TODO(upstream): fold into the 0006 PR.
+#   0009  engine quad-loop topology (task 3.4): retopo/loops.hpp (quad-ring
+#         and edge-loop walks) + capi cyber_mesh_edge_loop/quad_ring
+#         queries and cyber_retopo_insert_loop — the FULL-ring loop insert
+#         (the pre-existing actions.hpp insertLoop splits exactly one
+#         quad). TODO(upstream): PR to CyberRemesherAndUV and drop.
+#   0010  capi dissolve/merge/rotate (task 3.4): retopo/dissolve.hpp
+#         (dissolveEdge, rotateEdgeAny incl. quad-pair rotation) + the
+#         cyber_retopo_dissolve_edges/merge_vertices/rotate_edge ops.
+#         TODO(upstream): PR to CyberRemesherAndUV and drop.
+#   0011  stroke interpreter grammar v2 (task 3.4): grid-stroke shape with
+#         lattice estimate (CYBER_SHAPE_GRID/CYBER_ACTION_CREATE_GRID +
+#         grid_size accessor), whole-ring/whole-loop elements for the
+#         insert-vs-tag disambiguation, X-over-region face collection,
+#         lasso start-in-empty-space rule, visibility line restricted to
+#         empty space. TODO(upstream): fold into the 0005 PR.
+#   0012  overlay render state (task 3.4): per-handle hidden-face set and
+#         tagged-edge list filtering/augmenting the render cache (partial
+#         visibility + loop-tag pass) plus cyber_mesh_live_faces; stable
+#         ids and topology untouched. TODO(upstream): PR and drop.
+#   0013  capi welded grid creation (task 3.4): cyber_retopo_create_grid
+#         building one connected block of quads over a shared lattice
+#         (repeated create_face would produce disconnected cells).
+#         TODO(upstream): fold into the 0010 PR.
+#   0014  capi nearest-vertex-excluding (task 3.7, spec "Snap feedback"):
+#         cyber_mesh_nearest_vertex_excluding — the merge-snap detection
+#         query for a vertex being DRAGGED (Tweak/Move), which sits at the
+#         query point and would always win the unfiltered nearest query.
+#         Read-only; render cache untouched. TODO(upstream): fold into the
+#         0004 PR and drop the patch.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -99,33 +154,47 @@ apply_patch_stack() {
     done
 }
 
-# True when the submodule's tracked files exactly match HEAD with the ENTIRE
-# patch stack applied — the overlapping-hunks state the per-patch checks in
-# apply_patch_stack cannot recognize. Builds the expected tree in a throwaway
-# index; never mutates the working tree.
+# True when the submodule's files exactly match HEAD with the ENTIRE patch
+# stack applied — the overlapping-hunks state the per-patch checks in
+# apply_patch_stack cannot recognize. Builds the expected tree in one
+# throwaway index and snapshots the working tree (including files the
+# patches CREATE, which `git diff <tree>` alone would miss as untracked)
+# in a second; never mutates the working tree or the real index.
 worktree_matches_full_stack() {
-    local tmp_index tree patch ok=1
-    tmp_index="$(mktemp)" || return 1
-    if GIT_INDEX_FILE="$tmp_index" git -C "$ENGINE_SRC" read-tree HEAD 2>/dev/null; then
+    local expected_index worktree_index expected_tree worktree_tree patch ok=1
+    expected_index="$(mktemp)" || return 1
+    worktree_index="$(mktemp)" || { rm -f "$expected_index"; return 1; }
+    if GIT_INDEX_FILE="$expected_index" git -C "$ENGINE_SRC" read-tree HEAD 2>/dev/null; then
         for patch in "$PATCH_DIR"/*.patch; do
             [[ -e "$patch" ]] || continue
-            if ! GIT_INDEX_FILE="$tmp_index" git -C "$ENGINE_SRC" \
+            if ! GIT_INDEX_FILE="$expected_index" git -C "$ENGINE_SRC" \
                     apply --cached "$patch" 2>/dev/null; then
                 ok=0
                 break
             fi
         done
         if [[ $ok -eq 1 ]]; then
-            tree="$(GIT_INDEX_FILE="$tmp_index" git -C "$ENGINE_SRC" write-tree 2>/dev/null)" \
-                || ok=0
+            expected_tree="$(GIT_INDEX_FILE="$expected_index" \
+                git -C "$ENGINE_SRC" write-tree 2>/dev/null)" || ok=0
         fi
         if [[ $ok -eq 1 ]]; then
-            git -C "$ENGINE_SRC" diff --quiet "$tree" 2>/dev/null || ok=0
+            # Snapshot the working tree (tracked + untracked, .gitignore
+            # respected) and compare tree hashes.
+            if GIT_INDEX_FILE="$worktree_index" git -C "$ENGINE_SRC" \
+                    read-tree HEAD 2>/dev/null \
+                && GIT_INDEX_FILE="$worktree_index" git -C "$ENGINE_SRC" \
+                    add -A . 2>/dev/null; then
+                worktree_tree="$(GIT_INDEX_FILE="$worktree_index" \
+                    git -C "$ENGINE_SRC" write-tree 2>/dev/null)" || ok=0
+                [[ $ok -eq 1 && "$worktree_tree" == "$expected_tree" ]] || ok=0
+            else
+                ok=0
+            fi
         fi
     else
         ok=0
     fi
-    rm -f "$tmp_index"
+    rm -f "$expected_index" "$worktree_index"
     [[ $ok -eq 1 ]]
 }
 
@@ -177,7 +246,12 @@ build_slice() { # <build-dir-name> <sysroot>
 build_slice engine-ios-sim iphonesimulator
 SLICES=(-library "$BUILD_ROOT/engine-ios-sim/libCyberRemesher.a"
         -headers "$REPO_ROOT/Engine/headers")
-if [[ $SIM_ONLY -eq 0 ]]; then
+# --sim-only skips the device slice only when no prior device build exists
+# (fresh CI runners). Once a device build dir is present, packaging an
+# xcframework WITHOUT the device slice would silently break device builds
+# from Xcode, and a stale device slice would be worse — so rebuild it
+# incrementally (seconds after the first full build) and keep both slices.
+if [[ $SIM_ONLY -eq 0 || -d "$BUILD_ROOT/engine-ios" ]]; then
     build_slice engine-ios iphoneos
     SLICES+=(-library "$BUILD_ROOT/engine-ios/libCyberRemesher.a"
              -headers "$REPO_ROOT/Engine/headers")

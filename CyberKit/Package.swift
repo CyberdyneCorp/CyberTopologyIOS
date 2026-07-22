@@ -27,9 +27,18 @@ let package = Package(
             name: "CyberRemesherC",
             path: "Binaries/CyberRemesherC.xcframework"
         ),
+        // Vendored ufbx FBX parser (single-file C library, MIT — see
+        // Sources/ufbx/VENDORED.md for the pinned version). Parsing an
+        // interchange format is I/O plumbing and allowed outside the engine
+        // (design D1); mesh CONSTRUCTION from the parsed data still goes
+        // through the engine (FBXImport.swift).
+        .target(
+            name: "ufbx",
+            exclude: ["LICENSE", "VENDORED.md"]
+        ),
         .target(
             name: "CyberKit",
-            dependencies: ["CyberRemesherC"],
+            dependencies: ["CyberRemesherC", "ufbx"],
             linkerSettings: [
                 // The engine is C++20; the C facade needs the C++ runtime
                 // plus the frameworks used by the Metal compute backend.

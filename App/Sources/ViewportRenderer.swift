@@ -39,6 +39,11 @@ final class ViewportRenderer: NSObject {
     let overlayPath: EditMeshOverlayPath
     /// Ghost (proposed) geometry pipeline (task 2.4).
     let ghostPath: GhostRenderPath
+    /// Hover ghost-quad hint pipeline (task 3.6): a SECOND ghost path so
+    /// the hover hint never fights the Weave-proposal feed (or the DEBUG
+    /// preview) over one set of buffers. Always array-fed (pooled copies) —
+    /// hover geometry is transient by nature, so zero-copy never applies.
+    let hoverGhostPath: GhostRenderPath
     /// Render-time probe over every submitted frame (perf harness).
     let frameProbe = FrameTimeProbe()
 
@@ -61,6 +66,7 @@ final class ViewportRenderer: NSObject {
     var hasMesh: Bool { renderPath.hasGeometry }
     var hasOverlay: Bool { overlayPath.hasGeometry }
     var hasGhost: Bool { ghostPath.hasGeometry }
+    var hasHoverGhost: Bool { hoverGhostPath.hasGeometry }
 
     /// EditMesh overlay display state (opacity / x-ray / occlusion bias),
     /// pushed from the view-options popover.
@@ -75,6 +81,10 @@ final class ViewportRenderer: NSObject {
     /// time uniform, so mutating this never touches geometry.
     var ghostStyle = GhostStyle.proposal {
         didSet { if ghostStyle != oldValue { invalidate() } }
+    }
+    /// Hover ghost-quad hint style (task 3.6).
+    var hoverGhostStyle = GhostStyle.hoverHint {
+        didSet { if hoverGhostStyle != oldValue { invalidate() } }
     }
     /// Retains the engine mesh whose buffers the ghost path wrapped with
     /// `bytesNoCopy` (zero-copy lifetime contract: the aliasing MTLBuffers
@@ -120,15 +130,68 @@ final class ViewportRenderer: NSObject {
         onNeedsDisplay?()
     }
 
+    /// Deferred geometry refresh, executed exactly once at the start of the
+    /// next encoded frame (task 3.3 live-brush review fix). Live brush
+    /// verbs mutate the engine mesh per input sample — at up to 240 Hz of
+    /// coalesced Pencil samples on ProMotion — but re-uploading geometry
+    /// that often would rebuild the engine render cache (O(mesh)) and run
+    /// the buffer pool's reuse fence (a synchronous GPU drain) per SAMPLE
+    /// on the main thread. Instead the viewport coordinator parks ONE
+    /// refresh closure here and requests a frame; the draw path flushes it,
+    /// so uploads happen at most once per rendered frame no matter how many
+    /// samples arrived in between. The closure reads live state at flush
+    /// time (never captured geometry), so coalescing can never upload a
+    /// stale mesh.
+    var pendingGeometryRefresh: (@MainActor () -> Void)?
+
+    /// Runs and clears the pending refresh; called at the top of both frame
+    /// entry points (`draw(in:)` and `renderOffscreen`).
+    func flushPendingGeometryRefresh() {
+        guard let refresh = pendingGeometryRefresh else { return }
+        pendingGeometryRefresh = nil
+        refresh()
+    }
+
     /// True while any time-driven animation needs continuous redraws:
-    /// camera reframe, overlay creation sweep, or the ghost pulse (ghosts
-    /// animate for as long as they are shown).
+    /// camera reframe, overlay creation sweep, or a ghost pulse (both the
+    /// proposal ghosts and the hover ghost hint animate while shown).
     func isAnimating(at time: Double = CACurrentMediaTime()) -> Bool {
-        animation != nil || isOverlayAnimating(at: time) || hasGhost
+        animation != nil || isOverlayAnimating(at: time) || hasGhost || hasHoverGhost
     }
 
     private var aspect: Float {
         Float(viewportSize.width / max(viewportSize.height, 1))
+    }
+
+    /// Current viewport aspect (width/height), for consumers that measure
+    /// normalized screen-space geometry undistorted (the task-3.2 stroke
+    /// recognizer).
+    var viewportAspect: Float { aspect }
+
+    /// Column-major world→clip matrix of the current camera pose, in
+    /// `simd_float4x4` memory order — the exact matrix `encodeFrame` draws
+    /// with, exposed so the engine gesture recognizer resolves stroke
+    /// context against what the user actually sees (task 3.2, design D5).
+    func viewProjectionColumns() -> [Float] {
+        let mvp = camera.projectionMatrix(aspect: aspect, bounds: bounds) * camera.viewMatrix()
+        var columns: [Float] = []
+        columns.reserveCapacity(16)
+        for column in [mvp.columns.0, mvp.columns.1, mvp.columns.2, mvp.columns.3] {
+            columns.append(column.x)
+            columns.append(column.y)
+            columns.append(column.z)
+            columns.append(column.w)
+        }
+        return columns
+    }
+
+    /// World-space camera ray through a normalized viewport point (0...1,
+    /// origin top-left) — the unprojection dual of
+    /// `viewProjectionColumns()`, used by the verb layer to land stroke
+    /// points on the Target (task 3.3).
+    func cameraRay(atNormalizedPoint point: SIMD2<Float>) -> MeshEditController.Ray? {
+        let mvp = camera.projectionMatrix(aspect: aspect, bounds: bounds) * camera.viewMatrix()
+        return ScreenRay.ray(inverseViewProjection: mvp.inverse, normalizedPoint: point)
     }
 
     /// Fails only when Metal is unavailable or the selected render path
@@ -169,9 +232,13 @@ final class ViewportRenderer: NSObject {
             device: device, commandQueue: queue,
             preferPrivateStorage: pool.usesPrivateStorage
         )
+        let hoverGhost = GhostRenderPath(
+            device: device, commandQueue: queue,
+            preferPrivateStorage: pool.usesPrivateStorage
+        )
 
         guard
-            let path, let overlay, let ghost,
+            let path, let overlay, let ghost, let hoverGhost,
             let depth = device.makeDepthStencilState(descriptor: depthDescriptor)
         else { return nil }
 
@@ -182,6 +249,7 @@ final class ViewportRenderer: NSObject {
         self.renderPath = path
         self.overlayPath = overlay
         self.ghostPath = ghost
+        self.hoverGhostPath = hoverGhost
         self.depthState = depth
         super.init()
     }
@@ -194,7 +262,10 @@ final class ViewportRenderer: NSObject {
     /// Zero-copy note: the Target keeps the pooled upload (it must also
     /// serve the private-storage fallback); the ghost path (task 2.4)
     /// shares engine buffers via `EngineBufferSharing` when they qualify.
-    func load(mesh: Mesh) {
+    /// `preservingCamera` keeps the current pose (mesh edits reloading the
+    /// same object must not snap the view back to frame-to-fit); bounds and
+    /// clip planes still update from the new geometry.
+    func load(mesh: Mesh, preservingCamera: Bool = false) {
         mesh.withRenderBuffers { buffers in
             loadGeometry(
                 TargetGeometry(
@@ -202,7 +273,8 @@ final class ViewportRenderer: NSObject {
                     normals: buffers.normals,
                     colors: buffers.colors,
                     indices: buffers.triangleIndices
-                )
+                ),
+                preservingCamera: preservingCamera
             )
         }
     }
@@ -241,7 +313,7 @@ final class ViewportRenderer: NSObject {
         }
     }
 
-    private func loadGeometry(_ geometry: TargetGeometry) {
+    private func loadGeometry(_ geometry: TargetGeometry, preservingCamera: Bool = false) {
         guard
             let sceneBounds = SceneBounds(positions: geometry.positions),
             renderPath.load(geometry)
@@ -250,9 +322,11 @@ final class ViewportRenderer: NSObject {
             return
         }
         bounds = sceneBounds
-        camera = CameraState.framing(bounds, aspect: aspect)
-        initialFraming = camera
-        animation = nil
+        if !preservingCamera {
+            camera = CameraState.framing(bounds, aspect: aspect)
+            initialFraming = camera
+            animation = nil
+        }
         invalidate()
     }
 
@@ -277,7 +351,10 @@ final class ViewportRenderer: NSObject {
         mesh: Mesh, restartAnimation: Bool = true, at time: Double = CACurrentMediaTime()
     ) {
         let loaded = mesh.withRenderBuffers { buffers in
-            overlayPath.load(positions: buffers.positions, edges: buffers.edgeIndices)
+            overlayPath.load(
+                positions: buffers.positions, edges: buffers.edgeIndices,
+                taggedEdges: buffers.taggedEdgeIndices
+            )
         }
         guard loaded else {
             overlayCreationTime = nil
@@ -340,6 +417,18 @@ final class ViewportRenderer: NSObject {
     /// MTLBuffers never outlive it; `ghostPath.load` drains the queue before
     /// dropping previous wrappers, so replacing/releasing the old source
     /// mesh below is ordered after every in-flight frame.
+    ///
+    /// ADDITIONAL zero-copy precondition since the task-3.3 editing ops
+    /// (`cyber_retopo_*`): retention alone no longer protects the aliased
+    /// memory. Every mutating op invalidates the handle's render cache —
+    /// freeing the exact vectors a zero-copy wrapper aliases — while the
+    /// `Mesh` handle stays alive, so a ghost must NEVER wrap a mutable
+    /// handle (the live `recognizerEditMesh` the verbs edit). Before
+    /// `engineRenderCachesAreVMAllocated` is ever flipped to true, callers
+    /// must guarantee ghost sources are immutable snapshots (today's DEBUG
+    /// preview already deserializes its own handle via `bundle.mesh(for:)`),
+    /// or the mutation path must drain the ghost queue first — otherwise
+    /// in-flight GPU frames read freed heap on the first relax/move/erase.
     func loadGhost(mesh: Mesh) {
         let loaded = mesh.withRenderBuffers { buffers in
             ghostPath.load(
@@ -388,6 +477,45 @@ final class ViewportRenderer: NSObject {
         // those wrappers alias) afterwards cannot race an in-flight frame.
         ghostPath.clear()
         ghostSourceMesh = nil
+        invalidate()
+    }
+
+    // MARK: - Hover preview (task 3.6)
+
+    /// Applies a hover-preview render state (spec: pencil-interaction /
+    /// "Hover gesture preview"): the ghost-quad hint goes through the
+    /// dedicated hover ghost pipeline (transient arrays — always the
+    /// pooled-copy path, never zero-copy), the loop/snap highlight through
+    /// the overlay's hover pass. `.empty` clears both.
+    func setHoverPreview(_ state: HoverRenderState) {
+        if let ghost = state.ghost {
+            // Lift the hint along its camera-facing normal so it clears
+            // the curved Target between its snapped corners (the flat quad
+            // chord dips below convex surfaces; without the lift the whole
+            // fill loses the depth test). Same mechanism and magnitude as
+            // the task-2.4 debug preview.
+            hoverGhostStyle = GhostStyle.hoverHint(sceneRadius: bounds.radius)
+            ghost.positions.withUnsafeBufferPointer { positions in
+                ghost.normals.withUnsafeBufferPointer { normals in
+                    ghost.indices.withUnsafeBufferPointer { indices in
+                        hoverGhostPath.load(
+                            positions: positions, normals: normals, indices: indices,
+                            hasUnifiedMemory: capabilities.hasUnifiedMemory,
+                            allowZeroCopy: false,
+                            // The hint follows the hover point (reloads at
+                            // input rate): keep the log quiet.
+                            logsSharingDecision: false
+                        )
+                    }
+                }
+            }
+        } else if hasHoverGhost {
+            hoverGhostPath.clear()
+        }
+        let highlight = state.highlight ?? HoverRenderState.Highlight()
+        overlayPath.setHoverHighlight(
+            segments: highlight.segments, points: highlight.points
+        )
         invalidate()
     }
 
@@ -474,7 +602,7 @@ final class ViewportRenderer: NSObject {
             return
         }
         defer { encoder.endEncoding() }
-        guard hasMesh || hasOverlay || hasGhost else { return }
+        guard hasMesh || hasOverlay || hasGhost || hasHoverGhost else { return }
 
         let view = camera.viewMatrix()
         let projection = camera.projectionMatrix(aspect: aspect, bounds: bounds)
@@ -504,6 +632,15 @@ final class ViewportRenderer: NSObject {
             )
         )
 
+        // Hover ghost-quad hint (task 3.6): same slot as proposals — under
+        // the committed wireframe, depth-tested against the Target.
+        hoverGhostPath.encode(
+            into: encoder,
+            uniforms: GhostUniformsFactory.uniforms(
+                mvp: mvp, viewDirection: forward, style: hoverGhostStyle, time: time
+            )
+        )
+
         // EditMesh wireframe renders after the Target so its depth-tested
         // and x-ray passes see the full Target depth buffer.
         overlayPath.encode(
@@ -523,6 +660,7 @@ final class ViewportRenderer: NSObject {
     func renderOffscreen(
         width: Int, height: Int, at time: Double = CACurrentMediaTime()
     ) -> [UInt8]? {
+        flushPendingGeometryRefresh()
         setViewportSize(CGSize(width: width, height: height))
 
         let colorDescriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -588,6 +726,7 @@ extension ViewportRenderer: MTKViewDelegate {
 
     nonisolated func draw(in view: MTKView) {
         MainActor.assumeIsolated {
+            flushPendingGeometryRefresh()
             stepAnimation()
             guard
                 let drawable = view.currentDrawable,

@@ -91,6 +91,9 @@ extension Mesh {
         /// r,g,b per vertex, same order as `positions`; `nil` when the mesh
         /// has no vertex colors.
         public let colors: UnsafeBufferPointer<Float>?
+        /// 2 indices per tagged, live, visible edge into `positions` (loop
+        /// tags, task 3.4); empty when nothing is tagged.
+        public let taggedEdgeIndices: UnsafeBufferPointer<UInt32>
     }
 
     /// Runs `body` with zero-copy views of the engine's render buffers.
@@ -101,18 +104,20 @@ extension Mesh {
     public func withRenderBuffers<R>(_ body: (RenderBuffers) throws -> R) rethrows -> R {
         try withExtendedLifetime(self) {
             var positionCount = 0, indexCount = 0, edgeCount = 0, normalCount = 0
-            var colorCount = 0
+            var colorCount = 0, taggedCount = 0
             let positions = cyber_mesh_positions_ptr(handle, &positionCount)
             let indices = cyber_mesh_triangle_indices_ptr(handle, &indexCount)
             let edges = cyber_mesh_edge_indices_ptr(handle, &edgeCount)
             let normals = cyber_mesh_normals_ptr(handle, &normalCount)
             let colors = cyber_mesh_colors_ptr(handle, &colorCount)
+            let tagged = cyber_mesh_tagged_edge_indices_ptr(handle, &taggedCount)
             let buffers = RenderBuffers(
                 positions: UnsafeBufferPointer(start: positions, count: positionCount),
                 triangleIndices: UnsafeBufferPointer(start: indices, count: indexCount),
                 edgeIndices: UnsafeBufferPointer(start: edges, count: edgeCount),
                 normals: UnsafeBufferPointer(start: normals, count: normalCount),
-                colors: colors.map { UnsafeBufferPointer(start: $0, count: colorCount) }
+                colors: colors.map { UnsafeBufferPointer(start: $0, count: colorCount) },
+                taggedEdgeIndices: UnsafeBufferPointer(start: tagged, count: taggedCount)
             )
             return try body(buffers)
         }

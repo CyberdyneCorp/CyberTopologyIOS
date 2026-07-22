@@ -79,6 +79,69 @@ struct UndoJournalTests {
         #expect(journal.redo() == toBK)
     }
 
+    // MARK: - In-place replacement (task 3.5: interpretation-chip swap)
+
+    @Test("replaceCurrent swaps the command without adding an entry or an undo step")
+    func replaceCurrentKeepsExactlyOneEntry() {
+        var journal = UndoJournal()
+        journal.record(toUV)
+        #expect(journal.depth == 1)
+
+        // The swap returns the replaced command and keeps depth/identity.
+        let replaced = journal.replaceCurrent(with: toBK)
+        #expect(replaced == toUV)
+        #expect(journal.depth == 1)
+        #expect(journal.currentCommand == toBK)
+
+        // ONE undo steps back over the replacement — no extra undo step,
+        // and the old command is gone from the history entirely (no
+        // abandoned sibling branch).
+        #expect(journal.undo() == toBK)
+        #expect(!journal.canUndo)
+        let roots = journal.children(of: nil)
+        #expect(roots.count == 1)
+        #expect(roots.first?.command == toBK)
+
+        // Redo replays the replacement (same node, same preferred branch).
+        #expect(journal.redo() == toBK)
+        #expect(!journal.canRedo)
+    }
+
+    @Test("replaceCurrent at the root does nothing")
+    func replaceCurrentAtRootIsRejected() {
+        var journal = UndoJournal()
+        #expect(journal.replaceCurrent(with: toUV) == nil)
+        #expect(journal.currentCommand == nil)
+        #expect(!journal.canUndo)
+
+        // After undoing back to the root the same guard applies.
+        journal.record(toUV)
+        _ = journal.undo()
+        #expect(journal.replaceCurrent(with: toBK) == nil)
+        #expect(journal.redo() == toUV)
+    }
+
+    @Test("replaceCurrent preserves parent chain, children, and branches")
+    func replaceCurrentPreservesTreeShape() {
+        var journal = UndoJournal()
+        journal.record(toUV)
+        journal.record(toBK)
+        _ = journal.undo()  // current = first node, second stays as redo
+
+        let backToRT = DocumentCommand.setStage(from: .uv, to: .retopology)
+        #expect(journal.replaceCurrent(with: backToRT) == toUV)
+        #expect(journal.depth == 1)
+        #expect(journal.currentCommand == backToRT)
+
+        // The redo child survived the swap and still redoes.
+        #expect(journal.canRedo)
+        #expect(journal.redo() == toBK)
+        #expect(journal.depth == 2)
+        // Walking back reverts the replacement, not the replaced command.
+        #expect(journal.undo() == toBK)
+        #expect(journal.undo() == backToRT)
+    }
+
     @Test("journal round-trips through Codable with position and branches")
     func codableRoundTrip() throws {
         var journal = UndoJournal()

@@ -13,6 +13,10 @@ import Metal
 ///  * **Nothing allocates per frame.** Uploads happen at mesh-load time
 ///    only; `buffer(for:)` returns existing allocations for the render path
 ///    to bind. `allocationCount` exists so tests can enforce this.
+///    Live brush edits (task 3.3) reload geometry repeatedly, but the
+///    viewport coalesces those to AT MOST ONE upload per rendered frame
+///    (`ViewportRenderer.pendingGeometryRefresh`) — never per input
+///    sample; `uploadCount` exists so tests can enforce that too.
 ///  * **Storage mode:** every iOS/iPadOS device and the simulator has
 ///    unified memory, where `.storageModeShared` is already GPU-optimal —
 ///    the GPU reads the very pages the CPU wrote (no blit, no second copy).
@@ -63,6 +67,11 @@ final class GeometryBufferPool {
     /// the fence fires exactly on reuse, never on fresh allocations.
     private(set) var reuseSynchronizations = 0
 
+    /// Successful stream uploads ever performed. Tests assert the live-edit
+    /// coalescing contract with it: N brush samples between two frames cost
+    /// one geometry load (one upload per stream), not N.
+    private(set) var uploadCount = 0
+
     init(device: MTLDevice, commandQueue: MTLCommandQueue, preferPrivateStorage: Bool) {
         self.device = device
         self.commandQueue = commandQueue
@@ -108,6 +117,7 @@ final class GeometryBufferPool {
             if reused { drainQueue() }
             buffer.contents().copyMemory(from: base, byteCount: bytes.count)
         }
+        uploadCount += 1
         return buffer
     }
 

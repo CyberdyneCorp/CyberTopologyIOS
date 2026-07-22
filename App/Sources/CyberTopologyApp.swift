@@ -25,6 +25,47 @@ enum UITestSupport {
     /// document so object-list / export flows are drivable from XCUITest
     /// (the Files picker is system UI and cannot be automated).
     static let seedEditMeshArgument = "-UITestSeedEditMesh"
+    /// With `openDocumentArgument`: imports a two-quad strip (middle edge
+    /// under the viewport center) as the EditMesh, so the task-3.5 chip UI
+    /// test can draw the genuinely AMBIGUOUS stroke of the spec — along
+    /// the middle edge: tag loop applied, insert loop as the alternative.
+    static let seedEditMeshStripArgument = "-UITestSeedEditMeshStrip"
+    /// With `openDocumentArgument`: imports a domed grid as the Target so
+    /// verb flows (task 3.3) have a surface to snap onto.
+    static let seedTargetArgument = "-UITestSeedTarget"
+    /// Shows the "Draw Test Quad" injection button (task 3.3): XCUITest
+    /// cannot synthesize a multi-segment single-touch polyline, so the
+    /// end-to-end quad-draw UI test replays the committed square fixture
+    /// through the real capture → recognizer → verb pipeline.
+    static let strokeInjectionArgument = "-UITestStrokeInjection"
+    /// Auto-injects the square stroke ~2 s after the editor appears (the
+    /// visual-verification screenshot hook — no XCUITest driver needed).
+    static let autoDrawQuadArgument = "-UITestAutoDrawQuad"
+    /// Same hook for the one-stroke grid gesture (task 3.4).
+    static let autoDrawGridArgument = "-UITestAutoDrawGrid"
+    /// Same hook for the ambiguous ring-insert stroke (task 3.5: the
+    /// interpretation chip with its alternatives in the screenshot).
+    static let autoDrawRingArgument = "-UITestAutoDrawRing"
+    /// Hover-preview screenshot hooks (task 3.6): after the auto-draw
+    /// settles, scan the viewport for a hover point whose preview is the
+    /// slide-loop highlight / the ghost-quad hint and lock it (the
+    /// simulator cannot synthesize Pencil hover; the probe drives the SAME
+    /// controller the hover recognizer feeds).
+    static let autoHoverLoopArgument = "-UITestAutoHoverLoop"
+    static let autoHoverGhostArgument = "-UITestAutoHoverGhost"
+    /// Shows the Pencil Pro quick-verb palette shortly after the editor
+    /// appears (task 3.7): the simulator cannot synthesize a squeeze, so
+    /// the UI test and the screenshot hook drive the same model entry the
+    /// `UIPencilInteraction` delegate calls on hardware.
+    static let showQuickVerbPaletteArgument = "-UITestShowQuickVerbPalette"
+    /// Begins a real Tweak drag that parks one EditMesh vertex within
+    /// merge range of another and leaves the stroke in flight (task 3.7):
+    /// the snap-target pre-highlight is visible for the screenshot.
+    static let autoSnapDragArgument = "-UITestAutoSnapDrag"
+    /// Presents the Action Gallery shortly after the editor appears
+    /// (task 3.8 screenshot hook — the same presentation the toolbar's
+    /// gallery button drives).
+    static let showActionGalleryArgument = "-UITestShowActionGallery"
 
     static var openDocumentRequested: Bool {
         ProcessInfo.processInfo.arguments.contains(openDocumentArgument)
@@ -32,6 +73,50 @@ enum UITestSupport {
 
     static var seedEditMeshRequested: Bool {
         ProcessInfo.processInfo.arguments.contains(seedEditMeshArgument)
+    }
+
+    static var seedEditMeshStripRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(seedEditMeshStripArgument)
+    }
+
+    static var seedTargetRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(seedTargetArgument)
+    }
+
+    static var strokeInjectionRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(strokeInjectionArgument)
+    }
+
+    static var autoDrawQuadRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(autoDrawQuadArgument)
+    }
+
+    static var autoDrawGridRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(autoDrawGridArgument)
+    }
+
+    static var autoDrawRingRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(autoDrawRingArgument)
+    }
+
+    static var autoHoverLoopRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(autoHoverLoopArgument)
+    }
+
+    static var autoHoverGhostRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(autoHoverGhostArgument)
+    }
+
+    static var showQuickVerbPaletteRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(showQuickVerbPaletteArgument)
+    }
+
+    static var autoSnapDragRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(autoSnapDragArgument)
+    }
+
+    static var showActionGalleryRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(showActionGalleryArgument)
     }
 
     /// Minimal colored quad used by the seed hook.
@@ -45,6 +130,57 @@ enum UITestSupport {
         """
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("seed-quad.obj")
+        try obj.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    /// Two-quad strip sharing the vertical middle edge (x = 0.5): after
+    /// frame-to-fit that edge projects onto the vertical center line —
+    /// exactly under the committed ring-insert stroke, making the stroke
+    /// ambiguous (along the edge AND crossing it): tag loop best, insert
+    /// loop ranked as the one-tap alternative (task 3.5).
+    static func writeSeedStripOBJ() throws -> URL {
+        let obj = """
+        v 0 0 0 1 0 0
+        v 0.5 0 0 0 1 0
+        v 1 0 0 0 0 1
+        v 0 1 0 1 1 0
+        v 0.5 1 0 0 1 1
+        v 1 1 0 1 0 1
+        f 1 2 5 4
+        f 2 3 6 5
+        """
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("seed-strip.obj")
+        try obj.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    /// Gently domed 10x10-quad grid used by the seed-target hook: a real
+    /// curved surface, so snapped EditMesh vertices land visibly OFF the
+    /// z=0 plane (verbs must project onto the Target, not just keep z).
+    static func writeSeedTargetOBJ() throws -> URL {
+        let n = 10
+        var obj = ""
+        for row in 0...n {
+            for col in 0...n {
+                let x = Double(col) / Double(n) * 2 - 1
+                let y = Double(row) / Double(n) * 2 - 1
+                let z = 0.45 * (1 - 0.5 * (x * x + y * y))
+                obj += "v \(x) \(y) \(z) 0.55 0.58 0.65\n"
+            }
+        }
+        for row in 0..<n {
+            for col in 0..<n {
+                let a = row * (n + 1) + col + 1
+                let b = a + 1
+                let c = a + n + 2
+                let d = a + n + 1
+                obj += "f \(a) \(b) \(c) \(d)\n"
+            }
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("seed-target.obj")
         try obj.write(to: url, atomically: true, encoding: .utf8)
         return url
     }
@@ -64,6 +200,11 @@ enum UITestSupport {
         guard arguments.contains(resetArgument) else { return }
         let fileManager = FileManager.default
         try? fileManager.removeItem(at: journalURL)
+        // Toolbar customization persists in UserDefaults (task 3.8);
+        // clean-slate launches reset it so every UI test starts from the
+        // default layout (the persistence UI test relaunches WITHOUT
+        // reset to prove restoration).
+        UserDefaults.standard.removeObject(forKey: ToolbarStore.defaultsKey)
         let contents = (try? fileManager.contentsOfDirectory(
             at: documentsDirectory, includingPropertiesForKeys: nil
         )) ?? []

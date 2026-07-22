@@ -38,7 +38,7 @@ The viewport SHALL provide a true x-ray/see-through mode for the EditMesh agains
 - **THEN** far-side EditMesh geometry SHALL be visible with depth-attenuated styling
 
 ### Requirement: Robust camera system
-The camera SHALL support one-finger orbit, two-finger pinch zoom/pan, and double-tap reframe; orbit/zoom speed SHALL be user-adjustable; near/far clip planes SHALL adapt to scene scale (no clipping on very small or very large imports); and a camera-rescue action SHALL always return to a valid framing, including when the camera is inside the model.
+The camera gesture mapping SHALL be: one-finger drag rotates (orbits), two-finger pinch zooms in/out, two-finger drag moves (pans), double-tap reframes. Orbit/zoom speed SHALL be user-adjustable; near/far clip planes SHALL adapt to scene scale (no clipping on very small or very large imports); and a camera-rescue action SHALL always return to a valid framing, including when the camera is inside the model.
 
 #### Scenario: Camera rescue from inside the mesh
 - **WHEN** the camera ends up inside the Target and the user invokes camera rescue (or double-tap reframe)

@@ -58,7 +58,31 @@ final class TopoDocument: UIDocument, ObservableObject {
         }
     }
 
-    /// Two-finger tap. Steps the journal back one command.
+    /// Interpretation-chip alternative swap (task 3.5, spec:
+    /// pencil-interaction / "One-tap misrecognition fix"): atomically
+    /// replaces the LAST journaled command — revert the old command, apply
+    /// the replacement, and swap the journal node in place, all in one
+    /// bundle update. Exactly one journal entry stands for the stroke after
+    /// the swap, and a single undo steps back over the replacement.
+    ///
+    /// `expecting` guards against a stale chip: when the journal's current
+    /// command is no longer the one the chip applied (an undo tap or
+    /// another commit landed since), nothing is touched and the swap
+    /// reports failure.
+    @discardableResult
+    func performReplacingLast(
+        with command: DocumentCommand, expecting current: DocumentCommand
+    ) -> Bool {
+        guard bundle.journal.currentCommand == current else { return false }
+        updateBundle { bundle in
+            guard let replaced = bundle.journal.replaceCurrent(with: command) else { return }
+            replaced.revert(on: &bundle)
+            command.apply(to: &bundle)
+        }
+        return true
+    }
+
+    /// Three-finger tap. Steps the journal back one command.
     func undoLast() {
         updateBundle { bundle in
             if let command = bundle.journal.undo() {
@@ -67,7 +91,7 @@ final class TopoDocument: UIDocument, ObservableObject {
         }
     }
 
-    /// Three-finger tap. Steps the journal forward along the active branch.
+    /// Four-finger tap. Steps the journal forward along the active branch.
     func redoLast() {
         updateBundle { bundle in
             if let command = bundle.journal.redo() {
@@ -76,15 +100,15 @@ final class TopoDocument: UIDocument, ObservableObject {
         }
     }
 
-    // MARK: - OBJ import/export (task 1.5, spec: scene-pipeline)
+    // MARK: - Mesh import/export (tasks 1.5 + 3.10, spec: scene-pipeline)
 
-    /// Imports an OBJ as a new journaled object. `url` may be
-    /// security-scoped (Files picker).
-    func importOBJ(at url: URL, role: DocumentManifest.Object.Role) throws {
+    /// Imports a mesh file (OBJ or FBX, dispatched by extension) as a new
+    /// journaled object. `url` may be security-scoped (Files picker).
+    func importMesh(at url: URL, role: DocumentManifest.Object.Role) throws {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let name = url.deletingPathExtension().lastPathComponent
-        let command = try bundle.importCommandForOBJ(at: url, name: name, role: role)
+        let command = try bundle.importCommand(for: url, name: name, role: role)
         perform(command)
     }
 

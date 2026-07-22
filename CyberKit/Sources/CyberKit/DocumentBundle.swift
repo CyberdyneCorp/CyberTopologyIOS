@@ -50,16 +50,28 @@ public struct DocumentManifest: Codable, Equatable, Sendable {
         /// File name of this object's opaque payload inside `objects/`.
         public var payloadFile: String
         public var counts: Counts?
+        /// Monotonic edit generation, bumped by every `meshEdit` command so
+        /// equal-count edits (a moved vertex) still change the manifest
+        /// entry — the signal manifest observers (viewport sync) key on.
+        /// Optional: absent in pre-3.3 documents and for never-edited
+        /// objects.
+        public var revision: Int?
+        /// Loop tags + partial visibility (task 3.4). Optional: absent in
+        /// pre-3.4 documents and for never-annotated objects.
+        public var annotations: MeshAnnotations?
 
         public init(
             id: UUID = UUID(), name: String, role: Role, payloadFile: String,
-            counts: Counts? = nil
+            counts: Counts? = nil, revision: Int? = nil,
+            annotations: MeshAnnotations? = nil
         ) {
             self.id = id
             self.name = name
             self.role = role
             self.payloadFile = payloadFile
             self.counts = counts
+            self.revision = revision
+            self.annotations = annotations
         }
     }
 
@@ -143,6 +155,15 @@ public struct DocumentBundle: Equatable, Sendable {
         let object = DocumentManifest.Object(id: id, name: name, role: role, payloadFile: payloadFile)
         manifest.objects.append(object)
         return object
+    }
+
+    /// Applies `mutate` to the manifest object with `id` (no-op when the
+    /// object is absent — e.g. reverting past its deletion).
+    public mutating func updateObject(
+        id: UUID, _ mutate: (inout DocumentManifest.Object) -> Void
+    ) {
+        guard let index = manifest.objects.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&manifest.objects[index])
     }
 
     /// Deserializes the engine mesh stored for `object`.

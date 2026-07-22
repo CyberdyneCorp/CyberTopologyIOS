@@ -1,0 +1,34 @@
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index 7d7f180..faccf3d 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -850,7 +850,14 @@ cyber::retopo::PinSet makePinSet(const uint32_t* pinned, size_t pinned_count) {
+ }
+ 
+ // Shared prologue/epilogue for the editing ops: argument checks, exception
+-// containment, and render-cache invalidation on success.
++// containment, and render-cache invalidation. The cache is dropped on
++// success AND when an exception escapes the body: an engine op can throw
++// after it already mutated topology/positions (std::bad_alloc, invariant
++// throws mid-operation), and keeping the pre-mutation cache would desync
++// the viewport from what payloadData() serializes until an unrelated
++// reload. Error STATUS returns deliberately do not invalidate: bodies
++// validate arguments before touching the mesh, so a status failure means
++// the mesh (its live element set) is unchanged.
+ template <typename Body>
+ CyberStatus runMeshEdit(CyberMesh* mesh, const char* name, Body body) {
+     if (mesh == nullptr) {
+@@ -865,9 +872,13 @@ CyberStatus runMeshEdit(CyberMesh* mesh, const char* name, Body body) {
+         }
+         return status;
+     } catch (const std::exception& e) {
++        // The op may have partially mutated the mesh before throwing —
++        // never serve a pre-mutation cache over a mutated mesh.
++        invalidateRenderCache(mesh);
+         setError(std::string(name) + ": " + e.what());
+         return CYBER_ERR_RUNTIME;
+     } catch (...) {
++        invalidateRenderCache(mesh);
+         setError(std::string(name) + ": unknown error");
+         return CYBER_ERR_RUNTIME;
+     }

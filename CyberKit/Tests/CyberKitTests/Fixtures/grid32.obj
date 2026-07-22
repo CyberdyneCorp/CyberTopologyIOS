@@ -1,0 +1,23 @@
+# 3x2 quad grid strip (task 3.4 loop-gesture fixture): 3 columns, 2 rows.
+# Under the tests' fixed ortho projection ([-0.5,0.5] -> [0.1,0.9]) the
+# columns project to sx {0.2, 0.4, 0.6, 0.8} and the rows to sy
+# {0.7, 0.5, 0.3}; the middle horizontal edge row (engine vertices 4..7)
+# is a 3-edge loop through two interior valence-4 vertices.
+v -0.375 -0.25 0
+v -0.125 -0.25 0
+v  0.125 -0.25 0
+v  0.375 -0.25 0
+v -0.375  0.00 0
+v -0.125  0.00 0
+v  0.125  0.00 0
+v  0.375  0.00 0
+v -0.375  0.25 0
+v -0.125  0.25 0
+v  0.125  0.25 0
+v  0.375  0.25 0
+f 1 2 6 5
+f 2 3 7 6
+f 3 4 8 7
+f 5 6 10 9
+f 6 7 11 10
+f 7 8 12 11

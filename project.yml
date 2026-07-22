@@ -35,6 +35,12 @@ targets:
       - App/Resources
     dependencies:
       - package: CyberKit
+        product: CyberKit
+      # Stroke capture (task 3.1) records live input in the task-1.1b
+      # StrokeSample format and feeds StrokeConsumer; the recorder side is
+      # app code so dogfooding sessions can save replayable fixtures.
+      - package: CyberKit
+        product: CyberKitTesting
     preBuildScripts:
       - name: Build CyberRemesherAndUV engine (if missing)
         script: |
@@ -115,6 +121,15 @@ schemes:
         CyberTopology: all
     run:
       config: Debug
+      # Pressing Play opens a seeded document directly: without this, a
+      # fresh install lands on the EMPTY system document browser, which in
+      # dark mode renders as a near-black screen and reads as a hang.
+      # Toggle these off in Edit Scheme for testing the raw browser flow
+      # (note: xcodegen regeneration restores them from here).
+      commandLineArguments:
+        "-UITestOpenDocument": true
+        "-UITestSeedTarget": true
+        "-UITestSeedEditMesh": true
     test:
       config: Debug
       # Coverage is gathered for ALL targets (no coverageTargets list): with

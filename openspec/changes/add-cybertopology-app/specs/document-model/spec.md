@@ -32,15 +32,15 @@ A document SHALL support multiple Targets and multiple EditMesh objects simultan
 - **THEN** the other EditMesh SHALL be unaffected, and each SHALL be exportable individually or together
 
 ### Requirement: Unbounded undo tree
-The system SHALL maintain an undo history for the active document bounded only by storage, not by a fixed step count. Undo SHALL be branch-preserving: redoing after divergent edits SHALL NOT silently discard the abandoned branch within the session. Two-finger tap SHALL undo; three-finger tap SHALL redo.
+The system SHALL maintain an undo history for the active document bounded only by storage, not by a fixed step count. Undo SHALL be branch-preserving: redoing after divergent edits SHALL NOT silently discard the abandoned branch within the session. Three-finger tap SHALL undo; four-finger tap SHALL redo (two-finger touches are reserved exclusively for camera navigation, so undo can never collide with a pinch/pan).
 
 #### Scenario: Deep undo
 - **WHEN** a user performs 500 edit operations and then invokes undo 500 times
 - **THEN** the document SHALL return to its initial state without loss
 
 #### Scenario: Gesture undo/redo
-- **WHEN** the user two-finger taps the viewport
-- **THEN** the last operation SHALL be undone; a three-finger tap SHALL redo it
+- **WHEN** the user three-finger taps the viewport
+- **THEN** the last operation SHALL be undone; a four-finger tap SHALL redo it
 
 ### Requirement: Autosave and session recovery in every tier
 The system SHALL autosave documents periodically and on backgrounding, and SHALL recover the in-progress session after a crash or force-quit. Saving and recovery SHALL function in the free tier — saving SHALL NOT be gated by purchase.

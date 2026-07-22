@@ -188,6 +188,28 @@ struct ViewportRendererTests {
         #expect(abs((azBefore - renderer.camera.azimuth) - 20 * CameraState.orbitRadiansPerPoint) < 1e-5)
     }
 
+    /// Task 3.2: the matrix handed to the engine stroke recognizer is the
+    /// exact camera matrix frames are drawn with, flattened column-major
+    /// (`simd_float4x4` memory order), plus the matching viewport aspect.
+    @Test func viewProjectionColumnsMatchTheRenderCameraMatrix() throws {
+        let renderer = try makeRenderer()
+        renderer.load(mesh: try seedMesh())
+        renderer.setViewportSize(CGSize(width: 400, height: 300))
+        renderer.orbit(byPoints: SIMD2(37, -12))  // arbitrary non-default pose
+
+        #expect(abs(renderer.viewportAspect - 400.0 / 300.0) < 1e-6)
+        let columns = renderer.viewProjectionColumns()
+        #expect(columns.count == 16)
+        let mvp = renderer.camera.projectionMatrix(
+            aspect: renderer.viewportAspect, bounds: renderer.bounds
+        ) * renderer.camera.viewMatrix()
+        for column in 0..<4 {
+            for row in 0..<4 {
+                #expect(abs(columns[column * 4 + row] - mvp[column][row]) < 1e-6)
+            }
+        }
+    }
+
     @Test func animatedReframeReachesTargetPose() throws {
         let renderer = try makeRenderer()
         renderer.load(mesh: try seedMesh())

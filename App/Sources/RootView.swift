@@ -45,10 +45,21 @@ struct RootView: View {
         let document = TopoDocument(fileURL: url)
         Task { @MainActor in
             guard await document.open() else { return }
+            let objects = document.bundle.manifest.objects
+            if UITestSupport.seedTargetRequested,
+                !objects.contains(where: { $0.role == .target }),
+                let seed = try? UITestSupport.writeSeedTargetOBJ() {
+                try? document.importMesh(at: seed, role: .target)
+            }
             if UITestSupport.seedEditMeshRequested,
-                document.bundle.manifest.objects.isEmpty,
+                !objects.contains(where: { $0.role == .editMesh }),
                 let seed = try? UITestSupport.writeSeedOBJ() {
-                try? document.importOBJ(at: seed, role: .editMesh)
+                try? document.importMesh(at: seed, role: .editMesh)
+            }
+            if UITestSupport.seedEditMeshStripRequested,
+                !objects.contains(where: { $0.role == .editMesh }),
+                let seed = try? UITestSupport.writeSeedStripOBJ() {
+                try? document.importMesh(at: seed, role: .editMesh)
             }
             journal.handle(.documentOpened(url))
             openDocument = document

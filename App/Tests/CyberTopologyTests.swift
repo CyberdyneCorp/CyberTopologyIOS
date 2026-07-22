@@ -150,6 +150,40 @@ struct TopoDocumentUndoTests {
         _ = await document.close()
     }
 
+    /// Task 3.5 (spec: pencil-interaction / "One-tap misrecognition fix"):
+    /// the chip's alternative swap replaces the LAST command atomically —
+    /// exactly one journal entry afterwards, one undo steps over it — and
+    /// the expected-current guard rejects stale swaps untouched.
+    @Test func performReplacingLastSwapsAtomicallyAndGuardsStaleChips() async throws {
+        let document = try await openDocument()
+        let toUV = DocumentCommand.setStage(from: .retopology, to: .uv)
+        let toBK = DocumentCommand.setStage(from: .retopology, to: .baking)
+
+        // Nothing journaled yet: the swap is rejected untouched.
+        #expect(!document.performReplacingLast(with: toBK, expecting: toUV))
+        #expect(!document.canUndo)
+
+        document.perform(toUV)
+        #expect(document.bundle.manifest.stage == .uv)
+
+        // Swap: the replacement applied on the REVERTED state and exactly
+        // one entry remains.
+        #expect(document.performReplacingLast(with: toBK, expecting: toUV))
+        #expect(document.bundle.manifest.stage == .baking)
+        #expect(document.canUndo)
+        document.undoLast()
+        #expect(document.bundle.manifest.stage == .retopology)
+        #expect(!document.canUndo)  // ONE entry stood for stroke + swap
+        document.redoLast()
+        #expect(document.bundle.manifest.stage == .baking)
+
+        // Stale chip: the journal current is now toBK, not toUV — a swap
+        // expecting toUV must fail and change nothing.
+        #expect(!document.performReplacingLast(with: toUV, expecting: toUV))
+        #expect(document.bundle.manifest.stage == .baking)
+        _ = await document.close()
+    }
+
     @Test func journalSurvivesReopen() async throws {
         let document = try await openDocument()
         document.perform(.setStage(from: .retopology, to: .baking))
@@ -191,7 +225,7 @@ struct TopoDocumentIOTests {
 
     @Test func importIsJournaledAndUndoable() async throws {
         let document = try await openDocument(named: "Import")
-        try document.importOBJ(at: fixtureURL, role: .target)
+        try document.importMesh(at: fixtureURL, role: .target)
 
         let object = try #require(document.bundle.manifest.objects.first)
         #expect(object.role == .target)
@@ -207,8 +241,8 @@ struct TopoDocumentIOTests {
 
     @Test func exportWritesToUserVisibleExportFolder() async throws {
         let document = try await openDocument(named: "Export Probe")
-        try document.importOBJ(at: fixtureURL, role: .editMesh)
-        try document.importOBJ(at: fixtureURL, role: .target)  // must not export
+        try document.importMesh(at: fixtureURL, role: .editMesh)
+        try document.importMesh(at: fixtureURL, role: .target)  // must not export
 
         let written = try document.exportEditMeshes()
         defer {
@@ -229,7 +263,7 @@ struct TopoDocumentIOTests {
         let document = try await openDocument(named: "Missing")
         let bogus = URL(fileURLWithPath: "/tmp/definitely-missing-\(UUID()).obj")
         #expect(throws: (any Error).self) {
-            try document.importOBJ(at: bogus, role: .target)
+            try document.importMesh(at: bogus, role: .target)
         }
         #expect(document.bundle.manifest.objects.isEmpty)
         #expect(!document.canUndo)
@@ -260,14 +294,36 @@ struct DocumentEditorViewTests {
 
     @Test func rendersWithImportedObjects() async throws {
         let document = try await openDocument()
-        try document.importOBJ(at: fixtureURL, role: .target)
-        try document.importOBJ(at: fixtureURL, role: .editMesh)
+        try document.importMesh(at: fixtureURL, role: .target)
+        try document.importMesh(at: fixtureURL, role: .editMesh)
 
         let editor = DocumentEditorView(document: document, journal: RecoveryJournal(), onClose: {})
         let host = UIHostingController(rootView: editor)
         host.view.frame = CGRect(x: 0, y: 0, width: 1024, height: 768)
         host.view.layoutIfNeeded()
         #expect(host.sizeThatFits(in: CGSize(width: 1024, height: 768)).height > 0)
+        _ = await document.close()
+    }
+
+    @Test func handleImportAcceptsFBXThroughTheSamePath() async throws {
+        // Task 3.10: the Files-picker result path dispatches by extension —
+        // an FBX lands as a journaled object with counts, exactly like OBJ.
+        let document = try await openDocument()
+        let editor = DocumentEditorView(document: document, journal: RecoveryJournal(), onClose: {})
+        let fbxURL = fixtureURL.deletingPathExtension().appendingPathExtension("fbx")
+
+        editor.handleImport(.success(fbxURL), role: .target)
+        let object = try #require(document.bundle.manifest.objects.first)
+        #expect(object.role == .target)
+        #expect(object.name == "cube_colored")
+        #expect(object.counts == .init(vertices: 8, faces: 6))
+        #expect(document.canUndo)
+
+        // Unsupported extensions surface as an import failure, not a crash.
+        editor.handleImport(
+            .success(URL(fileURLWithPath: "/tmp/mesh-\(UUID()).usdz")), role: .target
+        )
+        #expect(document.bundle.manifest.objects.count == 1)
         _ = await document.close()
     }
 
@@ -291,7 +347,7 @@ struct DocumentEditorViewTests {
 
     @Test func exportNowWritesFiles() async throws {
         let document = try await openDocument()
-        try document.importOBJ(at: fixtureURL, role: .editMesh)
+        try document.importMesh(at: fixtureURL, role: .editMesh)
         let editor = DocumentEditorView(document: document, journal: RecoveryJournal(), onClose: {})
 
         editor.exportNow()
@@ -336,7 +392,7 @@ struct UndoGestureViewTests {
         let view = UndoGestureView(onUndo: {}, onRedo: {})
         let uiView = UndoGestureView.makeConfiguredView(coordinator: view.makeCoordinator())
         let taps = uiView.gestureRecognizers?.compactMap { $0 as? UITapGestureRecognizer } ?? []
-        #expect(taps.map(\.numberOfTouchesRequired).sorted() == [2, 3])
+        #expect(taps.map(\.numberOfTouchesRequired).sorted() == [3, 4])
     }
 }
 

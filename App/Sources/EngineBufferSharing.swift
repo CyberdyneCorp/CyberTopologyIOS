@@ -28,10 +28,14 @@ import Foundation
 /// the day the upstream allocation lands.
 ///
 /// Lifetime contract for the zero-copy branch: a `bytesNoCopy` buffer
-/// aliases the engine mesh's memory and MUST NOT outlive the `Mesh` (nor
-/// survive any mutation of it). Whoever wraps engine pointers keeps the
-/// `Mesh` reference alive for as long as the `MTLBuffer` is bound — see
-/// `ViewportRenderer.ghostSourceMesh`.
+/// aliases the engine mesh's memory and MUST NOT outlive the `Mesh` NOR
+/// survive any mutation of it. Retaining the `Mesh` (see
+/// `ViewportRenderer.ghostSourceMesh`) covers only the first half: the
+/// task-3.3 `cyber_retopo_*` editing ops invalidate the handle's render
+/// cache on every mutation — freeing the exact vectors a wrapper aliases —
+/// while the handle stays alive. Zero-copy sources must therefore be
+/// immutable snapshot handles (never the live EditMesh the verbs edit), or
+/// the mutation path must drain in-flight GPU work before the op runs.
 enum EngineBufferSharing {
     /// Whether the engine's render caches honor the full
     /// `makeBuffer(bytesNoCopy:)` allocation contract (VM-allocated via

@@ -36,15 +36,221 @@ scenarios:
       - TopoDocumentTests/saveNewVersionCreatesSiblingAndKeepsOriginal
     Crash recovery:
       - RecoveryJournalPersistenceTests/activeSessionWithExistingFileIsRecovered
+    # Task 3.3: every verb routes created/moved vertices through the engine
+    # SurfaceSnapper before the journaled command commits — engine ops
+    # through CyberKit (create-face/tweak/relax against a plane target) plus
+    # the fixture-replay integration test where the authored quad lands on
+    # the seeded DOMED target (no z=0 point under the stroke, so the assert
+    # cannot pass without real projection).
+    EditMesh vertex snapping:
+      - MeshEditingTests/createFaceSnapsNewVerticesOntoTargetSurface
+      - MeshEditingTests/tweakVertexSnapsToTarget
+      - MeshEditingTests/relaxKeepsVerticesOnTarget
+      - MeshEditControllerTests/squareFixtureCreatesJournaledQuadOnSeededTarget
+  pencil-interaction:
+    # Task 3.1: XCUITest cannot synthesize Apple Pencil touches, so the
+    # pen-side of the scenario is covered headless — the pure arbiter state
+    # machine plus the UIKit glue driven by stubbed pencil/finger touches
+    # (design D5: the arbiter is a pure struct precisely so this is
+    # testable without hardware).
+    Palm rejection during pen stroke:
+      - InputArbiterTests/palmTouchesWhilePenIsDownAreRejected
+      - InputArbiterTests/threeFingersDuringPenStrokeAreAllRejected
+      - ViewportInputControllerTests/palmTouchesDuringPenStrokeDoNotAuthorOrReachCameraGates
+      - ViewportInputControllerTests/palmAdmittedInThePenDownBatchTriggersARecognizerReset
+    # Task 3.9 (spec change 2026-07-21, pencil-only authoring): fingers
+    # NEVER author. The arbiter routes any finger stroke — quad-shaped
+    # included — to the camera with no beginStroke decision under any verb;
+    # the UIKit glue captures nothing from finger touches while the camera
+    # gate keeps admitting them; and the UI test drags a quad-shaped finger
+    # path on the live viewport asserting the object-list mesh counts stay
+    # fixed, no stroke is captured/interpreted, and the journal gains no
+    # entry (undo/redo state unchanged). Camera motion from the admitted
+    # finger gestures is covered by
+    # CyberTopologyUITests/testCameraGesturesDoNotConflictWithUndoTaps.
+    Finger strokes never author:
+      - InputArbiterTests/fingerQuadShapedStrokeNeverAuthorsAndStaysWithTheCamera
+      - InputArbiterTests/fingerNeverAuthorsRegardlessOfActiveVerb
+      - InputArbiterTests/fingerNavigatesByDefault
+      - ViewportInputControllerTests/fingerQuadShapedStrokeIsNeverCapturedAndStaysCameraEligible
+      - CyberTopologyUITests/testFingerStrokesNeverAuthorAndKeepNavigating
+    Spring-loaded Relax:
+      - InputArbiterTests/springLoadedHoldActivatesVerbForHoldDurationOnly
+      - InputArbiterTests/penLiftMidChordKeepsTheHeldVerbUntilRelease
+      - InputArbiterTests/releasingTheCurrentHoldRestoresAnOlderStillHeldOne
+      - CyberTopologyUITests/testVerbToolbarTapSelectsAndHoldRestores
+      - MeshEditControllerTests/relaxScrubSmoothsUnderTheBrushAndJournalsOnce
+    # Task 3.3: Move's surface-geodesic falloff (engine Dijkstra over edge
+    # lengths) leaves disconnected components bit-identical even 0.2 units
+    # away in space — engine ops through CyberKit plus the app-level verb
+    # drag through the real capture→controller pipeline.
+    Geodesic Move falloff:
+      - MeshEditingTests/moveAppliesGeodesicFalloff
+      - MeshEditingTests/moveIgnoresDisconnectedComponent
+      - MeshEditControllerTests/moveDragsWithGeodesicFalloffIgnoringDisconnectedComponent
+    # Task 3.4: both halves against the same committed grid32 mesh + the
+    # real engine recognizer — a stroke ACROSS the quad ring interprets as
+    # insertLoop whose elements walk the WHOLE ring (engine loop walk, capi
+    # cyber_retopo_insert_loop splits every ring quad), a stroke ALONG the
+    # loop interprets as tagLoop carrying the whole loop; the app-level
+    # tests replay both strokes through capture → recognizer → controller
+    # and assert the resulting mesh/annotation state plus undo.
+    Loop insert vs loop tag disambiguation:
+      - StrokeInterpreterTests/lineAcrossRingResolvesFullLoopInsert
+      - StrokeInterpreterTests/lineAlongLoopResolvesWholeLoopTag
+      - MeshEditControllerTests/lineAcrossRingInsertsFullEdgeLoopAndUndoRestoresBytes
+      - MeshEditControllerTests/lineAlongLoopTagsWholeLoopWithColoredRenderAndUndoClears
+    # Task 3.5: the spec's exact misrecognition pair, driven through the
+    # REAL engine recognizer — an along-the-loop stroke (recorded with the
+    # corpus's standard hand wobble) applies as tagLoop with insertLoop
+    # ranked as the alternative; one tap rebuilds the alternative from the
+    # byte-exact pre-stroke snapshot and the document swaps the journaled
+    # command IN PLACE (UndoJournal.replaceCurrent +
+    # TopoDocument.performReplacingLast): exactly one journal entry after
+    # the swap, a single undo steps over it, stale chips (undo landed
+    # first) are rejected untouched. The UI test drives the finger
+    # injection path end to end — stroke, chip, alternative tap, mesh
+    # counts, and the undo-gesture journal invariant.
+    One-tap misrecognition fix:
+      - MeshEditControllerTests/tagLoopStrokeSwapsToInsertLoopInPlace
+      - MeshEditControllerTests/ringStrokeOnSeededStripSwapsToInsertLoopViaTheModel
+      - MeshEditControllerTests/alternativeSwapAfterUndoIsRejectedUntouched
+      - UndoJournalTests/replaceCurrentKeepsExactlyOneEntry
+      - TopoDocumentUndoTests/performReplacingLastSwapsAtomicallyAndGuardsStaleChips
+      - InterpretationChipStateTests/nextStrokeWhileVisibleDismissesImmediately
+      - CyberTopologyUITests/testInterpretationChipSwapsAlternativeInPlace
+    # Task 3.6: hover probes drive the FULL query path the hover recognizer
+    # feeds — coordinator entry → live camera ray → engine Target raycast →
+    # engine nearest-edge pick → interior-edge gate → the REAL engine
+    # edge-loop walk (cyber_mesh_edge_loop) → published preview → the real
+    # Metal overlay highlight pass — asserting the highlighted loop equals
+    # the engine's independently recomputed loop AND the mesh is unmodified
+    # (nothing journaled, byte-identical payload). Only the
+    # UIHoverGestureRecognizer event delivery itself is untestable off
+    # hardware; that half is an explicit device-only XCTSkip counted
+    # against the device test plan (task 9.6).
+    Hover over an edge:
+      - HoverPreviewTests/hoverOverInteriorEdgeHighlightsTheSlideLoopWithoutModifyingTheMesh
+      - HoverPreviewTests/hoverOverBoundaryEdgeShowsNoPreview
+      - HoverPreviewTests/movingAlongTheSameLoopDoesNotRepublishRenderState
+      - HoverHardwareTests/testPencilHoverDeliveryOnHoverCapableHardware
+    # Task 3.7 — the scenario splits at the hardware boundary, mapped
+    # honestly: the PRE-HIGHLIGHT half ("the target SHALL highlight before
+    # commit") plus the merge-on-commit and the event→feedback mapping run
+    # on simulator through the REAL pipeline — capture → Tweak/Move session
+    # → engine nearest-vertex-excluding query (patch 0014) → published
+    # snap-target highlight in the real overlay highlight pass, with the
+    # merge journaled as ONE command and ticks recorded via the injected
+    # haptic seam (SnapFeedbackState / SnapHapticsPlaying). The haptic
+    # ACTUATION half ("a haptic tick SHALL fire" as something the user
+    # FEELS — Core Haptics / Pencil Pro actuator) is hardware-only: an
+    # explicit device-only XCTSkip counted against the device test plan
+    # (task 9.6), like Pencil hover above.
+    Snap feedback:
+      - MeshEditControllerTests/tweakDragWithinMergeRangeHighlightsBeforeCommitThenMergesWithOneEntry
+      - MeshEditControllerTests/moveDragSnapsSeedPositionOntoDisconnectedVertexWithoutTopologyMerge
+      - MeshEditControllerTests/disabledSnapHapticsStillHighlightAndMergeButNeverTick
+      - MeshEditControllerTests/tweakEndingOutsideMergeRangeNeitherMergesNorTicksCommit
+      - MeshEditControllerTests/cancelledSnapDragClearsHighlightWithoutCommitting
+      - SnapFeedbackTests/enteringMergeRangeHighlightsAndTicksOnce
+      - SnapFeedbackTests/committedMergeClearsHighlightAndTicks
+      - SnapFeedbackTests/disabledHapticsDropTicksButKeepTheHighlight
+      - PencilProHardwareTests/testSnapHapticTickActuatesOnHardware
+    # Task 3.8: the UI test drives the real customization loop on the
+    # Action Gallery's slot editor — quick-assign (double-tap), tap-assign,
+    # replace, remove — then relaunches WITHOUT the reset argument and
+    # asserts the customized toolbar (custom slot + verb slots) is restored
+    # exactly, including that the restored slot resolves back to its help
+    # panel. XCUITest cannot synthesize drag-and-drop between SwiftUI drop
+    # destinations, so the drag surfaces route through the same
+    # ToolbarModel mutations covered headless (assignment/replace/remove/
+    # quick-assign rules, drag-payload drop policy, versioned Codable
+    # store round-trip incl. corrupt-data fallback and the fresh-model
+    # relaunch path).
+    Toolbar persistence:
+      - ActionGalleryUITests/testAssignReplaceRemovePersistAcrossRelaunch
+      - ToolbarConfigurationTests/modelPersistsEveryMutationAndRestoresAcrossInstances
+      - ToolbarConfigurationTests/storeRoundTripAndCorruptDataFallBackToDefault
+      - ToolbarConfigurationTests/codableRoundTripIsExact
+      - ToolbarConfigurationTests/dropPolicyAssignsMovesAndRemoves
+      - ActionGalleryUITests/testGalleryListsEveryActionWithHelpPanel
+      - ToolbarConfigurationTests/everyActionHasACompleteGalleryEntry
   quality-assurance:
     PR test run:
       - CyberTopologyUITests/testAppLaunchesIntoDocumentBrowser
+    # Task 3.2: the committed stroke-fixture corpus (recorded
+    # programmatically, provenance-pinned by corpusMatchesGenerators)
+    # replays through the REAL engine recognizer (capi
+    # cyber_stroke_interpret, both stages in C++) with classification and
+    # ranked interpretation records asserted per fixture, golden-filed for
+    # determinism, plus mesh-context resolutions against a real engine
+    # mesh (merge/tweak/rotate/delete/dissolve/create-quad). Since task
+    # 3.3 the square fixture also asserts RESULTING MESH STATE: replayed
+    # through capture → recognizer → verb layer it creates a journaled,
+    # target-snapped quad (golden-filed engine result in
+    # quadCreateMatchesGolden), and undo restores the exact bytes.
+    # Task 3.4 grows the corpus to the FULL grammar: every entry has a
+    # committed stroke fixture (provenance-pinned, goldened) replayed
+    # through the real engine recognizer with the interpretation asserted
+    # against seeded meshes, the engine op goldened where deterministic
+    # (GrammarMeshOpsTests), and an end-to-end capture → recognizer →
+    # controller → journal test with undo coverage
+    # (MeshEditControllerTests).
+    Gesture grammar regression suite:
+      - StrokeInterpreterTests/committedFixturesReplayThroughEngineRecognizer
+      - StrokeInterpreterTests/corpusMatchesGenerators
+      - StrokeInterpreterTests/interpretationRecordsMatchGoldens
+      - StrokeInterpreterTests/interpretationIsDeterministic
+      - StrokeInterpreterTests/gridStrokeClassifiesWithLattice
+      - StrokeInterpreterTests/lineAcrossRingResolvesFullLoopInsert
+      - StrokeInterpreterTests/lineAlongLoopResolvesWholeLoopTag
+      - StrokeInterpreterTests/committedMergeLineResolvesMerge
+      - StrokeInterpreterTests/committedDissolveScribbleResolvesDissolve
+      - StrokeInterpreterTests/committedRotateCircleResolvesRotate
+      - StrokeInterpreterTests/committedCrossResolvesRegionDelete
+      - StrokeInterpreterTests/committedHideLassoResolvesHide
+      - StrokeInterpreterTests/committedTapResolvesTweakVertex
+      - StrokeInterpreterTests/visibilityLineRequiresEmptySpace
+      - GrammarMeshOpsTests/loopWalksMatchGridTopology
+      - GrammarMeshOpsTests/insertLoopSplitsWholeOpenRing
+      - GrammarMeshOpsTests/insertLoopWrapsClosedRing
+      - GrammarMeshOpsTests/createGridBuildsWeldedBlock
+      - GrammarMeshOpsTests/dissolveMergesTrianglePair
+      - GrammarMeshOpsTests/mergeVerticesCollapsesPair
+      - GrammarMeshOpsTests/rotateFlipsTriangleDiagonal
+      - GrammarMeshOpsTests/rotateTurnsQuadPair
+      - GrammarMeshOpsTests/hiddenFacesFilterRenderStreams
+      - GrammarMeshOpsTests/taggedEdgesSurfaceInRenderBuffers
+      - MeshEditControllerTests/squareFixtureCreatesJournaledQuadOnSeededTarget
+      - MeshEditControllerTests/squareFixtureAppendsQuadToExistingEditMesh
+      - MeshEditControllerTests/gridStrokeCreatesBlockOfQuadsInOneJournalEntry
+      - MeshEditControllerTests/lineAcrossRingInsertsFullEdgeLoopAndUndoRestoresBytes
+      - MeshEditControllerTests/lineAlongLoopTagsWholeLoopWithColoredRenderAndUndoClears
+      - MeshEditControllerTests/scribbleOverEdgeDissolvesItIntoOneQuad
+      - MeshEditControllerTests/xOverAFaceDeletesItAndUndoRestores
+      - MeshEditControllerTests/vertexToVertexLineMergesThem
+      - MeshEditControllerTests/circleOverEdgeRotatesTheDiagonal
+      - MeshEditControllerTests/lassoFromEmptySpaceHidesEnclosedFacesAndUndoShows
+      - MeshEditControllerTests/verticalLinesInEmptySpaceInvertAndShowAllVisibility
+      - MeshEditControllerTests/doubleTapOnVertexActivatesTweakVerb
+      - MeshEditingTests/quadCreateMatchesGolden
     # Device-only frame-time tests skip on simulator via XCTSkip with an
     # explicit device-only reason, so the run report classifies them
     # instead of silently dropping them (task 2.2 perf harness).
     No silent skips:
       - ViewportPerfTests/testFrameTimeOnDevice
       - ViewportPerfTests/testLargeReplicatedTargetFrameTimeOnDevice
+  scene-pipeline:
+    # Task 3.10 (FBX slice of 8.2 pulled forward): imports cannot be driven
+    # through the system Files picker in UI tests (it is system UI), so the
+    # scenario is covered at the CyberKit/document layer — OBJ imported as
+    # EditMesh into a document with a Target, then an RT edit (tweak) whose
+    # result must land exactly on the Target surface via the engine snapper.
+    # FBX joins the same import path with counts, journaled addObject,
+    # error paths, and a golden-filed ufbx→OBJ bridge (FBXImportTests).
+    Import existing low-poly as EditMesh:
+      - DocumentIOTests/importedEditMeshIsEditableAndSnapsToTarget
+      - MeshEditingTests/tweakVertexSnapsToTarget
   viewport-rendering:
     # X-ray on/off compared over two offscreen frames with far-side overlay
     # geometry (task 2.3): occluded by default, depth-attenuated reveal on.
@@ -101,7 +307,6 @@ pending:
     - Rebake scanned texture
     - Export bake mesh
   document-model:
-    - EditMesh vertex snapping
     - Target immutability
     - UV-only document without a Target
     - Two EditMeshes in one document
@@ -111,29 +316,37 @@ pending:
     - Airplane-mode session
     - Network audit
   pencil-interaction:
-    - Palm rejection during pen stroke
-    - No-Pencil session
+    # Relax's RT-stage semantics are covered (task 3.3:
+    # MeshEditControllerTests/relaxScrubSmoothsUnderTheBrushAndJournalsOnce,
+    # MeshEditingTests relax suite incl. corner auto-pinning), but the
+    # scenario spans UV and BK stages too — it maps when those stages
+    # exist (phases 6/7).
     - Relax semantics per stage
-    - Geodesic Move falloff
-    - Loop insert vs loop tag disambiguation
+    # (task 3.7 note: "Snap feedback" moved to the mapped scenarios above;
+    # its haptic-actuation half stays device-only by nature.)
+    # The RT third of the X gesture is regression-tested (task 3.4:
+    # StrokeInterpreterTests/committedCrossResolvesRegionDelete +
+    # MeshEditControllerTests/xOverAFaceDeletesItAndUndoRestores delete
+    # faces under a journaled X), but the scenario explicitly spans RT, UV
+    # and BK — it maps honestly only when unwrap (phase 6) and bake
+    # (phase 7) exist.
     - Stage-dependent X gesture
-    - One-tap misrecognition fix
-    - Hover over an edge
-    - Spring-loaded Relax
-    - Toolbar persistence
-    - Snap feedback
     - Tutorial completion
   quality-assurance:
     - Coverage gate on PR
     - Coverage reported per layer
     - New feature lands with its integration test
-    - Gesture grammar regression suite
     - Release gate
     - Hardware-path parity
     - Cross-environment determinism
   retopology-tools:
     - Patch Clone round-trip
     - Extend Boundary automatic mode
+    # Engine-level pin immunity is already regression-tested (task 3.3:
+    # MeshEditingTests/relaxPreservesPinnedVertices,
+    # moveRespectsPinsAndValidatesSeed — the capi relax/move ops take
+    # explicit pin sets), but the scenario needs the USER-facing pin data
+    # model (per-vertex + per-loop pins, task 4.3) to map honestly.
     - Relax over pinned loop
     - Tag then weave
     - Radial symmetry editing
@@ -144,7 +357,6 @@ pending:
   scene-pipeline:
     - Solo a component
     - Import GLB as target
-    - Import existing low-poly as EditMesh
     - Multi-object USD export
     - Push-pull round trip from Blender
     - Live camera stream

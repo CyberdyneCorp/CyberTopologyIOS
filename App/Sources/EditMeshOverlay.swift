@@ -64,6 +64,19 @@ struct OverlayUniforms: Equatable {
 enum OverlayUniformsFactory {
     /// Distinct overlay theme (RT-stage cyan; per-stage themes extend here).
     static let wireColor = SIMD3<Float>(0.30, 0.85, 1.0)
+    /// Loop-tag pass color (task 3.4 minimal colored-line render; the full
+    /// per-tag style set arrives with 4.3): green, clearly distinct from
+    /// the cyan wire.
+    static let tagColor = SIMD3<Float>(0.35, 1.0, 0.45)
+    /// Hover-preview highlight color (task 3.6): warm yellow, distinct from
+    /// both the cyan wire and the green tag pass.
+    static let hoverColor = SIMD3<Float>(1.0, 0.85, 0.25)
+    /// Hover highlight opacity — independent of the user's wireframe
+    /// opacity (a preview must stay readable at any wire setting).
+    static let hoverAlpha: Float = 0.95
+    /// Snap-target dot size in pixels (larger than the wire's vertex dots
+    /// so the merge target reads as THE highlighted element).
+    static let hoverPointSize: Float = 14
     /// Alpha floor multiplier for the far-side x-ray pass.
     static let xrayAttenuation: Float = 0.45
     /// Vertex dot size in pixels.
@@ -97,6 +110,36 @@ enum OverlayUniformsFactory {
         uniforms.misc.y = 1
         return uniforms
     }
+
+    /// Uniforms for the loop-tag pass (task 3.4): the main pass recolored,
+    /// slightly boosted so tags read over the base wire.
+    static func tagged(
+        mvp: simd_float4x4, settings: OverlaySettings,
+        animationProgress: Float, vertexCount: Int
+    ) -> OverlayUniforms {
+        var uniforms = main(
+            mvp: mvp, settings: settings,
+            animationProgress: animationProgress, vertexCount: vertexCount
+        )
+        uniforms.color = SIMD4(tagColor, min(1, settings.opacity * 1.2))
+        return uniforms
+    }
+
+    /// Uniforms for the hover-preview highlight pass (task 3.6): warm
+    /// yellow — distinct from the cyan wire AND the green tag pass — at
+    /// near-full alpha, with a larger dot for the snap-target vertex.
+    /// The creation-sweep reveal is forced fully open (progress 1, vertex
+    /// count 0) so a hover highlight never inherits a mid-animation fade,
+    /// and the occlusion bias is kept so the highlight matches the wire's
+    /// visibility rules.
+    static func hover(mvp: simd_float4x4, settings: OverlaySettings) -> OverlayUniforms {
+        OverlayUniforms(
+            mvp: mvp,
+            color: SIMD4(hoverColor, hoverAlpha),
+            params: SIMD4(1, settings.occlusionBias, xrayAttenuation, 0),
+            misc: SIMD4(hoverPointSize, 0, 0, 0)
+        )
+    }
 }
 
 /// Dedicated overlay pipeline for EditMesh wireframes: edges as an indexed
@@ -123,8 +166,24 @@ final class EditMeshOverlayPath {
 
     private(set) var edgeIndexCount = 0
     private(set) var vertexCount = 0
+    /// Loop-tag pass (task 3.4): indices into the same position stream.
+    /// Kept out of the pool (its streams are the hot per-frame geometry);
+    /// allocated only when tags change, never at frame time.
+    private(set) var taggedIndexCount = 0
+    private var taggedIndexBuffer: MTLBuffer?
+    /// Hover-preview highlight pass (task 3.6): standalone world-space
+    /// vertices (line-list segments, then point primitives) so the
+    /// highlight is independent of the compacted render streams — element
+    /// ids never need mapping to render indices. Allocated only when the
+    /// PREVIEW changes (`HoverPreviewState` dedupes identical resolutions),
+    /// never at frame time.
+    private(set) var hoverSegmentVertexCount = 0
+    private(set) var hoverPointVertexCount = 0
+    private var hoverVertexBuffer: MTLBuffer?
+    private let device: MTLDevice
 
     var hasGeometry: Bool { edgeIndexCount > 0 }
+    var hasHoverHighlight: Bool { hoverSegmentVertexCount + hoverPointVertexCount > 0 }
 
     /// Fails only when the embedded shader does not compile or a pipeline/
     /// depth state cannot be built (programmer error, surfaced by tests).
@@ -158,6 +217,7 @@ final class EditMeshOverlayPath {
             let xrayState = device.makeDepthStencilState(descriptor: xray)
         else { return nil }
 
+        self.device = device
         self.pipelineState = pipeline
         self.occludedDepthState = occludedState
         self.xrayDepthState = xrayState
@@ -168,11 +228,13 @@ final class EditMeshOverlayPath {
     }
 
     /// Uploads EditMesh wireframe geometry (engine-compacted positions +
-    /// unique face-edge indices). Returns false and clears on undrawable
-    /// input or allocation failure.
+    /// unique face-edge indices), plus the optional loop-tag index pairs
+    /// (task 3.4) into the same position stream. Returns false and clears
+    /// on undrawable input or allocation failure.
     @discardableResult
     func load(
-        positions: UnsafeBufferPointer<Float>, edges: UnsafeBufferPointer<UInt32>
+        positions: UnsafeBufferPointer<Float>, edges: UnsafeBufferPointer<UInt32>,
+        taggedEdges: UnsafeBufferPointer<UInt32>? = nil
     ) -> Bool {
         guard !positions.isEmpty, !edges.isEmpty else {
             clear()
@@ -187,18 +249,76 @@ final class EditMeshOverlayPath {
         }
         vertexCount = positions.count / 3
         edgeIndexCount = edges.count
+        if let taggedEdges, !taggedEdges.isEmpty,
+            let buffer = device.makeBuffer(
+                bytes: taggedEdges.baseAddress!,
+                length: taggedEdges.count * MemoryLayout<UInt32>.stride
+            ) {
+            buffer.label = "overlay-tagged-edges"
+            taggedIndexBuffer = buffer
+            taggedIndexCount = taggedEdges.count
+        } else {
+            taggedIndexBuffer = nil
+            taggedIndexCount = 0
+        }
         return true
     }
 
     func clear() {
         edgeIndexCount = 0
         vertexCount = 0
+        taggedIndexCount = 0
+        taggedIndexBuffer = nil
+        clearHoverHighlight()
         bufferPool.clear()
     }
 
+    /// Uploads the hover-preview highlight (task 3.6): `segments` are
+    /// line-list vertices (x,y,z each, consecutive pairs), `points` are
+    /// point-primitive vertices (the snap-target dot). Both live in ONE
+    /// small buffer — segments first, points appended — replaced only when
+    /// the preview changes. Empty input clears the pass.
+    func setHoverHighlight(segments: [Float], points: [Float]) {
+        let floats = segments + points
+        guard
+            !floats.isEmpty,
+            let buffer = device.makeBuffer(
+                bytes: floats, length: floats.count * MemoryLayout<Float>.stride
+            )
+        else {
+            clearHoverHighlight()
+            return
+        }
+        buffer.label = "overlay-hover-highlight"
+        hoverVertexBuffer = buffer
+        hoverSegmentVertexCount = segments.count / 3
+        hoverPointVertexCount = points.count / 3
+    }
+
+    func clearHoverHighlight() {
+        hoverSegmentVertexCount = 0
+        hoverPointVertexCount = 0
+        hoverVertexBuffer = nil
+    }
+
     /// Encodes the overlay over an already-encoded Target. Binds pooled
-    /// buffers only (never allocates at frame time).
+    /// buffers only (never allocates at frame time). The hover highlight
+    /// (task 3.6) draws AFTER the wire so it reads on top, and outside the
+    /// wire guards so a preview stays visible at wireframe opacity 0.
     func encode(
+        into encoder: MTLRenderCommandEncoder,
+        mvp: simd_float4x4,
+        settings: OverlaySettings,
+        animationProgress: Float
+    ) {
+        encodeWire(
+            into: encoder, mvp: mvp, settings: settings,
+            animationProgress: animationProgress
+        )
+        encodeHoverHighlight(into: encoder, mvp: mvp, settings: settings)
+    }
+
+    private func encodeWire(
         into encoder: MTLRenderCommandEncoder,
         mvp: simd_float4x4,
         settings: OverlaySettings,
@@ -222,6 +342,25 @@ final class EditMeshOverlayPath {
         encoder.setDepthStencilState(occludedDepthState)
         draw(edges: edges, uniforms: &uniforms, into: encoder)
 
+        // Loop-tag pass (task 3.4): tagged edges re-drawn in the tag color
+        // over the base wire (minimal colored-line render; styles in 4.3).
+        if taggedIndexCount > 0, let taggedBuffer = taggedIndexBuffer {
+            var tagUniforms = OverlayUniformsFactory.tagged(
+                mvp: mvp, settings: settings,
+                animationProgress: animationProgress, vertexCount: vertexCount
+            )
+            encoder.setVertexBytes(
+                &tagUniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 1
+            )
+            encoder.setFragmentBytes(
+                &tagUniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 0
+            )
+            encoder.drawIndexedPrimitives(
+                type: .line, indexCount: taggedIndexCount, indexType: .uint32,
+                indexBuffer: taggedBuffer, indexBufferOffset: 0
+            )
+        }
+
         if settings.xrayEnabled {
             var xrayUniforms = OverlayUniformsFactory.xray(
                 mvp: mvp, settings: settings,
@@ -229,6 +368,39 @@ final class EditMeshOverlayPath {
             )
             encoder.setDepthStencilState(xrayDepthState)
             draw(edges: edges, uniforms: &xrayUniforms, into: encoder)
+        }
+    }
+
+    /// Hover-preview highlight pass (task 3.6): loop segments as a line
+    /// list, the snap-target vertex as a large point, both from the
+    /// standalone hover buffer. Same occluded depth strategy as the wire
+    /// (compare ≤ with the configurable bias, writes off).
+    private func encodeHoverHighlight(
+        into encoder: MTLRenderCommandEncoder,
+        mvp: simd_float4x4,
+        settings: OverlaySettings
+    ) {
+        guard hasHoverHighlight, let buffer = hoverVertexBuffer else { return }
+        var uniforms = OverlayUniformsFactory.hover(mvp: mvp, settings: settings)
+        encoder.setRenderPipelineState(pipelineState)
+        encoder.setDepthStencilState(occludedDepthState)
+        encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+        encoder.setVertexBytes(
+            &uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 1
+        )
+        encoder.setFragmentBytes(
+            &uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 0
+        )
+        if hoverSegmentVertexCount > 0 {
+            encoder.drawPrimitives(
+                type: .line, vertexStart: 0, vertexCount: hoverSegmentVertexCount
+            )
+        }
+        if hoverPointVertexCount > 0 {
+            encoder.drawPrimitives(
+                type: .point, vertexStart: hoverSegmentVertexCount,
+                vertexCount: hoverPointVertexCount
+            )
         }
     }
 

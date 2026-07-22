@@ -64,6 +64,36 @@ struct StrokeFixtureTests {
         StrokeReplayer.replay(shuffled, into: &probe2)
         #expect(probe2.events == probe.events)
     }
+
+    @Test("strokeCancelled defaults to strokeEnded for legacy conformers")
+    func cancelDefaultsToEnded() {
+        // A conformer written before strokeCancelled existed (task 3.1)
+        // still closes its stroke when the capture side aborts one.
+        struct LegacyProbe: StrokeConsumer {
+            var events: [String] = []
+            mutating func strokeBegan() { events.append("began") }
+            mutating func consume(_ sample: StrokeSample) { events.append("sample") }
+            mutating func strokeEnded() { events.append("ended") }
+        }
+        var probe = LegacyProbe()
+        probe.strokeBegan()
+        probe.strokeCancelled()
+        #expect(probe.events == ["began", "ended"])
+
+        // A consumer that overrides it (the recognizer discards aborted
+        // strokes) sees the cancellation as its own event.
+        struct CancelAwareProbe: StrokeConsumer {
+            var events: [String] = []
+            mutating func strokeBegan() { events.append("began") }
+            mutating func consume(_ sample: StrokeSample) { events.append("sample") }
+            mutating func strokeEnded() { events.append("ended") }
+            mutating func strokeCancelled() { events.append("cancelled") }
+        }
+        var aware = CancelAwareProbe()
+        aware.strokeBegan()
+        aware.strokeCancelled()
+        #expect(aware.events == ["began", "cancelled"])
+    }
 }
 
 @Suite("Golden files")

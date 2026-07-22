@@ -109,6 +109,16 @@ public protocol StrokeConsumer {
     mutating func strokeBegan()
     mutating func consume(_ sample: StrokeSample)
     mutating func strokeEnded()
+    /// An in-flight stroke was aborted (palm rejection, a second finger
+    /// flipping the interaction to navigation, touch cancellation). The
+    /// default forwards to `strokeEnded()` so pre-existing conformers stay
+    /// source-compatible; consumers that must not interpret aborted strokes
+    /// (the recognizer) override it to discard.
+    mutating func strokeCancelled()
+}
+
+extension StrokeConsumer {
+    public mutating func strokeCancelled() { strokeEnded() }
 }
 
 /// Feeds a fixture's samples, in recorded order, into a `StrokeConsumer`.

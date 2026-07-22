@@ -1,17 +1,45 @@
 import Foundation
 
-// OBJ import/export at the document level (task 1.5, spec: scene-pipeline).
-// Parsing and mesh construction stay in the engine (design D1); this file is
-// I/O plumbing: payload packaging, manifest entries, and export layout.
+// Mesh import/export at the document level (tasks 1.5 + 3.10, spec:
+// scene-pipeline). Mesh construction stays in the engine (design D1); this
+// file is I/O plumbing: format dispatch, payload packaging, manifest
+// entries, and export layout.
 extension DocumentBundle {
-    /// Loads an OBJ from `url` and packages it as a journaled import command
-    /// for an object named `name` with `role`. The caller records the
-    /// returned command in the undo journal and applies it; nothing is
-    /// mutated here.
-    public func importCommandForOBJ(
-        at url: URL, name: String, role: DocumentManifest.Object.Role
+    /// Import formats accepted by `importCommand(for:name:role:)`, keyed by
+    /// (lowercased) file extension. glTF/GLB and USD(z) land with task 8.2.
+    public enum ImportFormat: String, CaseIterable, Sendable {
+        case obj
+        case fbx
+
+        public init?(url: URL) {
+            self.init(rawValue: url.pathExtension.lowercased())
+        }
+
+        /// Engine-backed load for this format (design D1: the engine builds
+        /// the mesh; FBX goes through the ufbx→OBJ bridge in CyberKit).
+        func loadMesh(at url: URL) throws -> Mesh {
+            switch self {
+            case .obj: return try Mesh.loadOBJ(at: url)
+            case .fbx: return try Mesh.loadFBX(at: url)
+            }
+        }
+    }
+
+    /// Loads a mesh file (dispatching on the URL's extension) and packages
+    /// it as a journaled import command for an object named `name` with
+    /// `role`. The caller records the returned command in the undo journal
+    /// and applies it; nothing is mutated here.
+    public func importCommand(
+        for url: URL, name: String, role: DocumentManifest.Object.Role
     ) throws -> DocumentCommand {
-        let mesh = try Mesh.loadOBJ(at: url)
+        guard let format = ImportFormat(url: url) else {
+            throw CyberKitError(
+                code: .invalidArgument,
+                message: "unsupported import format '.\(url.pathExtension)' "
+                    + "(supported: \(ImportFormat.allCases.map(\.rawValue).joined(separator: ", ")))"
+            )
+        }
+        let mesh = try format.loadMesh(at: url)
         let id = UUID()
         let object = DocumentManifest.Object(
             id: id,

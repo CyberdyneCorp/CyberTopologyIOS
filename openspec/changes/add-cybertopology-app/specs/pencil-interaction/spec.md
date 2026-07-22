@@ -3,15 +3,15 @@
 ## ADDED Requirements
 
 ### Requirement: Input division of labor
-Apple Pencil input SHALL author (draw gestures, pressure-modulated tools); finger input SHALL navigate (orbit, pinch, undo/redo taps). Every Pencil interaction SHALL have a finger fallback so the app is fully usable without a Pencil. A touch-arbitration state machine SHALL classify pen vs 1/2/3+ finger input; more than two simultaneous touches SHALL NOT cause erratic camera motion; stray palm touches SHALL NOT trigger tool actions (Pencil-priority filtering with a rejection zone around the pen/hover point).
+Apple Pencil input SHALL author (draw gestures, pressure-modulated tools); finger input SHALL navigate and SHALL NEVER author geometry. The finger vocabulary is fixed: one-finger drag orbits the camera, two-finger pinch zooms, two-finger drag pans, double-tap reframes, three-finger tap undoes, four-finger tap redoes; toolbar buttons and UI controls remain finger-operable (including spring-loaded verb holds). A touch-arbitration state machine SHALL classify pen vs 1/2/3+ finger input; more than two simultaneous touches SHALL NOT cause erratic camera motion; stray palm touches SHALL NOT trigger tool actions (Pencil-priority filtering with a rejection zone around the pen/hover point).
 
 #### Scenario: Palm rejection during pen stroke
 - **WHEN** the user rests a palm on screen while drawing with the Pencil
 - **THEN** the palm contact SHALL NOT fire any tool, button, or camera action
 
-#### Scenario: No-Pencil session
-- **WHEN** a user without a Pencil draws a quad gesture with a finger while a navigation modifier is not active
-- **THEN** the gesture SHALL be recognized identically to a Pencil stroke
+#### Scenario: Finger strokes never author
+- **WHEN** a user draws a quad-shaped stroke on the surface with a finger
+- **THEN** no geometry SHALL be created and the stroke SHALL orbit the camera instead
 
 ### Requirement: Five coherent verbs across stages
 The system SHALL provide five primary verbs — **Pencil**, **Relax**, **Move**, **Tweak**, **Erase** — with consistent semantics in every stage: Relax smooths (topology positions in RT, UV coordinates in UV, cage shape in BK); Erase deletes the stage's primary element (faces / seams / cage overrides); Move drags with geodesic surface falloff that never affects disconnected components.
