@@ -4,6 +4,17 @@ import Testing
 import UIKit
 @testable import CyberTopology
 
+
+/// Closes a document from MainActor test code. UIDocument.close() is a
+/// nonisolated async method, and Xcode 26.6+ flags awaiting it on a
+/// non-Sendable document as a send; the nonisolated(unsafe) binding states
+/// the checked contract (UIDocument manages its own queues).
+@MainActor
+private func closeDocument(_ document: TopoDocument) async {
+    nonisolated(unsafe) let closing = document
+    _ = await closing.close()
+}
+
 @MainActor
 struct RootViewTests {
     @Test func rendersDocumentBrowser() {
@@ -54,7 +65,7 @@ struct TopoDocumentTests {
         #expect(await document.open())
         #expect(document.bundle.manifest.stage == .retopology)
         #expect(document.documentName == "RoundTrip")
-        _ = await document.close()
+        await closeDocument(document)
     }
 
     @Test func editedStagePersistsAcrossReopen() async throws {
@@ -66,12 +77,12 @@ struct TopoDocumentTests {
         #expect(await document.open())
         document.updateBundle { $0.manifest.stage = .uv }
         #expect(await document.autosave())
-        _ = await document.close()
+        await closeDocument(document)
 
         let reopened = TopoDocument(fileURL: url)
         #expect(await reopened.open())
         #expect(reopened.bundle.manifest.stage == .uv)
-        _ = await reopened.close()
+        await closeDocument(reopened)
     }
 
     @Test func saveNewVersionCreatesSiblingAndKeepsOriginal() async throws {
@@ -83,7 +94,7 @@ struct TopoDocumentTests {
         #expect(await document.open())
         document.updateBundle { $0.manifest.stage = .baking }
         let copy = try document.saveNewVersion(named: "Milestone")
-        _ = await document.close()
+        await closeDocument(document)
 
         #expect(copy.lastPathComponent == "Milestone.cybertopo")
         #expect(FileManager.default.fileExists(atPath: url.path))
@@ -91,7 +102,7 @@ struct TopoDocumentTests {
         let version = TopoDocument(fileURL: copy)
         #expect(await version.open())
         #expect(version.bundle.manifest.stage == .baking)
-        _ = await version.close()
+        await closeDocument(version)
     }
 
     @Test func uniqueDocumentURLSuffixesOnCollision() throws {
@@ -132,7 +143,7 @@ struct TopoDocumentUndoTests {
 
         document.redoLast()
         #expect(document.bundle.manifest.stage == .uv)
-        _ = await document.close()
+        await closeDocument(document)
     }
 
     @Test func deepUndoReturnsToInitialState() async throws {
@@ -147,7 +158,7 @@ struct TopoDocumentUndoTests {
 
         #expect(document.bundle.manifest == initial)
         #expect(!document.canUndo)
-        _ = await document.close()
+        await closeDocument(document)
     }
 
     /// Task 3.5 (spec: pencil-interaction / "One-tap misrecognition fix"):
@@ -181,7 +192,7 @@ struct TopoDocumentUndoTests {
         // expecting toUV must fail and change nothing.
         #expect(!document.performReplacingLast(with: toUV, expecting: toUV))
         #expect(document.bundle.manifest.stage == .baking)
-        _ = await document.close()
+        await closeDocument(document)
     }
 
     @Test func journalSurvivesReopen() async throws {
@@ -189,7 +200,7 @@ struct TopoDocumentUndoTests {
         document.perform(.setStage(from: .retopology, to: .baking))
         #expect(await document.autosave())
         let url = document.fileURL
-        _ = await document.close()
+        await closeDocument(document)
 
         let reopened = TopoDocument(fileURL: url)
         #expect(await reopened.open())
@@ -197,7 +208,7 @@ struct TopoDocumentUndoTests {
         #expect(reopened.canUndo)
         reopened.undoLast()
         #expect(reopened.bundle.manifest.stage == .retopology)
-        _ = await reopened.close()
+        await closeDocument(reopened)
     }
 }
 
@@ -236,7 +247,7 @@ struct TopoDocumentIOTests {
         #expect(document.bundle.manifest.objects.isEmpty)
         document.redoLast()
         #expect(document.bundle.manifest.objects.count == 1)
-        _ = await document.close()
+        await closeDocument(document)
     }
 
     @Test func exportWritesToUserVisibleExportFolder() async throws {
@@ -256,7 +267,7 @@ struct TopoDocumentIOTests {
             #expect(url.path.contains("/Export/Export Probe/"))
             #expect(FileManager.default.fileExists(atPath: url.path))
         }
-        _ = await document.close()
+        await closeDocument(document)
     }
 
     @Test func importFromMissingFileThrowsAndLeavesDocumentUntouched() async throws {
@@ -267,7 +278,7 @@ struct TopoDocumentIOTests {
         }
         #expect(document.bundle.manifest.objects.isEmpty)
         #expect(!document.canUndo)
-        _ = await document.close()
+        await closeDocument(document)
     }
 }
 
@@ -302,7 +313,7 @@ struct DocumentEditorViewTests {
         host.view.frame = CGRect(x: 0, y: 0, width: 1024, height: 768)
         host.view.layoutIfNeeded()
         #expect(host.sizeThatFits(in: CGSize(width: 1024, height: 768)).height > 0)
-        _ = await document.close()
+        await closeDocument(document)
     }
 
     @Test func handleImportAcceptsFBXThroughTheSamePath() async throws {
@@ -324,7 +335,7 @@ struct DocumentEditorViewTests {
             .success(URL(fileURLWithPath: "/tmp/mesh-\(UUID()).usdz")), role: .target
         )
         #expect(document.bundle.manifest.objects.count == 1)
-        _ = await document.close()
+        await closeDocument(document)
     }
 
     @Test func handleImportSuccessAndFailurePaths() async throws {
@@ -342,7 +353,7 @@ struct DocumentEditorViewTests {
             .success(URL(fileURLWithPath: "/tmp/missing-\(UUID()).obj")), role: .target
         )
         #expect(document.bundle.manifest.objects.count == 1)
-        _ = await document.close()
+        await closeDocument(document)
     }
 
     @Test func exportNowWritesFiles() async throws {
@@ -359,7 +370,7 @@ struct DocumentEditorViewTests {
         let exported = URL.documentsDirectory
             .appendingPathComponent("Export/Editor/cube_colored.obj")
         #expect(FileManager.default.fileExists(atPath: exported.path))
-        _ = await document.close()
+        await closeDocument(document)
     }
 }
 
@@ -423,7 +434,7 @@ struct DocumentBrowserCoordinatorTests {
         let document = TopoDocument(fileURL: url)
         #expect(await document.open())
         #expect(document.bundle.manifest.stage == .retopology)
-        _ = await document.close()
+        await closeDocument(document)
     }
 
     @Test func systemCreationRequestSuppliesTemplateWithMoveMode() {
