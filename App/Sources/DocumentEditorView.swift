@@ -72,6 +72,13 @@ struct DocumentEditorView: View {
     @AppStorage(ViewportSettings.strokeDebugHUDKey)
     private var strokeDebugHUD = false
 
+    /// Subdivision preview level (task 4.6, spec: retopology-tools /
+    /// "Subdivision preview"): 0 / 1 / 2 levels of reprojected subdivision
+    /// rendered non-destructively while editing continues on the base cage.
+    /// A persisted DISPLAY preference — the document never sees it.
+    @AppStorage(ViewportSettings.subdivisionPreviewKey)
+    private var subdivisionPreviewLevel = ViewportSettings.defaultSubdivisionPreviewLevel
+
     /// Input arbitration (task 3.1, design D5): one arbiter shared by the
     /// verb toolbar (spring-loaded hold-chords) and the
     /// viewport's touch handling.
@@ -212,7 +219,19 @@ struct DocumentEditorView: View {
                     resolutionScale: $resolutionScale,
                     leftHandedToolbar: $leftHandedToolbar,
                     snapHapticsEnabled: $snapHapticsEnabled,
-                    strokeDebugHUD: $strokeDebugHUD
+                    strokeDebugHUD: $strokeDebugHUD,
+                    subdivisionPreviewLevel: $subdivisionPreviewLevel,
+                    hasTarget: document.bundle.manifest.objects.contains {
+                        $0.role == .target
+                    },
+                    // Symmetry (task 4.4) is DOCUMENT state: it reads out
+                    // of the manifest and every edit goes through the
+                    // journaled command path, exactly like the stage
+                    // picker above.
+                    symmetry: document.bundle.manifest.effectiveSymmetry,
+                    sceneCenter: inputModel.sceneCenter,
+                    sceneRadius: inputModel.sceneRadius,
+                    onSymmetryChange: setSymmetry
                 )
             }
         }
@@ -283,6 +302,7 @@ struct DocumentEditorView: View {
             occlusionBias: occlusionBias,
             ghostDebugEnabled: ghostDebugEnabled,
             resolutionScale: resolutionScale,
+            subdivisionPreviewLevel: subdivisionPreviewLevel,
             snapHapticsEnabled: snapHapticsEnabled,
             onUndo: {
                 document.undoLast()
@@ -392,6 +412,37 @@ struct DocumentEditorView: View {
                 .padding(.bottom, 52)
             }
         }
+        .sheet(isPresented: Binding(
+            get: { inputModel.showsBatchCommands },
+            set: { inputModel.showsBatchCommands = $0 }
+        )) {
+            // EditMesh batch commands + the Auto Relax mode toggle
+            // (task 4.5). Every row journals one undoable entry; the
+            // toggle is a persisted preference.
+            BatchCommandsView(
+                model: inputModel,
+                hasEditMesh: document.bundle.manifest.objects.contains {
+                    $0.role == .editMesh
+                },
+                hasTarget: document.bundle.manifest.objects.contains {
+                    $0.role == .target
+                },
+                onDismiss: { inputModel.showsBatchCommands = false }
+            )
+        }
+        .overlay(alignment: .topTrailing) {
+            // Loop-tag palette + Loop Info inspector (task 4.3). The
+            // palette picks the colour the next tag is authored in; the
+            // chip appears while the Pencil holds over an interior edge.
+            VStack(alignment: .trailing, spacing: 8) {
+                LoopTagPaletteView(model: inputModel)
+                if let info = inputModel.loopInfo {
+                    LoopInfoChipView(info: info)
+                }
+            }
+            .padding(.top, 8)
+            .padding(.trailing, 8)
+        }
         .task {
             // Screenshot hook: draws the quad and/or the one-stroke grid
             // automatically shortly after the editor appears (drives the
@@ -405,10 +456,20 @@ struct DocumentEditorView: View {
             let snapDrag = UITestSupport.autoSnapDragRequested
             let gallery = UITestSupport.showActionGalleryRequested
             let tool = UITestSupport.autoToolRequested
+            let annotations = UITestSupport.autoAnnotationsRequested
+            let symmetry = UITestSupport.autoSymmetryRequested
+            let batchPanel = UITestSupport.showBatchCommandsRequested
+            let subdivide = UITestSupport.autoSubdivideRequested
+            let autoRelax = UITestSupport.autoRelaxRequested
             guard
                 quad || grid || ring || hoverLoop || hoverGhost || palette
-                    || snapDrag || gallery || tool != nil
+                    || snapDrag || gallery || annotations || symmetry
+                    || batchPanel || subdivide || autoRelax || tool != nil
             else { return }
+            // Auto Relax mode hook (task 4.5): turn the MODE on BEFORE any
+            // authoring hook runs, so the injected stroke exercises the
+            // real create → auto-relax → single-journal-entry path.
+            if autoRelax { inputModel.setAutoRelax(true) }
             try? await Task.sleep(for: .seconds(2))
             if quad { inputModel.injectSquareStroke() }
             if grid { inputModel.injectGridStroke() }
@@ -447,6 +508,39 @@ struct DocumentEditorView: View {
                 try? await Task.sleep(for: .seconds(1))
                 inputModel.selectTool(tool)
                 inputModel.meshEditor?.probeToolStrokeForVisualVerification(tool)
+            }
+            // Annotation screenshot hook (task 4.3): a pinned loop AND a
+            // differently-coloured tagged loop in one frame, both through
+            // the real journaled command path.
+            if annotations {
+                try? await Task.sleep(for: .seconds(1))
+                inputModel.selectTagColor(1)
+                inputModel.meshEditor?.probeAnnotationsForVisualVerification()
+            }
+            // Symmetry screenshot hook (task 4.4): enable X mirroring
+            // about the model centre through the journaled command path
+            // (which is what makes the plane rim appear), then author one
+            // quad — the create path mirrors it inside the same entry.
+            if symmetry {
+                try? await Task.sleep(for: .seconds(1))
+                setSymmetry(
+                    SymmetrySettings(
+                        mirrorAxes: [.x], origin: inputModel.sceneCenter, isEnabled: true
+                    )
+                )
+                try? await Task.sleep(for: .seconds(1))
+                inputModel.meshEditor?.probeSymmetryForVisualVerification()
+            }
+            // Batch-command hooks (task 4.5): subdivide the seeded cage
+            // through the REAL journaled batch path (denser wireframe in
+            // the screenshot), then present the panel over it.
+            if subdivide {
+                try? await Task.sleep(for: .seconds(1))
+                inputModel.meshEditor?.probeBatchSubdivideForVisualVerification()
+            }
+            if batchPanel {
+                try? await Task.sleep(for: .seconds(1))
+                inputModel.showsBatchCommands = true
             }
         }
         .overlay {
@@ -517,6 +611,19 @@ struct DocumentEditorView: View {
     }
 
     // MARK: - Actions
+
+    /// Journals a symmetry-settings change (task 4.4). Symmetry is
+    /// document state and changes what the next authoring stroke does, so
+    /// it goes through the same command path as the stage switch — setting
+    /// what is already set journals nothing.
+    /// Internal (not private) so unit tests can drive it without the
+    /// popover.
+    func setSymmetry(_ settings: SymmetrySettings) {
+        let current = document.bundle.manifest.symmetry
+        guard settings != (current ?? SymmetrySettings()) else { return }
+        document.perform(.setSymmetry(from: current, to: settings))
+        journal.handle(.documentEdited)
+    }
 
     /// Internal (not private) so unit tests can drive the import result
     /// path directly — the Files picker itself is system UI.

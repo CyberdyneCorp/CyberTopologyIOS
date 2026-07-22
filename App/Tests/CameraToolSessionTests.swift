@@ -170,6 +170,39 @@ struct ExtendBoundaryPlanTests {
         #expect(p.commitOffsets == p.steppedOffsets)
     }
 
+    /// REGRESSION: one large camera displacement in `automatic` mode used
+    /// to append rows in an UNBOUNDED loop — every row becomes a per-frame
+    /// ghost ring and one sequential `extendBoundary` engine call inside
+    /// the commit's single transaction, so a fast orbit over a short chain
+    /// was a main-thread hang plus a multi-megabyte journal entry.
+    @Test func automaticModeStopsSteppingAtTheRowLimit() {
+        var p = plan(mode: .automatic)
+        // 10 000 steps' worth of displacement in ONE feed.
+        p.displacementChanged(SIMD3(10_000, 0, 0))
+        #expect(p.steppedOffsets.count == ExtendBoundaryPlan.maximumSteppedRows)
+        #expect(p.isAtRowLimit)
+        // Further camera motion adds nothing at all.
+        p.displacementChanged(SIMD3(20_000, 5_000, 0))
+        #expect(p.steppedOffsets.count == ExtendBoundaryPlan.maximumSteppedRows)
+        #expect(p.commitOffsets.count == ExtendBoundaryPlan.maximumSteppedRows)
+    }
+
+    /// REGRESSION: a near-degenerate sub-chain (two nearly coincident
+    /// boundary vertices) used to floor the step at `sceneRadius * 1e-4`,
+    /// which quantized a one-scene-radius orbit into ~10 000 rows. The
+    /// floor is now a usable fraction of the scene.
+    @Test func degenerateChainStepFloorsAtAFractionOfTheScene() {
+        let step = ExtendBoundaryPlan.step(averageEdgeLength: 1e-9, sceneRadius: 4)
+        #expect(step == 4 * ExtendBoundaryPlan.minimumStepFraction)
+        // A real chain keeps its own measured average edge length.
+        #expect(ExtendBoundaryPlan.step(averageEdgeLength: 0.9, sceneRadius: 4) == 0.9)
+        // And one scene-radius of displacement over that floor stays
+        // comfortably inside the row cap.
+        var p = ExtendBoundaryPlan(mode: .automatic, chain: [0, 1], closed: false, step: step)
+        p.displacementChanged(SIMD3(4, 0, 0))
+        #expect(p.steppedOffsets.count <= ExtendBoundaryPlan.maximumSteppedRows)
+    }
+
     @Test func onceModeStepsExactlyOneRowThenWantsAutoCommit() {
         var p = plan(mode: .once)
         p.displacementChanged(SIMD3(0, 0, 0.4))

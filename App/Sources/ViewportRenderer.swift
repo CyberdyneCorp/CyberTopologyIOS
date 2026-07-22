@@ -44,6 +44,12 @@ final class ViewportRenderer: NSObject {
     /// preview) over one set of buffers. Always array-fed (pooled copies) —
     /// hover geometry is transient by nature, so zero-copy never applies.
     let hoverGhostPath: GhostRenderPath
+    /// Subdivision preview surface (task 4.6): the reprojected-linear
+    /// subdivided cage as a shaded surface UNDER the base wireframe. Its
+    /// own ghost-pipeline instance so it never fights the Weave-proposal
+    /// feed or the hover hint over one set of buffers, and so turning the
+    /// preview off is a `clear()` on a channel nothing else writes.
+    let subdivisionPreviewPath: GhostRenderPath
     /// Render-time probe over every submitted frame (perf harness).
     let frameProbe = FrameTimeProbe()
 
@@ -67,6 +73,8 @@ final class ViewportRenderer: NSObject {
     var hasOverlay: Bool { overlayPath.hasGeometry }
     var hasGhost: Bool { ghostPath.hasGeometry }
     var hasHoverGhost: Bool { hoverGhostPath.hasGeometry }
+    /// Whether a subdivision preview surface is currently loaded (task 4.6).
+    var hasSubdivisionPreview: Bool { subdivisionPreviewPath.hasGeometry }
 
     /// EditMesh overlay display state (opacity / x-ray / occlusion bias),
     /// pushed from the view-options popover.
@@ -85,6 +93,10 @@ final class ViewportRenderer: NSObject {
     /// Hover ghost-quad hint style (task 3.6).
     var hoverGhostStyle = GhostStyle.hoverHint {
         didSet { if hoverGhostStyle != oldValue { invalidate() } }
+    }
+    /// Subdivision preview surface style (task 4.6); static by design.
+    var subdivisionPreviewStyle = GhostStyle.subdivisionPreview {
+        didSet { if subdivisionPreviewStyle != oldValue { invalidate() } }
     }
     /// Retains the engine mesh whose buffers the ghost path wrapped with
     /// `bytesNoCopy` (zero-copy lifetime contract: the aliasing MTLBuffers
@@ -155,6 +167,10 @@ final class ViewportRenderer: NSObject {
     /// True while any time-driven animation needs continuous redraws:
     /// camera reframe, overlay creation sweep, or a ghost pulse (both the
     /// proposal ghosts and the hover ghost hint animate while shown).
+    ///
+    /// The task-4.6 subdivision preview is deliberately ABSENT: its style
+    /// has no pulse (`GhostStyle.subdivisionPreview`), so a shown preview
+    /// must not pin the display link at 120 Hz for a static surface.
     func isAnimating(at time: Double = CACurrentMediaTime()) -> Bool {
         animation != nil || isOverlayAnimating(at: time) || hasGhost || hasHoverGhost
     }
@@ -236,9 +252,13 @@ final class ViewportRenderer: NSObject {
             device: device, commandQueue: queue,
             preferPrivateStorage: pool.usesPrivateStorage
         )
+        let subdivisionPreview = GhostRenderPath(
+            device: device, commandQueue: queue,
+            preferPrivateStorage: pool.usesPrivateStorage
+        )
 
         guard
-            let path, let overlay, let ghost, let hoverGhost,
+            let path, let overlay, let ghost, let hoverGhost, let subdivisionPreview,
             let depth = device.makeDepthStencilState(descriptor: depthDescriptor)
         else { return nil }
 
@@ -250,6 +270,7 @@ final class ViewportRenderer: NSObject {
         self.overlayPath = overlay
         self.ghostPath = ghost
         self.hoverGhostPath = hoverGhost
+        self.subdivisionPreviewPath = subdivisionPreview
         self.depthState = depth
         super.init()
     }
@@ -322,6 +343,9 @@ final class ViewportRenderer: NSObject {
             return
         }
         bounds = sceneBounds
+        // The symmetry rim is sized off the scene, so a newly framed
+        // Target must re-fit it (task 4.4).
+        rebuildSymmetryRims()
         if !preservingCamera {
             camera = CameraState.framing(bounds, aspect: aspect)
             initialFraming = camera
@@ -347,8 +371,14 @@ final class ViewportRenderer: NSObject {
     /// face-edge indices) into the overlay pipeline. `restartAnimation`
     /// plays the creation micro-animation from `time` — pass true for a
     /// newly imported/created EditMesh, false for reloads of the same one.
+    ///
+    /// `annotations` (task 4.3) drives the pin-marker and per-colour
+    /// loop-tag passes: they are rebuilt HERE, on the same cadence as the
+    /// wireframe upload, so a pin follows its vertex through live brush
+    /// edits and never needs per-frame work.
     func loadOverlay(
-        mesh: Mesh, restartAnimation: Bool = true, at time: Double = CACurrentMediaTime()
+        mesh: Mesh, annotations: MeshAnnotations? = nil,
+        restartAnimation: Bool = true, at time: Double = CACurrentMediaTime()
     ) {
         let loaded = mesh.withRenderBuffers { buffers in
             overlayPath.load(
@@ -358,9 +388,11 @@ final class ViewportRenderer: NSObject {
         }
         guard loaded else {
             overlayCreationTime = nil
+            overlayPath.clearAnnotations()
             invalidate()
             return
         }
+        setOverlayAnnotations(annotations, of: mesh)
         if restartAnimation {
             overlayCreationTime = time
         }
@@ -385,6 +417,61 @@ final class ViewportRenderer: NSObject {
             }
         }
         invalidate()
+    }
+
+    /// Annotation-derived half of the world-space overlay buffer (pins +
+    /// tagged loops), kept so the symmetry rim can be re-uploaded without
+    /// re-walking the mesh and vice versa.
+    private var annotationRenderState = AnnotationRenderState()
+    /// Symmetry-plane rims (task 4.4), rebuilt when the settings or the
+    /// scene bounds change.
+    private var symmetryRims: [AnnotationRenderState.TagGroup] = []
+    /// Current symmetry settings, retained so a bounds change (a newly
+    /// loaded Target) re-fits the rim without the caller re-sending them.
+    private(set) var symmetrySettings = SymmetrySettings()
+
+    /// Rebuilds the annotation pass from document annotations against
+    /// `mesh`'s live element positions. nil/empty clears it (the symmetry
+    /// rim, if any, survives — it is not annotation state).
+    func setOverlayAnnotations(_ annotations: MeshAnnotations?, of mesh: Mesh) {
+        if let annotations, !annotations.isEmpty {
+            annotationRenderState = AnnotationRenderState.build(
+                annotations: annotations,
+                edgeEndpoints: { mesh.edgeEndpoints(of: $0) },
+                vertexPosition: { mesh.vertexPosition($0) }
+            )
+        } else {
+            annotationRenderState = AnnotationRenderState()
+        }
+        uploadOverlayAnnotationPass()
+    }
+
+    /// Sets the symmetry state the viewport draws a plane rim for (task
+    /// 4.4: "Render a visible symmetry-plane rim in the viewport").
+    func setOverlaySymmetry(_ settings: SymmetrySettings) {
+        symmetrySettings = settings
+        rebuildSymmetryRims()
+        invalidate()
+    }
+
+    /// Re-fits the rim to the current scene bounds. Called on every bounds
+    /// change so the rim keeps framing the model.
+    private func rebuildSymmetryRims() {
+        symmetryRims = SymmetryRimGeometry.rims(
+            for: symmetrySettings, center: bounds.center, radius: bounds.radius
+        )
+        uploadOverlayAnnotationPass()
+    }
+
+    /// Uploads annotations and rims as the one world-space overlay buffer.
+    private func uploadOverlayAnnotationPass() {
+        var state = annotationRenderState
+        state.symmetryRims = symmetryRims
+        if state.isEmpty {
+            overlayPath.clearAnnotations()
+        } else {
+            overlayPath.setAnnotations(state)
+        }
     }
 
     func clearOverlay() {
@@ -477,6 +564,62 @@ final class ViewportRenderer: NSObject {
         // those wrappers alias) afterwards cannot race an in-flight frame.
         ghostPath.clear()
         ghostSourceMesh = nil
+        invalidate()
+    }
+
+    // MARK: - Subdivision preview (task 4.6)
+
+    /// Uploads a subdivision preview surface (spec: retopology-tools /
+    /// "Subdivision preview"). `mesh` is DERIVED RENDER DATA produced by
+    /// `Mesh.subdivisionPreview` from a COPY of the base cage — it is never
+    /// the live edited handle, so the zero-copy hazard documented on
+    /// `loadGhost` does not apply and the pooled-copy path is taken
+    /// unconditionally.
+    ///
+    /// This method deliberately does NOT touch `bounds` or the camera: the
+    /// preview hugs the same cage, and re-framing on a display-only toggle
+    /// would move the user's view out from under them.
+    func loadSubdivisionPreview(mesh: Mesh) {
+        // Reprojection puts the preview's vertices exactly ON the Target,
+        // so without the normal lift the two coplanar surfaces z-fight into
+        // speckle (verified on device-class simulator frames).
+        subdivisionPreviewStyle = GhostStyle.subdivisionPreview(sceneRadius: bounds.radius)
+        mesh.withRenderBuffers { buffers in
+            subdivisionPreviewPath.load(
+                positions: buffers.positions,
+                normals: buffers.normals,
+                indices: buffers.triangleIndices,
+                hasUnifiedMemory: capabilities.hasUnifiedMemory,
+                allowZeroCopy: false,
+                // Re-derived on every base-cage edit: keep the log quiet.
+                logsSharingDecision: false
+            )
+        }
+        invalidate()
+    }
+
+    /// Array-based entry for unit and offscreen-render tests (upload only).
+    func loadSubdivisionPreviewGeometry(
+        positions: [Float], normals: [Float], indices: [UInt32]
+    ) {
+        positions.withUnsafeBufferPointer { positionsPtr in
+            normals.withUnsafeBufferPointer { normalsPtr in
+                indices.withUnsafeBufferPointer { indicesPtr in
+                    subdivisionPreviewPath.load(
+                        positions: positionsPtr, normals: normalsPtr,
+                        indices: indicesPtr,
+                        hasUnifiedMemory: capabilities.hasUnifiedMemory,
+                        allowZeroCopy: false, logsSharingDecision: false
+                    )
+                }
+            }
+        }
+        invalidate()
+    }
+
+    func clearSubdivisionPreview() {
+        guard hasSubdivisionPreview else { return }
+        subdivisionPreviewPath.clear()
         invalidate()
     }
 
@@ -602,7 +745,8 @@ final class ViewportRenderer: NSObject {
             return
         }
         defer { encoder.endEncoding() }
-        guard hasMesh || hasOverlay || hasGhost || hasHoverGhost else { return }
+        guard hasMesh || hasOverlay || hasGhost || hasHoverGhost || hasSubdivisionPreview
+        else { return }
 
         let view = camera.viewMatrix()
         let projection = camera.projectionMatrix(aspect: aspect, bounds: bounds)
@@ -621,6 +765,20 @@ final class ViewportRenderer: NSObject {
         // with flipped faces must not vanish into a "blank viewport".
         encoder.setCullMode(.none)
         renderPath.encode(into: encoder, uniforms: uniforms)
+
+        // Subdivision preview (task 4.6) draws FIRST of the overlays: it is
+        // the smoothed SURFACE the base cage stands for, so proposals, the
+        // hover hint and — critically — the base-cage wireframe must all
+        // read on top of it. That stacking IS the retopology workflow: the
+        // user judges the smoothed surface while still seeing (and editing)
+        // the cage that produced it.
+        subdivisionPreviewPath.encode(
+            into: encoder,
+            uniforms: GhostUniformsFactory.uniforms(
+                mvp: mvp, viewDirection: forward,
+                style: subdivisionPreviewStyle, time: time
+            )
+        )
 
         // Ghost proposals render between the Target (whose depth they test
         // against) and the committed wireframe, so accepted topology always

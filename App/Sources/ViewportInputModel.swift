@@ -39,6 +39,19 @@ final class ViewportInputModel {
 
     /// Mirror of the arbiter's active verb for toolbar highlighting.
     private(set) var activeVerb: InputArbiter.Verb = .pencil
+    /// Bounding sphere of the loaded scene, mirrored from the renderer
+    /// (task 4.4): the symmetry settings' origin sliders span it so the
+    /// mirror plane can be placed anywhere through the model.
+    private(set) var sceneCenter: SIMD3<Float> = .zero
+    private(set) var sceneRadius: Float = 1
+
+    /// Publishes the renderer's scene bounds. Called by the viewport
+    /// coordinator whenever geometry loads or reloads.
+    func setSceneBounds(center: SIMD3<Float>, radius: Float) {
+        guard center != sceneCenter || radius != sceneRadius else { return }
+        sceneCenter = center
+        sceneRadius = radius
+    }
     /// Armed retopology tool (task 4.1): while set (and the Pencil verb is
     /// active), Pencil strokes drive the tool instead of the gesture
     /// grammar. Selecting any verb persistently — toolbar tap, quick-verb
@@ -116,6 +129,9 @@ final class ViewportInputModel {
     @ObservationIgnored var meshEditor: MeshEditController? {
         didSet {
             meshEditor?.activeTool = activeTool
+            // Auto Relax is a MODE: a controller installed later must come
+            // up in the state the user persisted (task 4.5).
+            meshEditor?.autoRelaxEnabled = autoRelaxEnabled
             meshEditor?.onRequestVerb = { [weak self] verb in
                 self?.selectVerb(verb)
             }
@@ -137,8 +153,50 @@ final class ViewportInputModel {
         }
     }
 
-    init(controller: ViewportInputController = ViewportInputController()) {
+    // MARK: - Auto Relax + batch commands (task 4.5)
+
+    /// Auto Relax mode (spec: retopology-tools / "Auto Relax"): a persisted
+    /// app preference mirrored into the mesh-edit controller, which runs
+    /// the redistribution INSIDE each editing operation's own transaction
+    /// (one undo step per action, not two).
+    private(set) var autoRelaxEnabled: Bool
+    /// Where the preference persists (injectable so tests never touch the
+    /// user's standard defaults).
+    @ObservationIgnored private let defaults: UserDefaults
+    /// Presents the batch-commands panel; set by its toolbar action.
+    var showsBatchCommands = false
+
+    func setAutoRelax(_ enabled: Bool) {
+        guard enabled != autoRelaxEnabled else { return }
+        autoRelaxEnabled = enabled
+        defaults.set(enabled, forKey: ViewportSettings.autoRelaxKey)
+        meshEditor?.autoRelaxEnabled = enabled
+    }
+
+    func toggleAutoRelax() {
+        setAutoRelax(!autoRelaxEnabled)
+    }
+
+    /// Runs one batch command through the journaled path. Returns whether
+    /// anything journaled (a no-op stays out of the undo stack).
+    @discardableResult
+    func runBatchCommand(_ command: BatchCommand) -> Bool {
+        meshEditor?.runBatchCommand(command) ?? false
+    }
+
+    /// Whether a toggle-style immediate command currently reads as ON (the
+    /// toolbar slot tints and reports it).
+    func isCommandActive(_ action: EditorAction) -> Bool {
+        action == .toggleAutoRelax && autoRelaxEnabled
+    }
+
+    init(
+        controller: ViewportInputController = ViewportInputController(),
+        defaults: UserDefaults = .standard
+    ) {
         self.controller = controller
+        self.defaults = defaults
+        autoRelaxEnabled = defaults.bool(forKey: ViewportSettings.autoRelaxKey)
         controller.capture.consumer = recognizer
         recognizer.onInterpretation = { [weak self] interpretation, _ in
             self?.pendingInterpretation = interpretation
@@ -248,6 +306,58 @@ final class ViewportInputModel {
         refreshActiveVerb()
         activeTool = tool
         meshEditor?.activeTool = tool
+    }
+
+    // MARK: - Annotations: pins, loop-tag colours, Loop Info (task 4.3)
+
+    /// Palette index new loop tags are authored in (spec: "Users SHALL
+    /// color-tag edge loops"). Mirrored into the mesh-edit controller so
+    /// the tagLoop grammar and the Pin Flip tool see the same choice.
+    private(set) var activeTagColor: UInt8 = MeshAnnotations.defaultTagColor
+
+    func selectTagColor(_ color: UInt8) {
+        guard color < MeshAnnotations.tagColorCount else { return }
+        activeTagColor = color
+        meshEditor?.activeTagColor = color
+    }
+
+    /// Loop Info chip content (nil = hidden). Published by the hover
+    /// controller when the Pencil holds over an interior edge.
+    private(set) var loopInfo: LoopInfoChipState.Info?
+
+    func setLoopInfo(_ info: LoopInfoChipState.Info?) {
+        loopInfo = info
+    }
+
+    /// Runs an immediate annotation command (the en-masse clears). Returns
+    /// whether anything journaled — a no-op clear stays out of the undo
+    /// stack entirely.
+    @discardableResult
+    func runCommand(_ action: EditorAction) -> Bool {
+        switch action {
+        case .clearPins: return meshEditor?.clearAllPins() ?? false
+        case .clearLoopTags: return meshEditor?.clearAllLoopTags() ?? false
+        // Task 4.4: symmetry commands. The toggle journals a
+        // `setSymmetry`; the two bakes journal one `meshEdit` each.
+        case .toggleSymmetry: return meshEditor?.toggleSymmetry() ?? false
+        case .applySymmetry: return meshEditor?.applySymmetryNow() ?? false
+        // The axis is resolved INSIDE the controller from the document's
+        // symmetry state (enabled + an actual mirror axis) — never
+        // defaulted to `.x` here, which used to mirror a radial-only or
+        // symmetry-off document about an axis the user never enabled.
+        case .resymmetrize: return meshEditor?.resymmetrizeNow() ?? false
+        // Task 4.5: the Auto Relax MODE toggle is a persisted preference,
+        // not a document command — it journals nothing (its effect on the
+        // document rides inside the next edit's own entry). The batch panel
+        // action just presents the sheet; the commands inside it journal.
+        case .toggleAutoRelax:
+            toggleAutoRelax()
+            return false
+        case .batchCommands:
+            showsBatchCommands = true
+            return false
+        default: return false
+        }
     }
 
     private func disarmTool() {

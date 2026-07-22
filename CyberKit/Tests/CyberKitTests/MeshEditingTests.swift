@@ -479,4 +479,77 @@ struct MeshEditingTests {
         )
         #expect(try transaction.command(verb: "relax") == nil)
     }
+
+    /// An edit that retires NOTHING leaves the ids alone, so the command
+    /// stays a plain `meshEdit` — no spurious annotation churn.
+    @Test("a position-only edit journals a plain meshEdit with pins intact")
+    func transactionKeepsAnnotationsWhenNoIdsMove() throws {
+        var bundle = DocumentBundle()
+        let editMesh = try perturbedGrid()
+        var object = try bundle.addObject(name: "cage", role: .editMesh, mesh: editMesh)
+        object.annotations = MeshAnnotations(pinnedVertices: [0, 3])
+        bundle.manifest.objects[0] = object
+        let payload = try #require(bundle.payloads[object.payloadFile])
+
+        let transaction = MeshEditTransaction(
+            object: object, mesh: editMesh, currentPayload: payload
+        )
+        let vertex = try vertexID(at: SIMD3(1.35, 0.75, 0), in: editMesh)
+        try editMesh.tweakVertex(vertex, to: SIMD3(1, 1, 0))
+        let command = try #require(try transaction.command(verb: "tweak"))
+        guard case .meshEdit = command else {
+            Issue.record("an id-stable edit must journal a plain meshEdit")
+            return
+        }
+        command.apply(to: &bundle)
+        #expect(bundle.manifest.objects[0].annotations?.pinnedVertices == [0, 3])
+    }
+
+    /// REGRESSION: serializing COMPACTS element ids (the payload's OBJ
+    /// writer emits only live elements, renumbered from zero) and the
+    /// viewport reloads the live handle from exactly those bytes — so an
+    /// edit that retires a vertex used to leave every pin naming a
+    /// DIFFERENT vertex, silently. The transaction now carries the
+    /// annotations across the compaction and journals both halves as ONE
+    /// compound entry, so a single undo restores geometry AND pins.
+    @Test("an edit that retires a vertex journals the pin fix-up as ONE step")
+    func transactionReconcilesAnnotationsAcrossIDCompaction() throws {
+        var bundle = DocumentBundle()
+        let editMesh = try perturbedGrid()
+        var object = try bundle.addObject(name: "cage", role: .editMesh, mesh: editMesh)
+        // Pin two vertices whose ids sit ABOVE the one about to retire.
+        let pinned: [UInt32] = [5, 6]
+        let pinnedPositions = pinned.compactMap { editMesh.vertexPosition($0) }
+        #expect(pinnedPositions.count == 2)
+        object.annotations = MeshAnnotations(pinnedVertices: pinned)
+        bundle.manifest.objects[0] = object
+        let beforePayload = try #require(bundle.payloads[object.payloadFile])
+
+        let transaction = MeshEditTransaction(
+            object: object, mesh: editMesh, currentPayload: beforePayload
+        )
+        try editMesh.mergeVertices(keep: 1, remove: 0)
+        let command = try #require(try transaction.command(verb: "merge"))
+        guard case .compound(let verb, let commands) = command else {
+            Issue.record("an id-compacting edit must journal ONE compound entry")
+            return
+        }
+        #expect(verb == "merge")
+        #expect(commands.count == 2)
+
+        command.apply(to: &bundle)
+        let carried = try #require(bundle.manifest.objects[0].annotations)
+        #expect(carried.pinnedVertices != pinned, "the ids genuinely moved")
+        // The pins still name the SAME GEOMETRY in the stored document.
+        let reloaded = try bundle.mesh(for: bundle.manifest.objects[0])
+        for id in carried.pinnedVertices {
+            let position = try #require(reloaded.vertexPosition(id))
+            #expect(pinnedPositions.contains { simd_distance($0, position) < 1e-5 })
+        }
+
+        // ONE undo restores geometry AND annotations together.
+        command.revert(on: &bundle)
+        #expect(bundle.payloads[object.payloadFile] == beforePayload)
+        #expect(bundle.manifest.objects[0].annotations?.pinnedVertices == pinned)
+    }
 }

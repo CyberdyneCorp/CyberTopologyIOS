@@ -325,6 +325,17 @@ final class HoverPreviewController {
     var contextProvider: (() -> MeshEditController.Context?)?
     /// Render sink: fired only when the render state actually changed.
     var onRenderStateChanged: ((HoverRenderState) -> Void)?
+    /// Loop Info sink (task 4.3, spec roster: "Loop Info inspection"):
+    /// fired when the inspected loop changes; nil clears the chip. Holding
+    /// the Pencil over an INTERIOR EDGE is the gesture — exactly the case
+    /// that already resolves to `.loopHighlight`, so the inspector and the
+    /// highlight always describe the same loop.
+    var onLoopInfoChanged: ((LoopInfoChipState.Info?) -> Void)?
+    /// Measures the loop under a point (installed by the coordinator as
+    /// `MeshEditController.loopInfo(at:in:)`; nil = no inspector).
+    var loopInfoProvider: ((SIMD2<Float>, MeshEditController.Context) -> LoopInfoChipState.Info?)?
+
+    private(set) var loopInfoChip = LoopInfoChipState()
 
     private(set) var state = HoverPreviewState()
     private(set) var renderState = HoverRenderState.empty
@@ -348,6 +359,11 @@ final class HoverPreviewController {
         if state.hoverChanged(at: point, queries: queries) {
             publish(context: context, at: point)
         }
+        // The chip updates on EVERY hover sample, not only on preview
+        // change: sliding along one loop keeps the same metrics (the state
+        // machine dedupes), but crossing onto a different loop must swap
+        // the chip even when both resolve to `.loopHighlight`.
+        publishLoopInfo(context: context, at: point)
     }
 
     /// The hover left the viewport (recognizer ended/cancelled/failed).
@@ -364,6 +380,22 @@ final class HoverPreviewController {
     private func clearAfter(_ transition: () -> Bool) {
         if transition() {
             publish(context: nil, at: nil)
+        }
+        if loopInfoChip.clear() {
+            onLoopInfoChanged?(nil)
+        }
+    }
+
+    /// Resolves and publishes the Loop Info chip for `point`. Only an
+    /// interior-edge hover (a live loop highlight) inspects a loop —
+    /// anything else clears the chip.
+    private func publishLoopInfo(context: MeshEditController.Context, at point: SIMD2<Float>) {
+        var next: LoopInfoChipState.Info?
+        if case .loopHighlight = state.preview {
+            next = loopInfoProvider?(point, context)
+        }
+        if loopInfoChip.show(next) {
+            onLoopInfoChanged?(loopInfoChip.info)
         }
     }
 

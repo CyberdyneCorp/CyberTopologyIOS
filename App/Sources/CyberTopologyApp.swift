@@ -111,6 +111,53 @@ enum UITestSupport {
         ProcessInfo.processInfo.arguments.contains(autoDrawRingArgument)
     }
 
+    /// Annotation screenshot hook (task 4.3): pins an edge loop and tags
+    /// a DIFFERENT loop in a non-default palette colour, so one screenshot
+    /// shows both the yellow pin markers and a coloured tagged loop.
+    static let autoAnnotationsArgument = "-UITestAutoAnnotations"
+
+    static var autoAnnotationsRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(autoAnnotationsArgument)
+    }
+
+    /// Symmetry screenshot hook (task 4.4): turns X mirroring on through
+    /// the real journaled `setSymmetry` command (so the plane rim renders)
+    /// and authors ONE quad through the real create path, which the
+    /// symmetry replay mirrors inside the same journal entry — one frame
+    /// showing the rim, the authored quad and its mirror image.
+    static let autoSymmetryArgument = "-UITestAutoSymmetry"
+
+    static var autoSymmetryRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(autoSymmetryArgument)
+    }
+
+    /// Batch-panel screenshot hook (task 4.5): presents the batch-commands
+    /// sheet a moment after the editor appears (the same presentation the
+    /// toolbar's `batchCommands` action drives).
+    static let showBatchCommandsArgument = "-UITestShowBatchCommands"
+
+    static var showBatchCommandsRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(showBatchCommandsArgument)
+    }
+
+    /// Runs subdivide+reproject on the seeded cage through the real
+    /// journaled batch path (task 4.5 screenshot hook: a visibly denser
+    /// wireframe still wrapped on the Target).
+    static let autoSubdivideArgument = "-UITestAutoSubdivide"
+
+    static var autoSubdivideRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(autoSubdivideArgument)
+    }
+
+    /// Turns the Auto Relax MODE on before the other authoring hooks run
+    /// (task 4.5), so an injected stroke exercises the real
+    /// create → auto-relax → ONE journal entry path.
+    static let autoRelaxArgument = "-UITestAutoRelax"
+
+    static var autoRelaxRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(autoRelaxArgument)
+    }
+
     static var autoHoverLoopRequested: Bool {
         ProcessInfo.processInfo.arguments.contains(autoHoverLoopArgument)
     }
@@ -129,6 +176,39 @@ enum UITestSupport {
 
     static var showActionGalleryRequested: Bool {
         ProcessInfo.processInfo.arguments.contains(showActionGalleryArgument)
+    }
+
+    /// Seeds a 4x4-quad cage ON the dome Target (task 4.3): unlike the
+    /// 1-quad / 2-quad seeds it has several DISJOINT interior edge loops,
+    /// which is what the pin-loop and loop-tag hooks need to demonstrate.
+    static let seedEditMeshGridArgument = "-UITestSeedEditMeshGrid"
+
+    static var seedEditMeshGridRequested: Bool {
+        ProcessInfo.processInfo.arguments.contains(seedEditMeshGridArgument)
+    }
+
+    /// 4x4-quad cage draped on the same dome the seed Target uses.
+    static func writeSeedDomeGridOBJ() throws -> URL {
+        let n = 4
+        var obj = ""
+        for row in 0...n {
+            for col in 0...n {
+                let x = Double(col) / Double(n) * 1.2 - 0.6
+                let y = Double(row) / Double(n) * 1.2 - 0.6
+                let z = 0.45 * (1 - 0.5 * (x * x + y * y))
+                obj += "v \(x) \(y) \(z)\n"
+            }
+        }
+        for row in 0..<n {
+            for col in 0..<n {
+                let a = row * (n + 1) + col + 1
+                obj += "f \(a) \(a + 1) \(a + n + 2) \(a + n + 1)\n"
+            }
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("seed-dome-grid.obj")
+        try obj.write(to: url, atomically: true, encoding: .utf8)
+        return url
     }
 
     static var seedEditMeshOnDomeRequested: Bool {
@@ -245,6 +325,17 @@ enum UITestSupport {
         // default layout (the persistence UI test relaunches WITHOUT
         // reset to prove restoration).
         UserDefaults.standard.removeObject(forKey: ToolbarStore.defaultsKey)
+        // Auto Relax is a persisted MODE (task 4.5): a clean-slate launch
+        // must come up with it off, or an unrelated UI test would author
+        // under a relax pass it never asked for.
+        UserDefaults.standard.removeObject(forKey: ViewportSettings.autoRelaxKey)
+        // Subdivision preview is a persisted DISPLAY level (task 4.6): a
+        // clean-slate launch must come up with it off, or an unrelated UI
+        // test would screenshot a smoothed surface over its cage. Tests
+        // that WANT a preview pass `-subdivisionPreviewLevel <0|1|2>`,
+        // which lands in the argument domain and therefore outranks this
+        // removal from the app domain.
+        UserDefaults.standard.removeObject(forKey: ViewportSettings.subdivisionPreviewKey)
         let contents = (try? fileManager.contentsOfDirectory(
             at: documentsDirectory, includingPropertiesForKeys: nil
         )) ?? []

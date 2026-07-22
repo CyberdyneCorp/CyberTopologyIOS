@@ -53,14 +53,27 @@ final class ActionGalleryUITests: XCTestCase {
         )
     }
 
+    /// Opens the gallery, retrying the tap once.
+    ///
+    /// The system document browser owns the presentation the editor is
+    /// hosted in and can dismiss it during its own initial reveal work —
+    /// `RootView.coverDismissed` re-opens the document when that happens,
+    /// but a tap that landed during the gap is lost. Re-tapping after
+    /// waiting for the button to come back covers that window; it is
+    /// idempotent, since a presented gallery hides the toolbar button.
     @MainActor
     private func openGallery(_ app: XCUIApplication) {
         let button = app.buttons["action-gallery-button"]
-        XCTAssertTrue(button.waitForExistence(timeout: 15))
-        button.tap()
-        XCTAssertTrue(
-            app.staticTexts["gallery-help-title"].waitForExistence(timeout: 10)
-        )
+        let title = app.staticTexts["gallery-help-title"]
+        for attempt in 0..<2 {
+            XCTAssertTrue(
+                button.waitForExistence(timeout: 20),
+                "the editor's gallery button never appeared (attempt \(attempt))"
+            )
+            button.tap()
+            if title.waitForExistence(timeout: 10) { return }
+        }
+        XCTFail("the Action Gallery never presented")
     }
 
     /// The gallery lists EVERY action, and selecting one fills the help

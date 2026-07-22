@@ -219,10 +219,52 @@ public struct MeshEditTransaction {
 
     /// Serializes the mutated mesh and builds the journal command. Returns
     /// nil when the mesh serializes identically to the before-state.
-    public func command(verb: String) throws -> DocumentCommand? {
+    ///
+    /// ANNOTATION RECONCILIATION (the reason this can return a `compound`):
+    /// serializing COMPACTS element ids — the payload's OBJ writer emits
+    /// only live elements, renumbered from zero — and the viewport reloads
+    /// the live handle from exactly these bytes. Any operation that retired
+    /// an element therefore renumbers everything after it, while the
+    /// document's `MeshAnnotations` still name the OLD ids. Left alone that
+    /// silently re-points pins at different vertices (see
+    /// `MeshIDCompaction`). So every mesh edit carries its annotations
+    /// across the compaction here, and when they change, the geometry and
+    /// the annotation edit journal as ONE compound entry — one undo
+    /// restores both, which is the invariant the whole journal is built on.
+    ///
+    /// - Parameter survivingAnnotations: an EXTRA policy applied before the
+    ///   compaction (the batch commands' `AnnotationIDPolicy`, which knows
+    ///   about the full-rebuild ops the compaction map cannot describe).
+    public func command(
+        verb: String,
+        survivingAnnotations: ((MeshAnnotations?) -> MeshAnnotations?)? = nil
+    ) throws -> DocumentCommand? {
+        let annotationsBefore = object.annotations
+        // NOT `survivingAnnotations?(before) ?? before`: optional chaining
+        // flattens a policy that returns nil (which is what "everything is
+        // orphaned" MEANS) into the same nil as "no policy given", and the
+        // `??` would then silently restore the annotations the policy just
+        // said to drop.
+        let annotationsAfter: MeshAnnotations?
+        if annotationsBefore?.isEmpty ?? true {
+            // Nothing to orphan: no scan, and above all no spurious
+            // annotation edit turning an empty record into nil.
+            annotationsAfter = annotationsBefore
+        } else {
+            let policyApplied: MeshAnnotations?
+            if let survivingAnnotations {
+                policyApplied = survivingAnnotations(annotationsBefore)
+            } else {
+                policyApplied = annotationsBefore
+            }
+            annotationsAfter =
+                (policyApplied?.isEmpty ?? true)
+                ? nil
+                : policyApplied?.reconciled(through: mesh.payloadIDCompaction())
+        }
         let after = try mesh.payloadData()
         guard after != before else { return nil }
-        return .meshEdit(DocumentCommand.MeshEdit(
+        let meshCommand = DocumentCommand.meshEdit(DocumentCommand.MeshEdit(
             objectID: object.id,
             payloadFile: object.payloadFile,
             verb: verb,
@@ -235,5 +277,13 @@ public struct MeshEditTransaction {
             beforeRevision: object.revision,
             afterRevision: (object.revision ?? 0) + 1
         ))
+        guard annotationsAfter != annotationsBefore else { return meshCommand }
+        return .compound(verb: verb, commands: [
+            meshCommand,
+            .annotationEdit(DocumentCommand.AnnotationEdit(
+                objectID: object.id, verb: "\(verb).annotations",
+                before: annotationsBefore, after: annotationsAfter
+            )),
+        ])
     }
 }

@@ -1,0 +1,225 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -395,6 +395,45 @@
+ size_t cyber_mesh_edge_loop(const CyberMesh* mesh, uint32_t edge, uint32_t* out_edges,
+                             size_t max_edges);
+ 
++/* ---- loop metrics (retopology phase 4, task 4.3) -------------------------
++ *
++ * Measurements of the edge loop through a seed edge, backing the Loop Info
++ * inspector (manual-retopology spec: "Loop Info inspection (vertex/edge
++ * counts, boundary length, snapping state in O(loop) time)"). Read-only:
++ * the render cache is untouched. One loop walk plus one pass over its
++ * edges — no global scan. */
++typedef struct CyberLoopMetrics {
++    /* Edges in the loop and distinct vertices they touch. */
++    uint32_t edge_count;
++    uint32_t vertex_count;
++    /* 1 when the walk wrapped around (a closed loop has no endpoints). */
++    int closed;
++    /* Summed edge length along the loop. */
++    float length;
++    /* Terminal vertices of an OPEN chain, in walk order; both are
++     * CYBER_INVALID_ID and has_endpoints is 0 for a closed loop. */
++    int has_endpoints;
++    uint32_t endpoint_a;
++    uint32_t endpoint_b;
++    /* Loop edges that are mesh boundary edges (one incident face). */
++    uint32_t boundary_edge_count;
++    /* Snapping state against the Target. Measured only when a snapper is
++     * supplied (snap_measured 1); "snapped" means within 2% of the loop's
++     * mean edge length of the Target surface, so the verdict is
++     * scale-free. */
++    int snap_measured;
++    uint32_t snapped_vertex_count;
++    float max_snap_distance;
++} CyberLoopMetrics;
++
++/* Fills *out_metrics for the edge loop through `edge`. `snapper` may be
++ * NULL (no Target loaded): the snapping fields then stay unmeasured.
++ * Returns CYBER_ERR_INVALID_ARG on NULL mesh/out_metrics, and CYBER_OK
++ * with edge_count 0 when `edge` is dead. */
++CyberStatus cyber_mesh_loop_metrics(const CyberMesh* mesh, uint32_t edge,
++                                    const CyberSnapper* snapper,
++                                    CyberLoopMetrics* out_metrics);
++
+ /* Quad ring through `edge`: the consecutive "across" edges crossing each
+  * quad to its opposite edge until the ring closes or hits a boundary /
+  * non-quad. Writes 1 to *out_closed (may be NULL) when the ring closed. */
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -36,6 +36,7 @@
+ #include "cyber/retopo/build_tools.hpp"
+ #include "cyber/retopo/dissolve.hpp"
+ #include "cyber/retopo/erase.hpp"
++#include "cyber/retopo/loop_metrics.hpp"
+ #include "cyber/retopo/loops.hpp"
+ #include "cyber/retopo/move.hpp"
+ #include "cyber/retopo/picking.hpp"
+@@ -1083,7 +1084,41 @@
+     }
+     return copyEdgeIds(ring.edges, out_edges, max_edges);
+ }
++
++// ---- loop metrics (retopology phase 4, task 4.3) --------------------------
+ 
++CyberStatus cyber_mesh_loop_metrics(const CyberMesh* mesh, uint32_t edge,
++                                    const CyberSnapper* snapper,
++                                    CyberLoopMetrics* out_metrics) {
++    if (mesh == nullptr || out_metrics == nullptr) {
++        return CYBER_ERR_INVALID_ARG;
++    }
++    *out_metrics = CyberLoopMetrics{};
++    out_metrics->endpoint_a = CYBER_INVALID_ID;
++    out_metrics->endpoint_b = CYBER_INVALID_ID;
++
++    const cyber::retopo::EdgeLoopMetrics metrics = cyber::retopo::measureEdgeLoop(
++        mesh->mesh, cyber::EdgeId{edge},
++        snapper == nullptr ? nullptr : &snapper->snapper);
++
++    out_metrics->edge_count = static_cast<uint32_t>(metrics.edgeCount);
++    out_metrics->vertex_count = static_cast<uint32_t>(metrics.vertexCount);
++    out_metrics->closed = metrics.closed ? 1 : 0;
++    out_metrics->length = metrics.length;
++    if (metrics.endpoints.has_value()) {
++        out_metrics->has_endpoints = 1;
++        out_metrics->endpoint_a = metrics.endpoints->first.value;
++        out_metrics->endpoint_b = metrics.endpoints->second.value;
++    }
++    out_metrics->boundary_edge_count =
++        static_cast<uint32_t>(metrics.boundaryEdgeCount);
++    out_metrics->snap_measured = metrics.snapMeasured ? 1 : 0;
++    out_metrics->snapped_vertex_count =
++        static_cast<uint32_t>(metrics.snappedVertexCount);
++    out_metrics->max_snap_distance = metrics.maxSnapDistance;
++    return CYBER_OK;
++}
++
+ // ---- mesh editing (retopology phase 3, task 3.3) ---------------------------
+ //
+ // Every mutating entry point here resets the handle's render cache (the
+diff --git a/src/retopo/include/cyber/retopo/loop_metrics.hpp b/src/retopo/include/cyber/retopo/loop_metrics.hpp
+new file mode 100644
+--- /dev/null
++++ b/src/retopo/include/cyber/retopo/loop_metrics.hpp
+@@ -0,0 +1,118 @@
++#pragma once
++
++#include <cmath>
++#include <cstddef>
++#include <optional>
++#include <unordered_set>
++#include <utility>
++#include <vector>
++
++#include "cyber/core/mesh.hpp"
++#include "cyber/retopo/loops.hpp"
++#include "cyber/retopo/snapping.hpp"
++
++// Loop measurement for the Loop Info inspector (manual-retopology spec,
++// "Loop Info inspection (vertex/edge counts, boundary length, snapping
++// state in O(loop) time)"). One walk of the edge loop through the seed
++// edge, then one pass over its edges — no global mesh scan, so the whole
++// query is O(loop) as the spec requires.
++//
++// The metrics are deliberately descriptive, not corrective: nothing here
++// mutates the mesh or the render cache.
++
++namespace cyber::retopo {
++
++// Everything the inspector chip shows about one edge loop. Distinct from
++// build_tools.hpp's `LoopMetrics`/`loopInfo`, which measures a CALLER-
++// SUPPLIED vertex list: this one owns the loop WALK and adds endpoints,
++// boundary-edge count and Target snapping state.
++struct EdgeLoopMetrics {
++    // Edges in the loop, in walk order (the chain a loop tag colors).
++    std::size_t edgeCount = 0;
++    // Distinct vertices touched by those edges. A closed loop has exactly
++    // as many vertices as edges; an open chain has one more.
++    std::size_t vertexCount = 0;
++    // True when the walk wrapped around (last edge meets the first).
++    bool closed = false;
++    // Summed edge length along the loop ("boundary length").
++    float length = 0.0F;
++    // Terminal vertices of an OPEN chain, in walk order. Empty for a
++    // closed loop (which has no endpoints).
++    std::optional<std::pair<VertexId, VertexId>> endpoints;
++    // Loop edges that are mesh boundary edges (exactly one incident face).
++    std::size_t boundaryEdgeCount = 0;
++    // Snapping state against the Target, when a snapper is supplied:
++    // how many loop vertices sit within `snapTolerance` of the Target
++    // surface, and the largest deviation found. Without a snapper these
++    // stay 0 / 0 and `snapMeasured` is false.
++    bool snapMeasured = false;
++    std::size_t snappedVertexCount = 0;
++    float maxSnapDistance = 0.0F;
++};
++
++// Distance a vertex may sit off the Target and still count as snapped,
++// expressed as a fraction of the loop's MEAN EDGE LENGTH so the verdict is
++// scale-free (a 1cm gap is snapped on a building, adrift on a bolt).
++inline constexpr float kLoopSnapToleranceFraction = 0.02F;
++
++// Measures the edge loop through `seed`. `snapper` may be null (no Target
++// loaded): then the snapping fields stay unmeasured. A dead seed edge
++// yields a zeroed result (edgeCount 0), which callers read as "no loop".
++[[nodiscard]] inline EdgeLoopMetrics measureEdgeLoop(const Mesh& mesh, EdgeId seed,
++                                                 const SurfaceSnapper* snapper) {
++    EdgeLoopMetrics metrics;
++    const std::vector<EdgeId> loop = edgeLoopFrom(mesh, seed);
++    if (loop.empty()) {
++        return metrics;
++    }
++    metrics.edgeCount = loop.size();
++
++    // Ordered distinct vertices along the walk. edgeLoopFrom returns the
++    // chain in walk order, so consecutive edges share a vertex; collecting
++    // both endpoints of every edge in order and de-duplicating gives the
++    // vertex chain in O(loop).
++    std::vector<VertexId> ordered;
++    ordered.reserve(loop.size() + 1);
++    std::unordered_set<Index> seen;
++    const auto push = [&](VertexId v) {
++        if (seen.insert(v.value).second) {
++            ordered.push_back(v);
++        }
++    };
++    for (const EdgeId e : loop) {
++        const std::pair<VertexId, VertexId> ends = mesh.edgeVertices(e);
++        push(ends.first);
++        push(ends.second);
++        metrics.length += length(mesh.position(ends.second) - mesh.position(ends.first));
++        if (mesh.isBoundaryEdge(e)) {
++            ++metrics.boundaryEdgeCount;
++        }
++    }
++    metrics.vertexCount = ordered.size();
++    // A closed loop revisits its first vertex, so it has exactly as many
++    // distinct vertices as edges; an open chain has one more.
++    metrics.closed = loop.size() > 2 && ordered.size() == loop.size();
++    if (!metrics.closed && ordered.size() >= 2) {
++        metrics.endpoints = std::make_pair(ordered.front(), ordered.back());
++    }
++
++    if (snapper != nullptr && !ordered.empty()) {
++        metrics.snapMeasured = true;
++        const float meanEdge =
++            metrics.length / static_cast<float>(loop.size());
++        const float tolerance = meanEdge * kLoopSnapToleranceFraction;
++        for (const VertexId v : ordered) {
++            const SurfaceHit hit = snapper->snapToSurface(mesh.position(v));
++            const float distance = std::sqrt(hit.distanceSquared);
++            if (distance > metrics.maxSnapDistance) {
++                metrics.maxSnapDistance = distance;
++            }
++            if (distance <= tolerance) {
++                ++metrics.snappedVertexCount;
++            }
++        }
++    }
++    return metrics;
++}
++
++}  // namespace cyber::retopo

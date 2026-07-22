@@ -64,6 +64,8 @@ scenarios:
       - MeshEditCameraToolTests/patchCloneFlipPastesMirroredPatch
       - MeshEditCameraToolTests/barrelRollRotatesArmedPatchClonePlacement
       - MeshEditCameraToolTests/cameraFeedIsGatedByTheArbiter
+      - MeshEditCameraToolTests/theCameraToolGateClosesWhileThePenIsDown
+      - MeshEditCameraToolTests/commitDoesNotBakeCameraMotionTheGateWithheld
       - PlacementOpsTests/patchCloneSharesCloneVertices
       - PlacementOpsTests/patchCloneSnapsToTarget
       - PlacementOpsTests/patchCloneFlipReversesWinding
@@ -78,11 +80,174 @@ scenarios:
     Extend Boundary automatic mode:
       - MeshEditCameraToolTests/extendBoundaryAutomaticModeStepsRowsWithTheCameraIntoOneEntry
       - MeshEditCameraToolTests/extendBoundaryCancelDiscardsAccumulatedRows
+      # The mode's row state machine, and the engine ops it commits into.
+      # (These were previously mis-filed under "Relax over pinned loop",
+      # which they do not exercise at all — they never touch
+      # MeshAnnotations.)
       - ExtendBoundaryPlanTests/automaticModeStepsQuadSizedRowsWhileTheCameraMoves
       - ExtendBoundaryPlanTests/onceModeStepsExactlyOneRowThenWantsAutoCommit
+      - ExtendBoundaryPlanTests/automaticModeStopsSteppingAtTheRowLimit
+      - ExtendBoundaryPlanTests/degenerateChainStepFloorsAtAFractionOfTheScene
       - PlacementOpsTests/extendBoundaryClosedChainWraps
       - PlacementOpsTests/extendBoundaryStacksRings
       - PlacementOpsTests/boundaryChainClosesAroundGrid
+    # Task 4.3: the scenario end to end. The ENGINE assertion is the load
+    # bearing one — AnnotationOpsTests/relaxHonorsPinnedLoop perturbs the
+    # grid32 fixture, relaxes the WHOLE mesh through the real capi with a
+    # pinned edge loop, and asserts pinned vertices are bit-exactly where
+    # they were WHILE unpinned ones genuinely moved (a vacuous pass is
+    # impossible: the companion relaxWithoutPinsMovesThoseVertices proves
+    # those same vertices DO move when nothing is pinned). The app half
+    # proves the pin set actually reaches the engine on every brush
+    # sample: pins authored by the real Pin Flip hold gesture, then a real
+    # Relax scrub through capture → controller → engine, asserted on
+    # positions (id-independent, since the journaled payload round-trip
+    # may reassign stable ids).
+    Relax over pinned loop:
+      - AnnotationOpsTests/relaxHonorsPinnedLoop
+      - AnnotationOpsTests/relaxWithoutPinsMovesThoseVertices
+      - AnnotationOpsTests/moveHonorsPins
+      - AnnotationOpsTests/moveWithoutPinsDisplacesNeighbours
+      - AnnotationToolsTests/relaxThroughTheControllerHonoursPins
+      - AnnotationToolsTests/holdOnInteriorEdgePinsTheLoop
+      - AnnotationToolsTests/committedPinLoopHoldFixture
+      # Pins only stay meaningful if they survive the document round trip,
+      # which COMPACTS element ids: these cover the reconciliation that
+      # keeps a pin naming the same vertex after any delete/merge.
+      - MeshIDCompactionTests/theMapPredictsTheRealRoundTripAfterADelete
+      - MeshIDCompactionTests/pinsFollowTheirVerticesAcrossADelete
+      - MeshIDCompactionTests/pinsOnRetiredVerticesAreDropped
+      - MeshEditingTests/transactionReconcilesAnnotationsAcrossIDCompaction
+      - MeshEditingTests/transactionKeepsAnnotationsWhenNoIdsMove
+    # Task 4.4: 8-fold radial authoring end to end. The load-bearing test
+    # is SymmetryToolsTests/eightFoldRadialAuthoringSnapsEveryCopy — it
+    # drives ONE quad through the real create path with radialCount 8 and
+    # asserts eight faces, every created vertex on the Target (checked
+    # against a real SurfaceSnapper), copies in all eight sectors, and a
+    # single undo removing all of them, because the replication happens
+    # inside the stroke's one journaled command.
+    #
+    # HONEST SCOPE: this covers live radial AUTHORING, which is what the
+    # scenario asks for. Radial BAKE (welding the sector seams into real
+    # geometry) has no engine support and is deferred as task 4.4a.
+    Radial symmetry editing:
+      - SymmetryToolsTests/eightFoldRadialAuthoringSnapsEveryCopy
+      - SymmetryToolsTests/undoingAMirroredAuthoringOpRemovesBothSides
+      - SymmetryToolsTests/mirroredAuthoringCreatesBothSides
+      - SymmetryToolsTests/multiAxisAuthoringFillsAllQuadrants
+      - SymmetryToolsTests/centerLineVerticesWeldToThePlane
+      # The seam must be WELDED, not merely snapped: the count/boundary
+      # assertions the position-only test above cannot make.
+      - SymmetryToolsTests/centerLineVerticesWeldIntoSharedSeamVertices
+      - SymmetryOpsTests/seamVerticesWeldIntoOneSharedVertex
+      - SymmetryOpsTests/radialReplicasSpanTheTurn
+      - SymmetryOpsTests/replicaCounts
+      - SymmetryOpsTests/centerLineVerticesSnapToThePlane
+      - CyberTopologyUITests/testSymmetryProbeMirrorsAuthoredQuadAndUndoesBothSides
+    # Task 4.4: re-symmetrize about a chosen axis, preserving topology
+    # correspondence "where it exists". The engine assertions are the
+    # load-bearing ones: resymmetrizeRestoresDriftedGeometry drifts one
+    # half of a symmetric strip and asserts every off-side vertex is the
+    # EXACT mirror of a working-side one afterwards with no faces or
+    # vertices added or removed, and resymmetrizeReportsUnmatchedGeometry
+    # proves one-sided geometry is reported rather than destroyed.
+    Re-symmetrize:
+      - SymmetryOpsTests/resymmetrizeRestoresDriftedGeometry
+      - SymmetryOpsTests/resymmetrizeReportsUnmatchedGeometry
+      - SymmetryOpsTests/resymmetrizeIsIdempotent
+      - SymmetryToolsTests/resymmetrizeRestoresDriftedHalf
+      - SymmetryToolsTests/resymmetrizeReportsToTheStatusLine
+      - SymmetryToolsTests/applySymmetryBakesAsOneCommand
+      - SymmetryOpsTests/applySymmetryMirrorsPerAxis
+      - SymmetryOpsTests/applySymmetryHonoursTheOrigin
+      - SymmetryOpsTests/applySymmetryAcrossTwoAxes
+    # Task 4.5: the Auto Relax MODE end to end. The load-bearing test is
+    # autoRelaxRedistributesNeighborsAfterAnAppendInOneJournalEntry — it
+    # appends a quad through the REAL create path on a cage whose interior
+    # column is deliberately off the even spacing, then asserts (a) that
+    # column moved back toward even spacing and (b) the whole thing is
+    # exactly ONE journal entry whose single undo restores the pre-append
+    # payload byte-for-byte. autoRelaxOffLeavesNeighborsExactlyWhereTheyWere
+    # is the anti-vacuity control (the same append with the mode off leaves
+    # the neighbour bit-identical), and autoRelaxNeverMovesAPinnedVertex
+    # proves the spec's "honoring pins" clause with an unpinned sibling as
+    # its own anti-vacuity control — which is what task 4.3a left open.
+    #
+    # HONEST SCOPE - THE MODE IS NOT UNIVERSAL. Auto Relax runs on the
+    # create paths (quad/grid draw and anything routed through applyCreate),
+    # the element-edit GRAMMAR entries (insert loop, dissolve, merge,
+    # rotate) and the Build Quad/Triangle drags. It does NOT run on: the
+    # camera-as-manipulator tools (Patch Clone, Extend Boundary, Transform
+    # Vertices), Surface Cut, Draw Strip, Path Distribute, the Merge Pair
+    # TOOL (applyElementEdit with no autoRelaxAround, so the pass is
+    # disabled) or the brush verbs Move / Tweak / Erase (MeshEditController
+    # .commit journals without it). Every one of those is deferred as task
+    # 4.5a; this list and 4.5a's are kept in step deliberately, because an
+    # under-stated exclusion list is the thing that made the mode look
+    # universal in the first place.
+    Auto Relax after quad creation:
+      - BatchCommandTests/autoRelaxRedistributesNeighborsAfterAnAppendInOneJournalEntry
+      - BatchCommandTests/autoRelaxOffLeavesNeighborsExactlyWhereTheyWere
+      - BatchCommandTests/autoRelaxNeverMovesAPinnedVertex
+      - BatchCommandTests/autoRelaxBrushCoversThePointsPlusANeighbourRing
+      - BatchCommandTests/autoRelaxModePersistsAcrossModels
+    # Task 4.5: subdivide+reproject. The ENGINE assertion is the load
+    # bearing one — BatchOpsTests/subdivideAndReprojectLandsOnTarget wraps
+    # the grid32 fixture onto a DOMED Target, subdivides once, and asserts
+    # every resulting vertex (the new ones counted explicitly) is within
+    # 1e-3 of the Target surface, with an anti-vacuity control proving the
+    # same vertices sit OFF the dome without the reprojection. The app half
+    # runs it through the journaled batch path on the seeded dome cage, and
+    # the UI test drives the real panel and asserts ONE undo restores the
+    # coarse cage. The engine has LINEAR subdivision only — see 4.6/4.5a.
+    Subdivide and reproject:
+      - BatchOpsTests/subdivideAndReprojectLandsOnTarget
+      - BatchOpsTests/subdivideQuadruples
+      - BatchOpsTests/subdivideDeterminism
+      - BatchOpsTests/subdivideReassignsIDs
+      - BatchCommandTests/subdivideAndReprojectJournalsOnceAndLandsOnTheTarget
+      - BatchCommandTests/subdivideClearsOrphanedPinsAndOneUndoRestoresThem
+      - CyberTopologyUITests/testBatchPanelSubdividesTheCageAndOneUndoRestoresIt
+    # Task 4.6: the subdivision preview.
+    #
+    # HONEST MAPPING — THE SHIPPED PREVIEW IS REPROJECTED-LINEAR, NOT
+    # SMOOTH. The requirement says "1-2 level SMOOTH-subdivision preview
+    # (with reprojection)". The engine has LINEAR subdivision only
+    # (Mesh::linearSubdivide behind cyber_retopo_subdivide); there is no
+    # Catmull-Clark / limit-surface evaluator anywhere in it. What ships and
+    # what these tests assert is: subdivide linearly, then project every
+    # resulting vertex onto the Target — which is what actually produces the
+    # smooth surface a retopologist judges, and which degrades to a merely
+    # DENSER cage when the document has no Target (asserted, and said out
+    # loud in the UI caption). SubdivisionPreviewTests/
+    # withoutATargetTheSubdivisionIsLinear is the deliberate proof of that
+    # limitation, and the genuinely smooth pass is task 4.6a — NOT claimed
+    # by this mapping.
+    #
+    # The SCENARIO itself ("the smoothed preview updates live while the
+    # stored mesh remains the base cage") is fully covered: the app test
+    # edits the base cage under level 2 and asserts the stored payload is
+    # still the 16-face cage — same object count, same payload count — while
+    # the preview mesh's positions changed; the CyberKit test asserts the
+    # base handle is byte-identical after repeated derivations (element ids
+    # included, which is what protects pins/tags from subdivide's id
+    # reassignment); and the UI test drives the real settings control and
+    # proves ONE undo reaches the seed import, i.e. the preview journaled
+    # nothing at all.
+    Editing under preview:
+      - SubdivisionPreviewTests/previewNeverMutatesTheBase
+      - SubdivisionPreviewTests/previewIsAnIndependentHandle
+      - SubdivisionPreviewTests/reprojectionLiftsThePreview
+      - SubdivisionPreviewTests/withoutATargetTheSubdivisionIsLinear
+      - SubdivisionPreviewTests/previewGoldens
+      - SubdivisionPreviewTests/throttlePolicy
+      - SubdivisionPreviewViewportTests/editingUnderPreviewLeavesTheStoredCageUntouched
+      - SubdivisionPreviewViewportTests/previewDerivationNeverTouchesTheLiveHandle
+      - SubdivisionPreviewViewportTests/previewReprojectsOntoTheTarget
+      - SubdivisionPreviewViewportTests/throttleSkipsExpensiveMidStrokeRebuilds
+      - SubdivisionPreviewViewportTests/offscreenRenderDistinguishesPreviewOnAndOff
+      - SubdivisionPreviewViewportTests/wireframeDrawsOverThePreview
+      - CyberTopologyUITests/testSubdivisionPreviewIsNonDestructive
   pencil-interaction:
     # Task 3.1: XCUITest cannot synthesize Apple Pencil touches, so the
     # pen-side of the scenario is covered headless — the pure arbiter state
@@ -376,18 +541,15 @@ pending:
     - Hardware-path parity
     - Cross-environment determinism
   retopology-tools:
-    # Engine-level pin immunity is already regression-tested (task 3.3:
-    # MeshEditingTests/relaxPreservesPinnedVertices,
-    # moveRespectsPinsAndValidatesSeed — the capi relax/move ops take
-    # explicit pin sets), but the scenario needs the USER-facing pin data
-    # model (per-vertex + per-loop pins, task 4.3) to map honestly.
-    - Relax over pinned loop
+    # "Tag then weave" stays unmapped until the Weave solver exists
+    # (phase 5): task 4.3 lands the loop-tag half — per-tag colours,
+    # individual and en-masse clears, journaled persistence, per-colour
+    # overlay passes — but the scenario asserts that a SOLVE aligns its
+    # edge flow with the tagged loop, which needs 5.1/5.2. The tag data
+    # model that will feed it as a flow constraint is covered by
+    # AnnotationOpsTests/loopTagColours, tagClears, tagsGroupByColour and
+    # annotationsSurviveDocumentBundle.
     - Tag then weave
-    - Radial symmetry editing
-    - Re-symmetrize
-    - Auto Relax after quad creation
-    - Subdivide and reproject
-    - Editing under preview
   scene-pipeline:
     - Solo a component
     - Import GLB as target

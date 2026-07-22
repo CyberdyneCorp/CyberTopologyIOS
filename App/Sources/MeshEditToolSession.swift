@@ -23,6 +23,9 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
     case extendBoundary
     case drawStrip
     case transformVertices
+    /// Pin Flip (task 4.3): flips pins per vertex, per swept run, or —
+    /// on a HOLD over an interior edge — for the whole edge loop.
+    case pinFlip
 
     /// Camera-as-manipulator tools: a selection stroke arms a session,
     /// then the CAMERA is the manipulator until commit/cancel. Draw Strip
@@ -33,7 +36,7 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
         case .patchClone, .extendBoundary, .transformVertices:
             return true
         case .buildQuad, .buildTriangle, .mergePair, .pathDistribute,
-            .surfaceCut, .drawStrip:
+            .surfaceCut, .drawStrip, .pinFlip:
             return false
         }
     }
@@ -110,6 +113,8 @@ extension MeshEditController {
             handleCameraToolStroke(stroke, samples: samples)
         case .drawStrip:
             applyDrawStrip(stroke, samples: samples)
+        case .pinFlip:
+            commitPinFlipStroke(stroke, samples: samples)
         }
     }
 
@@ -172,6 +177,9 @@ extension MeshEditController {
             // Triangle-edge drag: grow the triangle into a quad.
             journalOrDiscard(verb: "tool.buildQuad.grow") {
                 try mesh.growBoundaryEdge(edge, to: dragEnd, snapping: context.snapper)
+                try runAutoRelaxIfEnabled(
+                    mesh: mesh, context: context, around: [dragEnd]
+                )
                 onLiveEdit?()
                 return try transaction.command(verb: "tool.buildQuad.grow")
             }
@@ -191,6 +199,7 @@ extension MeshEditController {
                 built.newVertices, excluding: Set(built.ringVertices),
                 mesh: mesh, context: context
             )
+            try runAutoRelaxIfEnabled(mesh: mesh, context: context, around: [dragEnd])
             onLiveEdit?()
             return try transaction.command(verb: verb)
         }
@@ -254,6 +263,9 @@ extension MeshEditController {
             }
             try autoMergeNewVertices(
                 created, excluding: ringIDs, mesh: mesh, context: context
+            )
+            try runAutoRelaxIfEnabled(
+                mesh: mesh, context: context, around: [anchor.position, dragEnd]
             )
             onLiveEdit?()
             return try transaction.command(verb: verb)
@@ -432,6 +444,8 @@ extension MeshEditController {
             probeDrawStrip(vertices: vertices, context: context)
         case .transformVertices:
             probeTransformVertices(vertices: vertices, context: context)
+        case .pinFlip:
+            probePinLoopHold(vertices: vertices, context: context)
         }
         return lastCommit != nil
     }
@@ -582,6 +596,48 @@ extension MeshEditController {
             samples.append(sample)
         }
         strokeEnded(verb: verb, interpretation: nil, samples: samples)
+    }
+
+    /// Pin Flip (task 4.3): a HOLD over an INTERIOR edge, which flips
+    /// that edge loop's pins in one journaled entry — the screenshot hook
+    /// for "pins render as distinct markers". Stationary samples spanning
+    /// more than `pinHoldDuration` are what makes it a hold rather than a
+    /// tap, exactly as a real dwelling Pencil would.
+    private func probePinLoopHold(vertices: [ProbeVertex], context: Context) {
+        guard let mesh = context.editMesh, let project = context.project else { return }
+        let pickRadius = context.sceneRadius * Self.vertexPickRadiusFraction
+        for from in vertices {
+            for to in vertices where to.id != from.id {
+                let midpoint = (from.position + to.position) * 0.5
+                guard
+                    let screen = project(midpoint),
+                    let hit = surfacePoint(at: screen, in: context),
+                    // The hold must land on an INTERIOR edge and clear of
+                    // any vertex — a vertex hold flips just that vertex,
+                    // which is not what this probe is demonstrating.
+                    mesh.nearestVertex(to: hit, maxDistance: pickRadius * 0.25) == nil,
+                    let edge = mesh.nearestEdge(to: hit, maxDistance: pickRadius),
+                    mesh.isBoundaryEdge(edge.edge) == false,
+                    !mesh.edgeLoopVertices(from: edge.edge).isEmpty
+                else { continue }
+                driveProbeHold(at: screen)
+                if lastCommit != nil { return }
+            }
+        }
+    }
+
+    /// Drives a stationary HOLD stroke at one screen point through the
+    /// real begin/continue/end entry points.
+    private func driveProbeHold(at screen: SIMD2<Float>) {
+        let duration = MeshEditController.pinHoldDuration * 1.5
+        var samples = [probeSample(at: screen, time: 0)]
+        strokeBegan(verb: .pencil, sample: samples[0])
+        for step in 1...4 {
+            let sample = probeSample(at: screen, time: duration * Double(step) / 4)
+            strokeContinued(sample: sample)
+            samples.append(sample)
+        }
+        strokeEnded(verb: .pencil, interpretation: nil, samples: samples)
     }
 
     /// Build Quad: drag outward from a boundary edge midpoint.

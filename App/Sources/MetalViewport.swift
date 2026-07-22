@@ -43,6 +43,10 @@ struct MetalViewport: UIViewRepresentable {
     var ghostDebugEnabled: Bool = false
     /// Viewport resolution scale (task 2.5, spec: "Performance controls").
     var resolutionScale: Double = ViewportSettings.defaultResolutionScale
+    /// Subdivision preview level (task 4.6, spec: "Subdivision preview"):
+    /// 0 / 1 / 2. A DISPLAY setting — editing always continues on the base
+    /// cage and the document never sees the preview.
+    var subdivisionPreviewLevel: Int = ViewportSettings.defaultSubdivisionPreviewLevel
     /// Snap haptics on/off (task 3.7, spec: "haptics SHALL be
     /// user-disableable"). Disabling silences ticks only — the snap
     /// pre-highlight and the merge behavior itself are unaffected.
@@ -96,6 +100,12 @@ struct MetalViewport: UIViewRepresentable {
         coordinator.renderer?.zoomSpeed = Float(zoomSpeed)
         coordinator.renderer?.overlaySettings = overlaySettings
         coordinator.applyResolutionScale(resolutionScale)
+        // Preview LEVEL first, document second: a level change and a
+        // document change arriving in the same update pass must derive the
+        // preview once, at the new level, from the new cage.
+        coordinator.setSubdivisionPreviewLevel(
+            SubdivisionPreviewLevel(clamping: subdivisionPreviewLevel)
+        )
         coordinator.syncMesh(from: bundle)
         coordinator.syncGhostPreview(from: bundle, enabled: ghostDebugEnabled)
     }
@@ -146,6 +156,10 @@ struct MetalViewport: UIViewRepresentable {
         /// create-first-quad fallback keys on this so a broken snapshot can
         /// never journal a duplicate `.editMesh` object.
         private(set) var documentHasEditMesh = false
+        /// Document symmetry state (task 4.4) last pushed to the renderer
+        /// and handed to authoring contexts. Optional so "never set"
+        /// (pre-4.4 documents) survives round-trips through the journal.
+        private(set) var documentSymmetry: SymmetrySettings?
         /// Identity + payload of the EditMesh currently rendered as the
         /// DEBUG ghost preview; nil while the preview is off (task 2.4 demo
         /// path). Payload changes (mesh edits, undo/redo) reload the ghost
@@ -452,7 +466,9 @@ struct MetalViewport: UIViewRepresentable {
         /// runloop drain). Re-sync from the live document first so verb
         /// transactions pin the true current payload as `before` and every
         /// consumer sees current state.
-        private func makeEditContext() -> MeshEditController.Context? {
+        /// Internal (not private) so the task-4.3 annotation tests can
+        /// journal against the SAME context the verb layer uses.
+        func makeEditContext() -> MeshEditController.Context? {
             guard let renderer else { return nil }
             resyncFromDocumentIfIdle()
             return MeshEditController.Context(
@@ -460,6 +476,8 @@ struct MetalViewport: UIViewRepresentable {
                 editMesh: recognizerEditMesh,
                 editPayload: overlayPayload,
                 documentHasEditMesh: documentHasEditMesh,
+                annotations: editObject?.annotations,
+                symmetry: documentSymmetry,
                 snapper: targetSnapper,
                 sceneRadius: renderer.bounds.radius,
                 ray: { [weak renderer] point in
@@ -472,6 +490,7 @@ struct MetalViewport: UIViewRepresentable {
                     )
                 },
                 camera: renderer.camera,
+                cameraFeedsArmedTool: inputController.cameraFeedsArmedTool,
                 orbitCamera: { [weak renderer] delta in
                     renderer?.orbit(byPoints: delta)
                 }
@@ -492,6 +511,15 @@ struct MetalViewport: UIViewRepresentable {
             }
             hoverPreview.onRenderStateChanged = { [weak self] state in
                 self?.renderer?.setHoverPreview(state)
+            }
+            // Loop Info inspector (task 4.3): the measurement runs through
+            // the mesh-edit controller's engine query (O(loop), read-only)
+            // and surfaces as a chip on the input model.
+            hoverPreview.loopInfoProvider = { [weak self] point, context in
+                self?.meshEditor.loopInfo(at: point, in: context)
+            }
+            hoverPreview.onLoopInfoChanged = { [weak self] info in
+                self?.inputModel.setLoopInfo(info)
             }
             inputModel.onStrokeWillBegin = { [weak self] in
                 self?.hoverPreview.strokeBegan()
@@ -589,6 +617,21 @@ struct MetalViewport: UIViewRepresentable {
             syncRenderMesh(from: bundle, renderer: renderer)
             syncTargetSnapper(from: bundle)
             syncOverlay(from: bundle, renderer: renderer)
+            syncSymmetry(from: bundle, renderer: renderer)
+            inputModel.setSceneBounds(
+                center: renderer.bounds.center, radius: renderer.bounds.radius
+            )
+        }
+
+        /// Mirrors the document's symmetry state (task 4.4) into the
+        /// viewport: the plane rim the renderer draws, and the value every
+        /// authoring context reads. Symmetry is DOCUMENT state, so undoing
+        /// a `setSymmetry` command re-enters here and puts the rim back.
+        private func syncSymmetry(from bundle: DocumentBundle, renderer: ViewportRenderer) {
+            let settings = bundle.manifest.symmetry
+            guard settings != documentSymmetry else { return }
+            documentSymmetry = settings
+            renderer.setOverlaySymmetry(settings ?? SymmetrySettings())
         }
 
         /// Re-syncs the viewport state from the CURRENT document (via
@@ -671,7 +714,7 @@ struct MetalViewport: UIViewRepresentable {
             // selection ids and discards the session. The live mesh is
             // rebound below either way, so no separate discard is needed.
             if object?.id != overlayObjectID || payload != overlayPayload {
-                meshEditor.editMeshSnapshotWillChange()
+                meshEditor.editMeshSnapshotWillChange(payload: payload)
             }
             guard let object, let payload else {
                 overlayObjectID = nil
@@ -680,6 +723,7 @@ struct MetalViewport: UIViewRepresentable {
                 overlayAnnotations = nil
                 recognizerEditMesh = nil
                 renderer.clearOverlay()
+                rebuildSubdivisionPreview(duringStroke: false)
                 return
             }
             let isNewObject = object.id != overlayObjectID
@@ -693,7 +737,9 @@ struct MetalViewport: UIViewRepresentable {
                     let mesh = recognizerEditMesh {
                     overlayAnnotations = object.annotations
                     try? mesh.applyAnnotations(object.annotations)
-                    renderer.loadOverlay(mesh: mesh, restartAnimation: false)
+                    renderer.loadOverlay(
+                        mesh: mesh, annotations: object.annotations,
+                        restartAnimation: false)
                     if renderedObjectID == overlayObjectID {
                         renderer.load(mesh: mesh, preservingCamera: true)
                     }
@@ -711,6 +757,7 @@ struct MetalViewport: UIViewRepresentable {
                 overlayAnnotations = nil
                 recognizerEditMesh = nil
                 renderer.clearOverlay()
+                rebuildSubdivisionPreview(duringStroke: false)
                 return
             }
             overlayObjectID = object.id
@@ -718,7 +765,11 @@ struct MetalViewport: UIViewRepresentable {
             overlayAnnotations = object.annotations
             try? mesh.applyAnnotations(object.annotations)
             recognizerEditMesh = mesh
-            renderer.loadOverlay(mesh: mesh, restartAnimation: isNewObject)
+            renderer.loadOverlay(
+                mesh: mesh, annotations: object.annotations, restartAnimation: isNewObject)
+            // The base cage changed in the DOCUMENT (a commit, an undo, an
+            // import): the preview must follow it exactly, throttle or not.
+            rebuildSubdivisionPreview(duringStroke: false)
         }
 
         /// Uploads the CURRENT live EditMesh into the overlay (and, for a
@@ -728,11 +779,124 @@ struct MetalViewport: UIViewRepresentable {
         /// input sample.
         private func refreshLiveEditGeometry() {
             guard let renderer, let mesh = recognizerEditMesh else { return }
-            renderer.loadOverlay(mesh: mesh, restartAnimation: false)
+            renderer.loadOverlay(
+                mesh: mesh, annotations: overlayAnnotations, restartAnimation: false)
             // A target-less document renders the EditMesh solid too.
             if renderedObjectID == overlayObjectID {
                 renderer.load(mesh: mesh, preservingCamera: true)
             }
+            // Live subdivision preview (task 4.6, spec scenario "Editing
+            // under preview"): re-derived on the SAME once-per-rendered-
+            // frame hook as the wireframe, so the smoothed surface tracks
+            // the base cage through a drag without the derivation ever
+            // running per input sample. `duringStroke` engages the cost
+            // guard — see `SubdivisionPreviewPolicy`.
+            rebuildSubdivisionPreview(duringStroke: meshEditor.isSessionActive)
+        }
+
+        // MARK: - Subdivision preview (task 4.6)
+
+        /// Requested preview level (a DISPLAY preference pushed from the
+        /// viewport settings popover — never document state).
+        private(set) var subdivisionPreviewLevel: SubdivisionPreviewLevel = .off
+        /// The derived preview mesh currently uploaded, retained so tests
+        /// can assert what the preview contains versus what the document
+        /// stores. Derived render data ONLY: never journaled, never written
+        /// into the bundle, never exported.
+        private(set) var subdivisionPreviewMesh: Mesh?
+        /// How many times the preview has actually been re-derived. The
+        /// throttle policy's observable: a skipped live rebuild leaves this
+        /// unchanged while the previous preview stays on screen.
+        private(set) var subdivisionPreviewRebuildCount = 0
+        /// When the last MID-STROKE rebuild ran, for the rate guard
+        /// (`SubdivisionPreviewPolicy.minimumLiveRebuildInterval`). Cleared
+        /// on every non-stroke rebuild so a fresh stroke starts responsive.
+        private var lastLivePreviewRebuild: Date?
+        /// Seam for the ONE branch that is otherwise unreachable from a
+        /// test: the derivation throwing. `Mesh.subdivisionPreview` is a
+        /// filesystem round trip, so it fails transiently in the field (low
+        /// disk, sandbox pressure) and never on demand. Nil in the app —
+        /// the real derivation runs — and set by the regression test that
+        /// pins "a mid-stroke failure skips, it does not clear".
+        var subdivisionPreviewDeriver: (
+            (Mesh, SubdivisionPreviewLevel, SurfaceSnapper?) throws -> Mesh
+        )?
+
+        /// Applies a new preview level. Idempotent — an unchanged level
+        /// never re-derives, so the SwiftUI update pass that runs on every
+        /// unrelated state change costs nothing.
+        func setSubdivisionPreviewLevel(_ level: SubdivisionPreviewLevel) {
+            guard level != subdivisionPreviewLevel else { return }
+            subdivisionPreviewLevel = level
+            // A level change is a user action, not a mid-stroke sample:
+            // rebuild unconditionally so the control responds even on a
+            // cage the cost guard would throttle during a drag.
+            rebuildSubdivisionPreview(duringStroke: false)
+        }
+
+        /// Re-derives and uploads the preview from the CURRENT base cage.
+        ///
+        /// Non-destructive by construction: `Mesh.subdivisionPreview` works
+        /// on a copy, so `recognizerEditMesh` — the handle the recognizer
+        /// resolves against and every verb mutates — is only ever READ here.
+        ///
+        /// `duringStroke` selects the throttle branch documented on
+        /// `SubdivisionPreviewPolicy`: below the face budget every live edit
+        /// rebuilds; above it, mid-stroke rebuilds are skipped and the last
+        /// preview stays visible until the stroke ends (both stroke-end
+        /// paths — commit through `syncOverlay`, cancel through
+        /// `reloadLiveEditMesh` — call back in with `duringStroke: false`).
+        func rebuildSubdivisionPreview(duringStroke: Bool) {
+            guard let renderer else { return }
+            guard let base = recognizerEditMesh, subdivisionPreviewLevel != .off else {
+                subdivisionPreviewMesh = nil
+                lastLivePreviewRebuild = nil
+                renderer.clearSubdivisionPreview()
+                return
+            }
+            guard SubdivisionPreviewPolicy.allowsRebuild(
+                baseFaces: base.faceCount, level: subdivisionPreviewLevel,
+                duringStroke: duringStroke
+            ) else { return }
+            // RATE GUARD: the derivation is a filesystem round trip plus a
+            // BVH reprojection on the main actor — it must not run once per
+            // rendered frame on a 120 Hz display just because it fits the
+            // face budgets. Stroke-end rebuilds bypass this entirely, so
+            // what the user is left looking at is always exact.
+            if duringStroke {
+                guard SubdivisionPreviewPolicy.shouldRebuildNow(since: lastLivePreviewRebuild)
+                else { return }
+                lastLivePreviewRebuild = Date()
+            } else {
+                lastLivePreviewRebuild = nil
+            }
+            let derive = subdivisionPreviewDeriver ?? {
+                try $0.subdivisionPreview(level: $1, reprojectingOnto: $2)
+            }
+            guard let preview = try? derive(
+                base, subdivisionPreviewLevel, targetSnapper
+            ) else {
+                // MID-STROKE FAILURE IS A SKIP, NOT A CLEAR. The derivation
+                // is a filesystem round trip (`detachedCopy` writes and
+                // reads OBJ through the temporary directory) and can throw
+                // transiently — low disk, sandbox pressure. Wiping the
+                // preview here made the smoothed surface VANISH mid-drag,
+                // the exact opposite of the policy documented on
+                // `SubdivisionPreviewPolicy`: the previously derived preview
+                // stays on screen until the stroke ends. It is slightly
+                // stale, which is what a throttled preview always is; it is
+                // never wrong-looking. The rate stamp is deliberately KEPT,
+                // so a repeating failure retries on the normal 50 ms cadence
+                // instead of hammering a failing filesystem every frame, and
+                // the stroke-end rebuild below re-derives exactly.
+                if duringStroke { return }
+                subdivisionPreviewMesh = nil
+                renderer.clearSubdivisionPreview()
+                return
+            }
+            subdivisionPreviewRebuildCount += 1
+            subdivisionPreviewMesh = preview
+            renderer.loadSubdivisionPreview(mesh: preview)
         }
 
         /// Reloads the live EditMesh from the pinned document payload —
@@ -743,11 +907,17 @@ struct MetalViewport: UIViewRepresentable {
             else {
                 recognizerEditMesh = nil
                 renderer.clearOverlay()
+                rebuildSubdivisionPreview(duringStroke: false)
                 return
             }
             try? mesh.applyAnnotations(overlayAnnotations)
             recognizerEditMesh = mesh
-            renderer.loadOverlay(mesh: mesh, restartAnimation: false)
+            renderer.loadOverlay(
+                mesh: mesh, annotations: overlayAnnotations, restartAnimation: false)
+            // Stroke-end (cancel/discard) path: the throttle never applies
+            // here, so a cage above the live budget still ends up showing
+            // an EXACT preview of what the user is left with.
+            rebuildSubdivisionPreview(duringStroke: false)
         }
 
         /// DEBUG-only demo path for task 2.4: mirrors the first EditMesh
@@ -989,6 +1159,21 @@ enum ViewportSettings {
     static let resolutionScaleKey = "viewportResolutionScale"
     static let defaultResolutionScale = 1.0
     static let resolutionScaleOptions: [Double] = [0.5, 0.75, 1.0]
+
+    /// Auto Relax mode (task 4.5, spec: retopology-tools / "Auto Relax" —
+    /// "An OPTIONAL Auto Relax mode"). A persisted app preference, not
+    /// document state: it changes how the next edit behaves for this user,
+    /// and its effect on the document is already inside the journaled
+    /// command of the operation that triggered it. Off by default.
+    static let autoRelaxKey = "autoRelaxEnabled"
+
+    /// Subdivision preview level (task 4.6, spec: retopology-tools /
+    /// "Subdivision preview"). A persisted DISPLAY preference, not document
+    /// state: it changes only what this user sees, never what is stored,
+    /// journaled or exported. Off by default.
+    static let subdivisionPreviewKey = "subdivisionPreviewLevel"
+    static let defaultSubdivisionPreviewLevel = 0
+    static let subdivisionPreviewLevels: [Int] = [0, 1, 2]
 }
 
 /// Popover content adjusting the persisted camera speeds and EditMesh
@@ -1005,6 +1190,18 @@ struct ViewportSettingsView: View {
     @Binding var leftHandedToolbar: Bool
     @Binding var snapHapticsEnabled: Bool
     @Binding var strokeDebugHUD: Bool
+    /// Subdivision preview level (task 4.6): 0 / 1 / 2.
+    @Binding var subdivisionPreviewLevel: Int
+    /// Whether the document has a Target to reproject the preview onto —
+    /// drives the HONEST caption below the control.
+    var hasTarget = false
+    /// Symmetry (task 4.4) is DOCUMENT state, not an `AppStorage`
+    /// preference: it arrives as a value and leaves through `onSymmetry`,
+    /// which the editor journals.
+    var symmetry: SymmetrySettings = SymmetrySettings()
+    var sceneCenter: SIMD3<Float> = .zero
+    var sceneRadius: Float = 1
+    var onSymmetryChange: (SymmetrySettings) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1045,6 +1242,29 @@ struct ViewportSettingsView: View {
 
             Divider()
 
+            // Subdivision preview (task 4.6): a non-destructive DISPLAY
+            // level. Editing always continues on the base cage, and the
+            // wireframe above keeps drawing that cage over the smoothed
+            // surface — that stacking is the retopology workflow.
+            Text("Subdivision Preview")
+                .font(.headline)
+            LabeledContent("Level") {
+                Picker("Subdivision preview", selection: $subdivisionPreviewLevel) {
+                    ForEach(ViewportSettings.subdivisionPreviewLevels, id: \.self) { level in
+                        Text(SubdivisionPreviewLevel(clamping: level).label).tag(level)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 180)
+                .accessibilityIdentifier("subdivision-preview-picker")
+            }
+            Text(subdivisionPreviewCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: 300, alignment: .leading)
+
+            Divider()
+
             // Input (task 3.1): left-handed mirror stub — moves the verb
             // toolbar to the trailing edge (full repositioning is task 3.8).
             Text("Input")
@@ -1056,6 +1276,15 @@ struct ViewportSettingsView: View {
             // behavior itself are unaffected.
             Toggle("Snap haptics", isOn: $snapHapticsEnabled)
                 .accessibilityIdentifier("snap-haptics-toggle")
+
+            Divider()
+
+            SymmetrySettingsView(
+                settings: symmetry,
+                sceneCenter: sceneCenter,
+                sceneRadius: sceneRadius,
+                onChange: onSymmetryChange
+            )
 
             Divider()
 
@@ -1102,5 +1331,20 @@ struct ViewportSettingsView: View {
         }
         .padding()
         .frame(minWidth: 300)
+    }
+
+    /// Honest caption for the preview control (task 4.6). The engine has
+    /// LINEAR subdivision only, so the smoothing comes entirely from
+    /// reprojecting onto the Target — with no Target the preview is just a
+    /// denser cage, and the UI says exactly that rather than implying a
+    /// smooth-subdivision surface the engine cannot produce.
+    private var subdivisionPreviewCaption: String {
+        let level = SubdivisionPreviewLevel(clamping: subdivisionPreviewLevel)
+        if level == .off {
+            return "Preview only — editing always stays on the base cage."
+        }
+        return hasTarget
+            ? "Subdivided and reprojected onto the Target. Preview only: never saved or exported."
+            : "No Target to reproject onto, so this only densifies the cage without smoothing it."
     }
 }

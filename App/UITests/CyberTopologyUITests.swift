@@ -309,8 +309,12 @@ final class CyberTopologyUITests: XCTestCase {
         // Generous timeout: on cold CI simulators the injected stroke's
         // capture -> engine recognizer -> HUD publish takes far longer
         // than on a warm local machine (first observed CI-only failure).
+        // Raised again after a 30 s timeout under CODE-COVERAGE
+        // INSTRUMENTATION, which roughly doubles this test's wall time
+        // (46 s instrumented vs 19 s plain) — the pipeline was still
+        // working, it had simply not finished.
         let record = app.descendants(matching: .any)["stroke-debug-record"].firstMatch
-        XCTAssertTrue(record.waitForExistence(timeout: 30))
+        XCTAssertTrue(record.waitForExistence(timeout: 90))
         XCTAssertFalse(record.label.isEmpty)
 
         // Visual-verification artifact: the HUD with polyline +
@@ -522,6 +526,18 @@ final class CyberTopologyUITests: XCTestCase {
         return predicate(element.label)
     }
 
+    /// Polls `condition` until it holds or the timeout expires.
+    private func waitForCondition(
+        timeout: TimeInterval = 5, _ condition: () -> Bool
+    ) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+        }
+        return condition()
+    }
+
     /// Task 4.1 end to end (spec: retopology-tools / "Core RT action
     /// roster"): the Surface Cut tool armed and driven through the
     /// auto-tool probe (XCUITest cannot synthesize Pencil drags; the probe
@@ -662,5 +678,267 @@ final class CyberTopologyUITests: XCTestCase {
 
         // Original document is still open in the editor.
         XCTAssertEqual(app.staticTexts["document-name"].label, "UITest Document")
+    }
+
+    /// Task 4.3 (spec: retopology-tools / "Pins immune to smoothing",
+    /// "Loop tags"): the annotation probe pins one loop and tags another
+    /// in a chosen palette colour. The palette swatches are real UI, the
+    /// pins/tags render in the overlay, and the two annotation edits undo
+    /// as two ordinary journal entries.
+    @MainActor
+    func testAnnotationProbePinsLoopAndTagsAnotherInColour() throws {
+        try skipIfInteractionUnsupported()
+        let app = launch(arguments: [
+            "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
+            "-UITestSeedEditMeshGrid", "-UITestAutoAnnotations",
+        ])
+
+        let viewport = app.otherElements["viewport"].firstMatch
+        XCTAssertTrue(viewport.waitForExistence(timeout: 15))
+        // The loop-tag palette is always available in the RT stage.
+        let swatch = app.buttons["tag-color-1"].firstMatch
+        XCTAssertTrue(swatch.waitForExistence(timeout: 10))
+
+        // The probe fires ~3 s after the editor appears and journals the
+        // pin edit then the tag edit — undo becomes available.
+        XCTAssertTrue(
+            waitForCondition(timeout: 20) { app.buttons["undo"].isEnabled },
+            "the annotation probe journaled nothing"
+        )
+
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "pins-and-tagged-loop"
+        shot.lifetime = .keepAlways
+        add(shot)
+
+        // The annotation edits undo like any other journal entry, and
+        // neither touched geometry (the cage keeps its 25 v / 16 f).
+        let row = app.descendants(matching: .any)["object-row-seed-dome-grid"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        XCTAssertTrue(row.label.contains("16 f"), "row: \(row.label)")
+        viewport.tap(withNumberOfTaps: 1, numberOfTouches: 3)
+        XCTAssertTrue(
+            waitForCondition(timeout: 10) { app.buttons["redo"].isEnabled },
+            "an undo should have armed redo"
+        )
+        XCTAssertTrue(row.label.contains("16 f"), "row: \(row.label)")
+    }
+
+    /// Task 4.4 (spec: retopology-tools / "Multi-axis and radial
+    /// symmetry"): the symmetry controls live in the viewport settings
+    /// popover and drive DOCUMENT state, so toggling one journals an undo
+    /// step. Document-flow only (no stroke injection, no Metal
+    /// unprojection) — deliberately NOT interaction-gated.
+    @MainActor
+    func testSymmetrySettingsToggleJournalsAndUndoes() throws {
+        let app = launch(arguments: [
+            "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
+            "-UITestSeedEditMesh",
+        ])
+
+        let settings = app.buttons["viewport-settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 15))
+        settings.tap()
+
+        let toggle = app.switches["symmetry-toggle"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        let summary = app.staticTexts["symmetry-summary"]
+        XCTAssertTrue(summary.exists)
+        XCTAssertTrue(summary.label.contains("Off"), "summary: \(summary.label)")
+
+        // Enabling mirroring on X is one journaled document change.
+        app.descendants(matching: .any)["symmetry-axis-x"].firstMatch.tap()
+        toggle.switches.firstMatch.tap()
+        XCTAssertTrue(
+            waitForCondition(timeout: 10) { summary.label.contains("mirror X") },
+            "summary: \(summary.label)"
+        )
+        XCTAssertTrue(
+            summary.label.contains("2 copies"),
+            "the summary must state the honest replica count: \(summary.label)"
+        )
+
+        // Radial count is configurable from the same panel.
+        let radial = app.steppers["symmetry-radial-count"].firstMatch
+        XCTAssertTrue(radial.exists)
+        radial.buttons.element(boundBy: 1).tap()
+        XCTAssertTrue(
+            waitForCondition(timeout: 10) { summary.label.contains("radial") },
+            "summary: \(summary.label)"
+        )
+
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "symmetry-settings"
+        shot.lifetime = .keepAlways
+        add(shot)
+
+        // Symmetry is document state: the changes are undoable.
+        app.tap()  // dismiss the popover
+        XCTAssertTrue(
+            waitForCondition(timeout: 10) { app.buttons["undo"].isEnabled },
+            "changing symmetry journaled nothing"
+        )
+        app.buttons["undo"].tap()
+        XCTAssertTrue(
+            waitForCondition(timeout: 10) { app.buttons["redo"].isEnabled },
+            "an undo should have armed redo"
+        )
+    }
+
+    /// Task 4.4: symmetric AUTHORING end to end. The probe hook turns X
+    /// mirroring on through the real journaled command path (which is what
+    /// makes the plane rim render) and authors one quad through the real
+    /// create path — the mirror rides the SAME journal entry, so one undo
+    /// removes both sides. Interaction-gated: the injection hook drives
+    /// Metal unprojection.
+    @MainActor
+    func testSymmetryProbeMirrorsAuthoredQuadAndUndoesBothSides() throws {
+        try skipIfInteractionUnsupported()
+        let app = launch(arguments: [
+            "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
+            "-UITestSeedEditMeshOnDome", "-UITestAutoSymmetry",
+        ])
+
+        let viewport = app.otherElements["viewport"].firstMatch
+        XCTAssertTrue(viewport.waitForExistence(timeout: 15))
+        let row = app.descendants(matching: .any)["object-row-seed-dome-strip"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        XCTAssertTrue(row.label.contains("2 f"), "row: \(row.label)")
+
+        // The probe enables symmetry (~3 s) then authors ONE quad (~4 s),
+        // which the mirror turns into TWO faces: 2 f -> 4 f.
+        XCTAssertTrue(
+            waitForLabel(of: row, timeout: 25) { $0.contains("4 f") },
+            "one authored quad must land as two mirrored faces; row: \(row.label)"
+        )
+
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "symmetry-plane-rim-and-mirrored-quad"
+        shot.lifetime = .keepAlways
+        add(shot)
+
+        // ONE undo steps back over the mirrored create — BOTH sides go.
+        viewport.tap(withNumberOfTaps: 1, numberOfTouches: 3)
+        XCTAssertTrue(
+            waitForLabel(of: row, timeout: 10) { $0.contains("2 f") },
+            "one undo must remove both mirrored halves; row: \(row.label)"
+        )
+    }
+
+    /// Task 4.5 (spec: retopology-tools / "EditMesh batch commands"): the
+    /// batch panel runs a whole-mesh command that is ONE undo step, and the
+    /// annotation clear a subdivide forces rides inside the same step.
+    /// Document-flow only — the panel is plain SwiftUI and the command runs
+    /// on the live mesh without any stroke unprojection — so this is
+    /// deliberately NOT interaction-gated.
+    @MainActor
+    func testBatchPanelSubdividesTheCageAndOneUndoRestoresIt() throws {
+        let app = launch(arguments: [
+            "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
+            "-UITestSeedEditMeshGrid", "-UITestShowBatchCommands",
+        ])
+
+        // The panel is presented by the screenshot hook ~3 s in; the same
+        // sheet the toolbar's Batch commands action presents.
+        let subdivide = app.buttons["batch-subdivideAndReproject"].firstMatch
+        XCTAssertTrue(subdivide.waitForExistence(timeout: 25))
+        XCTAssertTrue(app.switches["auto-relax-toggle"].firstMatch.exists)
+
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "batch-commands-panel"
+        shot.lifetime = .keepAlways
+        add(shot)
+
+        subdivide.tap()
+
+        // 16 quads -> 64 after one level of subdivision.
+        let row = app.descendants(matching: .any)["object-row-seed-dome-grid"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+        XCTAssertTrue(
+            waitForLabel(of: row, timeout: 20) { $0.contains("64 f") },
+            "subdivide+reproject must quadruple the faces; row: \(row.label)"
+        )
+
+        let subdivided = XCTAttachment(screenshot: app.screenshot())
+        subdivided.name = "subdivided-cage"
+        subdivided.lifetime = .keepAlways
+        add(subdivided)
+
+        // ONE undo step takes the whole compound entry back.
+        let undo = app.buttons["undo"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 10))
+        XCTAssertTrue(undo.isEnabled)
+        undo.tap()
+        XCTAssertTrue(
+            waitForLabel(of: row, timeout: 15) { $0.contains("16 f") },
+            "one undo must restore the coarse cage; row: \(row.label)"
+        )
+        // A two-entry design would need TWO undos: the first would take
+        // back only the annotation clear and leave 64 faces on screen.
+    }
+
+    /// Task 4.6 (spec: retopology-tools / "Subdivision preview", scenario
+    /// "Editing under preview"): the viewport-settings control turns the
+    /// preview on and the DOCUMENT never changes — the cage keeps its 16
+    /// faces and undo stays unavailable, because a preview is derived render
+    /// data and journals nothing.
+    ///
+    /// Document-flow only (a segmented picker in a popover; no stroke
+    /// unprojection, no multi-finger synthesis) — deliberately NOT
+    /// interaction-gated.
+    @MainActor
+    func testSubdivisionPreviewIsNonDestructive() throws {
+        let app = launch(arguments: [
+            "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
+            "-UITestSeedEditMeshGrid",
+        ])
+
+        let row = app.descendants(matching: .any)["object-row-seed-dome-grid"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 25))
+        XCTAssertTrue(
+            waitForLabel(of: row, timeout: 15) { $0.contains("16 f") },
+            "seeded cage should start at 16 faces; row: \(row.label)"
+        )
+        let settings = app.buttons["viewport-settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 15))
+        settings.tap()
+
+        let picker = app.segmentedControls["subdivision-preview-picker"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 15))
+        picker.buttons["2"].tap()
+        XCTAssertTrue(picker.buttons["2"].isSelected)
+        dismissPopover(app)
+
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "subdivision-preview-level-2"
+        shot.lifetime = .keepAlways
+        add(shot)
+
+        // THE INVARIANT: the stored cage is untouched — still 16 faces —
+        // and no journal entry was created by turning the preview on.
+        XCTAssertTrue(
+            waitForLabel(of: row, timeout: 10) { $0.contains("16 f") },
+            "the preview must not change the stored cage; row: \(row.label)"
+        )
+        // Restore the persisted default so other tests start from Off.
+        settings.tap()
+        XCTAssertTrue(picker.waitForExistence(timeout: 10))
+        picker.buttons["Off"].tap()
+        dismissPopover(app)
+
+        // AND the preview journaled nothing: the top of the undo stack is
+        // still the seed IMPORT, so one undo removes the EditMesh object
+        // outright. Had turning the preview on (or off) recorded an entry,
+        // this undo would have stepped over it and the row would still be
+        // there.
+        let undo = app.buttons["undo"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 10))
+        XCTAssertTrue(undo.isEnabled)
+        undo.tap()
+        XCTAssertTrue(
+            waitUntil(timeout: 15) { !row.exists },
+            "a subdivision preview must journal nothing, so one undo must "
+                + "reach the seed import itself"
+        )
     }
 }

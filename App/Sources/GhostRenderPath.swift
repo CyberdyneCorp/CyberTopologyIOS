@@ -77,6 +77,40 @@ struct GhostStyle: Equatable {
         return style
     }
 
+    /// Subdivision preview surface (task 4.6, spec: retopology-tools /
+    /// "Subdivision preview"): the reprojected-linear subdivided cage
+    /// rendered as a shaded surface UNDER the base wireframe.
+    ///
+    /// Deliberately NOT pulsing (`pulsePeriod = 0` pins the alpha): a
+    /// proposal pulses because it is asking to be accepted, but the
+    /// subdivision preview is a passive view of what the cage means — a
+    /// pulsing surface under a live wireframe reads as an error state and
+    /// forces continuous redraws for nothing. Cool neutral grey-blue so the
+    /// cyan wire and the yellow pin markers stay legible on top, and opaque
+    /// enough (0.72) that the smoothed silhouette is unmistakably the
+    /// surface being judged.
+    static let subdivisionPreview: GhostStyle = {
+        var style = GhostStyle()
+        style.color = SIMD3(0.62, 0.68, 0.78)
+        style.baseAlpha = 0.72
+        style.pulsePeriod = 0
+        style.rimStrength = 0.35
+        return style
+    }()
+
+    /// `subdivisionPreview` lifted off the Target along its vertex normals.
+    ///
+    /// REQUIRED, not cosmetic: the preview is REPROJECTED onto the Target,
+    /// so its vertices land exactly ON the Target surface and the two
+    /// coplanar surfaces z-fight into speckle. The lift is a fraction of the
+    /// scene radius (scale-free, like the task-2.4/3.6 offsets) and small
+    /// enough that the preview still reads as hugging the surface.
+    static func subdivisionPreview(sceneRadius: Float) -> GhostStyle {
+        var style = subdivisionPreview
+        style.normalOffset = max(sceneRadius, 1e-6) * 0.006
+        return style
+    }
+
     /// DEBUG-only demo style (task 2.4): until the Weave solver exists
     /// (phase 5) the viewport-settings popover can render the committed
     /// EditMesh as a ghost, lifted off the surface by a small fraction of

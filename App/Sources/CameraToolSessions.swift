@@ -130,10 +130,36 @@ struct ExtendBoundaryPlan: Equatable {
         case fan
     }
 
+    /// Hard cap on how many rows one automatic session may accumulate.
+    ///
+    /// Every stepped row costs a per-frame ghost ring (`ringsGhost` builds
+    /// `rows x chain.count` vertices EVERY preview refresh) and one
+    /// sequential `mesh.extendBoundary` engine call inside the commit's
+    /// single transaction. Without a cap a fast orbit over a short chain —
+    /// whose `step` floors at `minimumStepFraction * sceneRadius` — appends
+    /// thousands of rows in ONE `displacementChanged` call, which is an
+    /// unbounded main-thread hang and a multi-megabyte journal entry.
+    /// 64 rows is far past any hand-authored extrusion and still bounded.
+    static let maximumSteppedRows = 64
+
+    /// Floor for the quad-row step, as a fraction of the scene radius.
+    /// The chain's average edge length is the real step; this only stops a
+    /// near-degenerate sub-chain (two nearly-coincident boundary vertices)
+    /// from producing a step so small that a normal camera displacement
+    /// quantizes into thousands of rows.
+    static let minimumStepFraction: Float = 0.01
+
+    /// The step a chain of this measured average edge length gets, with the
+    /// degenerate-chain floor applied.
+    static func step(averageEdgeLength: Float, sceneRadius: Float) -> Float {
+        max(averageEdgeLength, max(sceneRadius, 1e-6) * minimumStepFraction)
+    }
+
     var mode: Mode = .single
     var chain: [UInt32]
     var closed: Bool
-    /// One quad-row step: the chain's average edge length.
+    /// One quad-row step: the chain's average edge length, floored by
+    /// `minimumStepFraction` of the scene radius.
     var step: Float
     /// Rows already stepped off (once/automatic), in commit order.
     var steppedOffsets: [SIMD3<Float>] = []
@@ -153,7 +179,10 @@ struct ExtendBoundaryPlan: Equatable {
             step > 0
         else { return }
         var consumed = steppedOffsets.reduce(SIMD3<Float>.zero, +)
-        while true {
+        // BOUNDED: `Self.maximumSteppedRows` is the cap, checked on every
+        // iteration. One flick of the camera must not be able to queue an
+        // arbitrary number of engine extrusions (see the constant's note).
+        while steppedOffsets.count < Self.maximumSteppedRows {
             let remainder = displacement - consumed
             guard simd_length(remainder) >= step else { break }
             let row = simd_normalize(remainder) * step
@@ -165,6 +194,10 @@ struct ExtendBoundaryPlan: Equatable {
             }
         }
     }
+
+    /// True once the cap has been reached: further camera motion adds no
+    /// rows (the banner surfaces this as the row counter simply stopping).
+    var isAtRowLimit: Bool { steppedOffsets.count >= Self.maximumSteppedRows }
 
     /// The quad-row offsets a commit right now would extrude, in order.
     /// nil rows = nothing to commit (fan commits an apex instead).

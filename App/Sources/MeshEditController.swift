@@ -52,6 +52,23 @@ final class MeshEditController {
         /// deserialize). Guards the pencil create-first-quad fallback: a
         /// second `.editMesh` object must never be journaled.
         var documentHasEditMesh = false
+        /// `editObject`'s annotation state (task 4.3): loop tags, hidden
+        /// faces and PINS. The brush verbs read `pinnedVertices` out of it
+        /// and hand it to the engine on every Relax/Move call, which is
+        /// what makes pins immune to smoothing (spec: retopology-tools /
+        /// "Pins immune to smoothing"); the annotation edits journal
+        /// against it.
+        var annotations: MeshAnnotations?
+        /// Document symmetry state (task 4.4): which mirror axes and how
+        /// many radial sectors authoring replicates under, and where the
+        /// symmetry origin sits. Read fresh at stroke begin like
+        /// everything else here, so toggling symmetry takes effect on the
+        /// very next stroke.
+        /// nil = the document has never set symmetry (pre-4.4 documents),
+        /// which is why this is optional rather than a resolved value:
+        /// journaling `setSymmetry` has to be able to revert BACK to
+        /// "never set" so undo leaves the manifest byte-identical.
+        var symmetry: SymmetrySettings?
         /// Target surface snapper; the brush verbs and quad creation
         /// require a Target (spec: EditMesh vertices snap to the ACTIVE
         /// Target; without one there is no surface to anchor a brush to).
@@ -68,10 +85,27 @@ final class MeshEditController {
         /// sessions pin the view matrix at selection time and compute
         /// placement against the latest pose at commit.
         var camera: CameraState? = nil
+        /// The arbiter's camera→tool gate right now
+        /// (`InputArbiter.cameraFeedsArmedTool`): true when camera motion
+        /// is allowed to steer the armed camera-tool session.
+        ///
+        /// The commit path reads this before refreshing the session from
+        /// the live camera. With the gate CLOSED (a pen-down /
+        /// palm-rejected touch moved the renderer camera but was
+        /// deliberately withheld from the session) the ghost preview never
+        /// moved, so committing against that stray pose would paste the
+        /// patch somewhere other than where the user saw it. Defaults to
+        /// true so headless tests, which drive `cameraPoseChanged`
+        /// directly, keep the plain re-read behaviour.
+        var cameraFeedsArmedTool = true
         /// Orbits the LIVE viewport camera by screen points (task 4.2
         /// probes: the camera-tool screenshot hooks must move the real
         /// camera the session and the frame both read; nil headless).
         var orbitCamera: ((SIMD2<Float>) -> Void)? = nil
+
+        /// Symmetry state with the pre-4.4 default (symmetry off) filled
+        /// in — what every consumer of symmetry should read.
+        var effectiveSymmetry: SymmetrySettings { symmetry ?? SymmetrySettings() }
     }
 
     /// How a completed Pencil stroke resolved (task 3.5: drives the
@@ -119,6 +153,34 @@ final class MeshEditController {
     /// recording fake; the coordinator installs the capability-gated
     /// `SnapHapticsEngine` (graceful no-op on simulator).
     var haptics: SnapHapticsPlaying?
+    /// Palette index new loop tags are authored in (task 4.3, spec:
+    /// "Users SHALL color-tag edge loops"). Mirrored from the editor's
+    /// palette control; re-tagging a loop in a DIFFERENT colour recolours
+    /// it, re-tagging in the SAME colour clears it.
+    var activeTagColor: UInt8 = MeshAnnotations.defaultTagColor
+    /// Loop Info sink (task 4.3, spec: "Loop Info inspection"): fired when
+    /// the hovered interior edge's loop metrics change; nil clears the
+    /// chip.
+    var onLoopInfoChanged: ((LoopInfoChipState.Info?) -> Void)?
+    /// Auto Relax mode (task 4.5, spec: retopology-tools / "Auto Relax").
+    /// While on, a participating editing operation also relaxes the
+    /// neighborhood it touched — INSIDE the operation's own transaction, so
+    /// the user gets ONE undo step per action. Mirrored from the persisted
+    /// `ViewportSettings.autoRelaxKey` setting through `ViewportInputModel`.
+    ///
+    /// **NOT every operation participates** (task 4.5a, and the HONEST
+    /// SCOPE block in tests/traceability.yaml says the same). Participating:
+    /// the create paths (`applyCreate`), the element-edit GRAMMAR entries
+    /// (insert loop, dissolve, merge, rotate — they pass `autoRelaxAround:`)
+    /// and the Build Quad / Build Triangle drags. NOT participating: the
+    /// camera-as-manipulator tools, Surface Cut, Draw Strip, Path
+    /// Distribute, the Merge Pair TOOL (it calls `applyElementEdit` with the
+    /// default empty `autoRelaxAround`, which disables the pass) and the
+    /// brush verbs Move / Tweak / Erase (`commit` journals without it). A
+    /// pass needs a defensible neighbourhood per tool, which is a per-tool
+    /// decision, not one switch — so the scope is stated rather than
+    /// implied.
+    var autoRelaxEnabled = false
 
     // Brush sizing as fractions of the scene radius. Values chosen for the
     // CozyBlanket-like feel at typical cage density; user-facing brush size
@@ -181,6 +243,65 @@ final class MeshEditController {
     /// Vertices camera session (task 4.2 — its camera feed mutates the
     /// live mesh ahead of the journal exactly like a brush drag).
     var isSessionActive: Bool { session != nil || cameraSessionHoldsLiveMesh }
+
+    /// Status line shown when a whole-mesh command is refused because a
+    /// session still holds uncommitted live edits.
+    static let liveEditsBlockWholeMeshCommand =
+        "Finish or cancel the active tool before running a whole-mesh command"
+
+    /// Whether a WHOLE-MESH command (a batch command, a symmetry bake) may
+    /// run right now.
+    ///
+    /// These commands take `context.editMesh` — the LIVE handle — and pin
+    /// `context.editPayload` as the transaction's `before`. While a session
+    /// is active those two disagree: an armed Transform Vertices session
+    /// has already mutated the handle in place (`applyTransformSessionDelta`)
+    /// while the payload is still the pre-session bytes, and a brush scrub
+    /// does the same. Running anyway would journal the session's
+    /// uncommitted mutation inside the whole-mesh command's entry, and the
+    /// snapshot rebind that follows reaches `editMeshSnapshotWillChange`
+    /// with `expectingOwnCommit == false`, dropping the session WITHOUT
+    /// `onDiscardLiveEdits` — the user's unconfirmed placement is committed
+    /// permanently under someone else's undo entry.
+    ///
+    /// So: refuse, and tell the user to commit or cancel first.
+    func allowsWholeMeshCommand(reporting: Bool = true) -> Bool {
+        guard isSessionActive else { return true }
+        if reporting { onCameraToolStatus?(Self.liveEditsBlockWholeMeshCommand) }
+        return false
+    }
+
+    /// Status line shown when a NEW stroke is refused because a camera-as-
+    /// manipulator session still holds uncommitted live mesh edits.
+    static let liveEditsBlockStroke =
+        "Finish or cancel the active tool session before editing"
+
+    /// Whether a new stroke may pin the document snapshot right now.
+    ///
+    /// This is `allowsWholeMeshCommand`'s reasoning applied to strokes, and
+    /// it is needed for exactly the same reason: an armed Transform
+    /// Vertices session has already mutated `context.editMesh` in place
+    /// (`applyTransformSessionDelta`) while `context.editPayload` is still
+    /// the PRE-session bytes, and `resyncFromDocumentIfIdle()` is
+    /// suppressed while it holds them. A brush scrub or a build-tool stroke
+    /// started on top would pin those stale bytes as its transaction's
+    /// `before` and journal an entry whose `after` bakes in the user's
+    /// unconfirmed placement — and the session, still armed with its own
+    /// transaction pinned to the same bytes, would later commit a `before`
+    /// that wipes the stroke back out again.
+    ///
+    /// Spring-loaded verb holds are the way in: `verbPressBegan` does NOT
+    /// disarm the tool (only a persistent tap does), so a held Relax can
+    /// reach `strokeBegan` with the session still armed.
+    ///
+    /// The camera tools' OWN strokes are exempt — (re)selecting and
+    /// tap-to-commit are how the session is driven, and both paths refresh
+    /// the snapshot themselves (see `handleCameraToolStroke`).
+    private func allowsStrokeAgainstLiveMesh() -> Bool {
+        guard cameraSessionHoldsLiveMesh else { return true }
+        onCameraToolStatus?(Self.liveEditsBlockStroke)
+        return false
+    }
 
     // MARK: - Retopology tools (task 4.1)
 
@@ -250,7 +371,7 @@ final class MeshEditController {
 
     /// Every commit funnels through here so the pencil apply paths can
     /// observe whether a command actually reached the journal.
-    private func send(_ command: DocumentCommand) {
+    func send(_ command: DocumentCommand) {
         lastCommit = command
         onCommit?(command)
     }
@@ -274,6 +395,7 @@ final class MeshEditController {
             // need an existing EditMesh and a Target to unproject onto;
             // without either the stroke stays inert.
             if let tool = activeTool,
+                tool.isCameraManipulator || allowsStrokeAgainstLiveMesh(),
                 let context = contextProvider?(),
                 context.editObject != nil, context.editMesh != nil,
                 context.editPayload != nil, context.snapper != nil {
@@ -282,6 +404,7 @@ final class MeshEditController {
             return  // interpreted (grammar) or committed (tool) at stroke end
         }
         guard
+            allowsStrokeAgainstLiveMesh(),
             let context = contextProvider?(),
             let object = context.editObject,
             let mesh = context.editMesh,
@@ -367,6 +490,11 @@ final class MeshEditController {
             let hit = surfacePoint(at: point(of: sample), in: context)
         else { return }
         let radiusBase = context.sceneRadius
+        // Pins (task 4.3, spec: "Pinned vertices … SHALL NOT be displaced
+        // by Move, Relax, Auto Relax"): the document's pin set rides along
+        // on EVERY brush sample, so the engine's PinSet holds the pinned
+        // vertices fixed while their unpinned neighbours smooth.
+        let pinned = context.annotations?.pinnedVertices ?? []
         do {
             switch current.verb {
             case .relax:
@@ -374,6 +502,7 @@ final class MeshEditController {
                     around: hit,
                     radius: radiusBase * Self.relaxRadiusFraction,
                     strength: Self.relaxStrength,
+                    pinned: pinned,
                     snapping: context.snapper
                 )
             case .erase:
@@ -392,6 +521,7 @@ final class MeshEditController {
                     seed: seed,
                     displacement: displacement,
                     radius: radiusBase * Self.moveRadiusFraction,
+                    pinned: pinned,
                     snapping: context.snapper
                 )
                 session?.anchor = hit
@@ -581,7 +711,8 @@ final class MeshEditController {
             applyCreate(
                 verb: "pencil.createGrid",
                 screenPoints: interpretation.quadCorners,
-                context: context
+                context: context,
+                layout: .grid(cols: grid.cols)
             ) { mesh, lattice, snapper in
                 try mesh.createGrid(
                     lattice: lattice, rows: grid.rows, cols: grid.cols, snapping: snapper
@@ -590,13 +721,19 @@ final class MeshEditController {
         case .insertLoop:
             let ring = elementIDs(of: best, kind: .edge)
             guard let seed = ring.first else { return }
-            applyElementEdit(verb: "pencil.insertLoop", context: context) { mesh in
+            applyElementEdit(
+                verb: "pencil.insertLoop", context: context,
+                autoRelaxAround: autoRelaxPoints(of: best.elements, mesh: context.editMesh)
+            ) { mesh in
                 try mesh.insertLoop(acrossEdge: seed)
             }
         case .dissolveEdge:
             let edges = elementIDs(of: best, kind: .edge)
             guard !edges.isEmpty else { return }
-            applyElementEdit(verb: "pencil.dissolveEdge", context: context) { mesh in
+            applyElementEdit(
+                verb: "pencil.dissolveEdge", context: context,
+                autoRelaxAround: autoRelaxPoints(of: best.elements, mesh: context.editMesh)
+            ) { mesh in
                 try mesh.dissolveEdges(edges)
             }
         case .deleteFaces:
@@ -609,19 +746,25 @@ final class MeshEditController {
             // The stroke's start vertex snaps onto its end vertex.
             let vertices = elementIDs(of: best, kind: .vertex)
             guard vertices.count == 2 else { return }
-            applyElementEdit(verb: "pencil.mergeVertices", context: context) { mesh in
+            applyElementEdit(
+                verb: "pencil.mergeVertices", context: context,
+                autoRelaxAround: autoRelaxPoints(of: best.elements, mesh: context.editMesh)
+            ) { mesh in
                 try mesh.mergeVertices(keep: vertices[1], remove: vertices[0])
             }
         case .rotateEdge:
             guard let edge = elementIDs(of: best, kind: .edge).first else { return }
-            applyElementEdit(verb: "pencil.rotateEdge", context: context) { mesh in
+            applyElementEdit(
+                verb: "pencil.rotateEdge", context: context,
+                autoRelaxAround: autoRelaxPoints(of: best.elements, mesh: context.editMesh)
+            ) { mesh in
                 try mesh.rotateEdge(edge)
             }
         case .tagLoop:
             let loop = elementIDs(of: best, kind: .edge)
             guard !loop.isEmpty else { return }
             applyAnnotationEdit(verb: "pencil.tagLoop", context: context) { annotations in
-                annotations.togglingTags(on: loop)
+                annotations.togglingTags(on: loop, color: self.activeTagColor)
             }
         case .hideRegion:
             let faces = elementIDs(of: best, kind: .face)
@@ -806,8 +949,14 @@ final class MeshEditController {
     /// from the first mutation to the journal entry runs inside
     /// `journalOrDiscard` (see that method for the failure contract).
     /// Internal (not private): the task-4.1 tool extension reuses it.
+    /// - Parameter autoRelaxAround: world points describing the region the
+    ///   edit touched. When Auto Relax is on (task 4.5) the redistribution
+    ///   pass runs over exactly that neighborhood, INSIDE this same
+    ///   transaction — one journal entry for edit + relax. Empty disables
+    ///   the pass for this edit.
     func applyElementEdit(
-        verb: String, context: Context, _ mutate: @escaping (Mesh) throws -> Void
+        verb: String, context: Context, autoRelaxAround: [SIMD3<Float>] = [],
+        _ mutate: @escaping (Mesh) throws -> Void
     ) {
         guard
             let object = context.editObject,
@@ -819,6 +968,7 @@ final class MeshEditController {
         )
         journalOrDiscard(verb: verb) {
             try mutate(mesh)
+            try runAutoRelaxIfEnabled(mesh: mesh, context: context, around: autoRelaxAround)
             onLiveEdit?()
             return try transaction.command(verb: verb)
         }
@@ -829,7 +979,7 @@ final class MeshEditController {
     /// Journals an annotation change as ONE `annotationEdit` command.
     /// Annotations are manifest state — payload bytes never move, and a
     /// no-op transform journals nothing.
-    private func applyAnnotationEdit(
+    func applyAnnotationEdit(
         verb: String, context: Context,
         _ transform: (MeshAnnotations) -> MeshAnnotations
     ) {
@@ -900,14 +1050,67 @@ final class MeshEditController {
     /// Target: `build` runs the engine creation op (a quad's `createFace`,
     /// the grid's welded `createGrid`) against the destination mesh with
     /// the unprojected world points.
-    private func applyCreate(
+    /// - Parameter layout: how `screenPoints` are laid out, so a
+    ///   REFLECTING symmetry replica can reorder them and keep the created
+    ///   faces' winding (task 4.4).
+    func applyCreate(
         verb: String, screenPoints: [SIMD2<Float>], context: Context,
+        layout: SymmetryPointLayout = .ring,
         _ build: @escaping (Mesh, [SIMD3<Float>], SurfaceSnapper?) throws -> Void
     ) {
         guard
             context.snapper != nil,
-            let points = unprojectCorners(screenPoints, in: context)
+            let authored = unprojectCorners(screenPoints, in: context)
         else { return }
+        // SYMMETRY (task 4.4): the authored operation and every symmetric
+        // copy of it are the SAME engine operation run with transformed
+        // input, all inside the one transaction below — so the journal
+        // holds a single command whose effect is already symmetric and one
+        // undo removes every side together. Nothing is duplicated after
+        // the fact.
+        let symmetry = context.effectiveSymmetry.weldScaled(sceneRadius: context.sceneRadius)
+        let copies = [authored] + symmetry.replicas.map {
+            $0.apply(points: authored, layout: layout)
+        }
+        let buildAll: (Mesh, [SIMD3<Float>], SurfaceSnapper?) throws -> Void = {
+            mesh, _, snapper in
+            for copy in copies {
+                try build(mesh, copy, snapper)
+            }
+            // Center-line vertices snap onto every enabled mirror plane
+            // (spec: "Center-line vertices SHALL snap to the symmetry
+            // plane") — inside the same transaction, so the weld is part
+            // of the one command the stroke journals.
+            if symmetry.isActive {
+                try mesh.snapToSymmetryPlanes(symmetry)
+                // ...and WELD the seam. Snapping only moves positions, so
+                // the authored copy and the mirrored copy each still own
+                // their own vertex on the plane: without this merge the
+                // center line is a crack (two coincident-but-unshared
+                // vertices per corner), which boundary walks, Relax/Move
+                // and export all read as an open rim. Same transaction, so
+                // one undo removes the whole symmetric create.
+                // The authored points are a LOCATOR only: `createFace`
+                // projected each created vertex onto the Target and the
+                // plane snap moved it again, so the seam vertices are NOT
+                // at the coordinates the user drew. Pass the tool pick
+                // radius as the search radius — the weld itself still runs
+                // at the tight tolerance, against the vertex's real
+                // position. Without this the weld silently found nothing on
+                // any curved Target.
+                try mesh.weldSeamVertices(
+                    symmetry, near: copies.flatMap { $0 },
+                    searchRadius: context.sceneRadius * Self.vertexPickRadiusFraction
+                )
+            }
+            // AUTO RELAX (task 4.5): still inside the stroke's ONE
+            // transaction, so the append and the redistribution it triggers
+            // are a single undo step. The neighborhood is every authored
+            // copy, so a mirrored create relaxes both sides.
+            try self.runAutoRelaxIfEnabled(
+                mesh: mesh, context: context, around: copies.flatMap { $0 }
+            )
+        }
         if let object = context.editObject, let mesh = context.editMesh,
             let payload = context.editPayload {
             // LIVE mesh path: everything from the first mutation to the
@@ -924,7 +1127,7 @@ final class MeshEditController {
                 object: object, mesh: mesh, currentPayload: payload
             )
             journalOrDiscard(verb: verb) {
-                try build(mesh, points, context.snapper)
+                try buildAll(mesh, authored, context.snapper)
                 onLiveEdit?()
                 return try transaction.command(verb: verb)
             }
@@ -935,7 +1138,7 @@ final class MeshEditController {
             // so plain logging is enough.
             do {
                 let mesh = try Mesh()
-                try build(mesh, points, context.snapper)
+                try buildAll(mesh, authored, context.snapper)
                 let id = UUID()
                 let object = DocumentManifest.Object(
                     id: id,

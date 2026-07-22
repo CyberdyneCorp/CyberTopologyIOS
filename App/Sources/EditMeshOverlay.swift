@@ -1,3 +1,4 @@
+import CyberKit
 import Metal
 import simd
 
@@ -71,6 +72,14 @@ enum OverlayUniformsFactory {
     /// Hover-preview highlight color (task 3.6): warm yellow, distinct from
     /// both the cyan wire and the green tag pass.
     static let hoverColor = SIMD3<Float>(1.0, 0.85, 0.25)
+    /// Pin-marker color (task 4.3, docs/COZYBLANKET_REFERENCE §4.1: pins
+    /// render as yellow circles). Saturated yellow — deliberately the
+    /// hover family, since both mean "this element is special right now",
+    /// but at full alpha and a larger dot so pins read at a glance.
+    static let pinColor = SIMD3<Float>(1.0, 0.92, 0.15)
+    /// Pin-marker dot size in pixels — larger than both the wire's vertex
+    /// dots and the snap highlight so a pinned vertex is unmistakable.
+    static let pinPointSize: Float = 16
     /// Hover highlight opacity — independent of the user's wireframe
     /// opacity (a preview must stay readable at any wire setting).
     static let hoverAlpha: Float = 0.95
@@ -140,6 +149,103 @@ enum OverlayUniformsFactory {
             misc: SIMD4(hoverPointSize, 0, 0, 0)
         )
     }
+
+    /// Uniforms for a per-tag COLOUR loop pass (task 4.3): the palette
+    /// colour at the wire's opacity boosted like the 3.4 tag pass, with
+    /// the creation sweep forced fully open (an annotation is document
+    /// state — it must not fade in with a geometry animation).
+    static func tagColor(
+        _ color: SIMD3<Float>, mvp: simd_float4x4, settings: OverlaySettings
+    ) -> OverlayUniforms {
+        OverlayUniforms(
+            mvp: mvp,
+            color: SIMD4(color, min(1, settings.opacity * 1.2)),
+            params: SIMD4(1, settings.occlusionBias, xrayAttenuation, 0),
+            misc: SIMD4(pointSize, 0, 0, 0)
+        )
+    }
+
+    /// Uniforms for the pin-marker pass (task 4.3): yellow dots at full
+    /// alpha, independent of the wireframe opacity — pins stay visible
+    /// even with the wire turned down, because they change what the NEXT
+    /// Relax will do.
+    static func pins(mvp: simd_float4x4, settings: OverlaySettings) -> OverlayUniforms {
+        OverlayUniforms(
+            mvp: mvp,
+            color: SIMD4(pinColor, 1),
+            params: SIMD4(1, settings.occlusionBias, xrayAttenuation, 0),
+            misc: SIMD4(pinPointSize, 0, 0, 0)
+        )
+    }
+}
+
+/// GPU-ready annotation overlay state (task 4.3): pin marker points and
+/// per-palette-colour tagged-loop line segments, in WORLD space.
+///
+/// Standalone world-space geometry (the task-3.6 hover-highlight
+/// precedent) rather than indices into the compacted render stream: stable
+/// element ids never need mapping to render indices, and the buffer is
+/// rebuilt only when the ANNOTATIONS change — never at frame time.
+struct AnnotationRenderState: Equatable {
+    /// One colour group: the palette index's colour and its line-list
+    /// vertices (consecutive pairs = one edge).
+    struct TagGroup: Equatable {
+        var color: SIMD3<Float>
+        var segments: [Float]
+    }
+
+    /// Pin markers as point-primitive vertices (x,y,z each).
+    var pinPoints: [Float] = []
+    /// Tagged loops grouped by palette colour, ordered by palette index so
+    /// the draw order (and therefore the golden screenshots) is stable.
+    var tagGroups: [TagGroup] = []
+    /// Symmetry-plane rims (task 4.4): one line-list group per enabled
+    /// mirror plane, built by `SymmetryRimGeometry`. Kept separate from
+    /// the tag groups because they are VIEW state derived from the
+    /// document's symmetry settings, not per-element annotations — but
+    /// they ride the same world-space buffer and pass.
+    var symmetryRims: [TagGroup] = []
+
+    /// Every line-list group in draw order: tags first, rims on top (the
+    /// rim must stay readable where it crosses a tagged loop).
+    var lineGroups: [TagGroup] { tagGroups + symmetryRims }
+
+    var isEmpty: Bool { pinPoints.isEmpty && lineGroups.allSatisfy { $0.segments.isEmpty } }
+
+    /// Builds the render state from document annotations plus element
+    /// accessors. Pure — the accessors are the only engine contact, so the
+    /// whole builder is unit-testable headless.
+    ///
+    /// Stale ids (retired by a later topology edit) are skipped exactly
+    /// like the engine-side render filters do: an annotation that outlived
+    /// its element renders as nothing, never as a crash.
+    static func build(
+        annotations: MeshAnnotations,
+        edgeEndpoints: (UInt32) -> (UInt32, UInt32)?,
+        vertexPosition: (UInt32) -> SIMD3<Float>?,
+        color: (UInt8) -> SIMD3<Float> = LoopTagPalette.color
+    ) -> AnnotationRenderState {
+        var state = AnnotationRenderState()
+        for vertex in annotations.pinnedVertices {
+            guard let position = vertexPosition(vertex) else { continue }
+            state.pinPoints.append(contentsOf: [position.x, position.y, position.z])
+        }
+        let groups = annotations.taggedEdgesByColor()
+        for index in groups.keys.sorted() {
+            var segments: [Float] = []
+            for edge in groups[index] ?? [] {
+                guard
+                    let (a, b) = edgeEndpoints(edge),
+                    let start = vertexPosition(a), let end = vertexPosition(b)
+                else { continue }
+                segments.append(contentsOf: [start.x, start.y, start.z])
+                segments.append(contentsOf: [end.x, end.y, end.z])
+            }
+            guard !segments.isEmpty else { continue }
+            state.tagGroups.append(TagGroup(color: color(index), segments: segments))
+        }
+        return state
+    }
 }
 
 /// Dedicated overlay pipeline for EditMesh wireframes: edges as an indexed
@@ -180,10 +286,18 @@ final class EditMeshOverlayPath {
     private(set) var hoverSegmentVertexCount = 0
     private(set) var hoverPointVertexCount = 0
     private var hoverVertexBuffer: MTLBuffer?
+    /// Annotation pass (task 4.3): pin markers + per-colour tagged loops,
+    /// standalone world-space vertices in ONE buffer (pins first, then
+    /// each colour group). Rebuilt only when the annotations change.
+    private(set) var pinPointCount = 0
+    private(set) var tagColorGroups: [(color: SIMD3<Float>, vertexStart: Int, vertexCount: Int)] =
+        []
+    private var annotationVertexBuffer: MTLBuffer?
     private let device: MTLDevice
 
     var hasGeometry: Bool { edgeIndexCount > 0 }
     var hasHoverHighlight: Bool { hoverSegmentVertexCount + hoverPointVertexCount > 0 }
+    var hasAnnotations: Bool { pinPointCount > 0 || !tagColorGroups.isEmpty }
 
     /// Fails only when the embedded shader does not compile or a pipeline/
     /// depth state cannot be built (programmer error, surfaced by tests).
@@ -270,6 +384,7 @@ final class EditMeshOverlayPath {
         taggedIndexCount = 0
         taggedIndexBuffer = nil
         clearHoverHighlight()
+        clearAnnotations()
         bufferPool.clear()
     }
 
@@ -301,6 +416,43 @@ final class EditMeshOverlayPath {
         hoverVertexBuffer = nil
     }
 
+    /// Uploads the annotation pass (task 4.3): pin marker points followed
+    /// by each tag colour group's line-list segments, all in ONE buffer
+    /// laid out in draw order. Replaced only when the ANNOTATIONS change
+    /// (a journaled pin/tag edit), never at frame time. Empty state
+    /// clears the pass.
+    func setAnnotations(_ state: AnnotationRenderState) {
+        var floats = state.pinPoints
+        var groups: [(color: SIMD3<Float>, vertexStart: Int, vertexCount: Int)] = []
+        for group in state.lineGroups where !group.segments.isEmpty {
+            groups.append(
+                (
+                    color: group.color, vertexStart: floats.count / 3,
+                    vertexCount: group.segments.count / 3
+                ))
+            floats.append(contentsOf: group.segments)
+        }
+        guard
+            !floats.isEmpty,
+            let buffer = device.makeBuffer(
+                bytes: floats, length: floats.count * MemoryLayout<Float>.stride
+            )
+        else {
+            clearAnnotations()
+            return
+        }
+        buffer.label = "overlay-annotations"
+        annotationVertexBuffer = buffer
+        pinPointCount = state.pinPoints.count / 3
+        tagColorGroups = groups
+    }
+
+    func clearAnnotations() {
+        pinPointCount = 0
+        tagColorGroups = []
+        annotationVertexBuffer = nil
+    }
+
     /// Encodes the overlay over an already-encoded Target. Binds pooled
     /// buffers only (never allocates at frame time). The hover highlight
     /// (task 3.6) draws AFTER the wire so it reads on top, and outside the
@@ -315,7 +467,49 @@ final class EditMeshOverlayPath {
             into: encoder, mvp: mvp, settings: settings,
             animationProgress: animationProgress
         )
+        encodeAnnotations(into: encoder, mvp: mvp, settings: settings)
         encodeHoverHighlight(into: encoder, mvp: mvp, settings: settings)
+    }
+
+    /// Annotation pass (task 4.3): each tag colour group as a line list in
+    /// its palette colour, then the pin markers as large yellow points on
+    /// top (a pinned vertex ON a tagged loop must still read as pinned).
+    /// Drawn outside the wire's opacity guard — annotations are document
+    /// state, not wireframe decoration, so turning the wire down must not
+    /// hide what the next Relax will refuse to move.
+    private func encodeAnnotations(
+        into encoder: MTLRenderCommandEncoder,
+        mvp: simd_float4x4,
+        settings: OverlaySettings
+    ) {
+        guard hasAnnotations, let buffer = annotationVertexBuffer else { return }
+        encoder.setRenderPipelineState(pipelineState)
+        encoder.setDepthStencilState(occludedDepthState)
+        encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+        for group in tagColorGroups {
+            var uniforms = OverlayUniformsFactory.tagColor(
+                group.color, mvp: mvp, settings: settings
+            )
+            encoder.setVertexBytes(
+                &uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 1
+            )
+            encoder.setFragmentBytes(
+                &uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 0
+            )
+            encoder.drawPrimitives(
+                type: .line, vertexStart: group.vertexStart, vertexCount: group.vertexCount
+            )
+        }
+        if pinPointCount > 0 {
+            var uniforms = OverlayUniformsFactory.pins(mvp: mvp, settings: settings)
+            encoder.setVertexBytes(
+                &uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 1
+            )
+            encoder.setFragmentBytes(
+                &uniforms, length: MemoryLayout<OverlayUniforms>.stride, index: 0
+            )
+            encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: pinPointCount)
+        }
     }
 
     private func encodeWire(
@@ -344,7 +538,10 @@ final class EditMeshOverlayPath {
 
         // Loop-tag pass (task 3.4): tagged edges re-drawn in the tag color
         // over the base wire (minimal colored-line render; styles in 4.3).
-        if taggedIndexCount > 0, let taggedBuffer = taggedIndexBuffer {
+        // Task 4.3 supersedes this flat pass with the per-colour
+        // annotation pass; it stays as the fallback for overlays loaded
+        // without annotation state (engine-filtered tagged edges only).
+        if taggedIndexCount > 0, tagColorGroups.isEmpty, let taggedBuffer = taggedIndexBuffer {
             var tagUniforms = OverlayUniformsFactory.tagged(
                 mvp: mvp, settings: settings,
                 animationProgress: animationProgress, vertexCount: vertexCount

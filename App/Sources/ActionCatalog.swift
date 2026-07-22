@@ -345,6 +345,123 @@ extension EditorAction {
                     "circle.grid.2x2.fill",
                 ]
             )
+        case .pinFlip:
+            GalleryEntry(
+                title: "Pin flip",
+                symbol: "pin",
+                gesture: "Tool — tap a vertex, sweep a run, or hold on a loop",
+                notes: "Pinned vertices are immune to Relax, Move and Auto "
+                    + "Relax — pin the silhouette you have already placed "
+                    + "and smooth everything around it. Tap flips one "
+                    + "vertex, a sweep flips every vertex you cross, and "
+                    + "HOLDING on an interior edge flips its whole edge "
+                    + "loop. Flipping again unpins.",
+                demoFrames: ["pin", "pin.fill", "pin.circle.fill", "pin.slash"]
+            )
+        case .clearPins:
+            GalleryEntry(
+                title: "Clear pins",
+                symbol: "pin.slash",
+                gesture: "Command — tap to run",
+                notes: "Removes every pin on the EditMesh in one step, so "
+                    + "the next Relax is free to move the whole cage. One "
+                    + "undo brings the pins back.",
+                demoFrames: ["pin.fill", "pin.slash", "pin.slash.fill"]
+            )
+        case .clearLoopTags:
+            GalleryEntry(
+                title: "Clear loop tags",
+                symbol: "tag.slash",
+                gesture: "Command — tap to run",
+                notes: "Removes every loop tag on the EditMesh in one "
+                    + "step. To clear a single loop instead, draw along it "
+                    + "again in the same colour. One undo restores them "
+                    + "all.",
+                demoFrames: ["tag.fill", "tag.slash", "tag.slash.fill"]
+            )
+        case .toggleSymmetry:
+            GalleryEntry(
+                title: "Symmetry",
+                symbol: "square.righthalf.filled",
+                gesture: "Command — tap to turn mirroring on or off",
+                notes: "With symmetry on, every quad and grid you draw is "
+                    + "authored on all enabled sides at once, and vertices "
+                    + "on a symmetry plane weld onto it. Because the "
+                    + "mirroring happens inside the SAME journal entry as "
+                    + "the stroke, one undo removes every side together. "
+                    + "Choose the axes, the plane position and the radial "
+                    + "sector count in Viewport Settings.",
+                demoFrames: [
+                    "square.righthalf.filled", "square.lefthalf.filled",
+                    "square.split.2x1", "square.split.2x1.fill",
+                ]
+            )
+        case .applySymmetry:
+            GalleryEntry(
+                title: "Apply symmetry",
+                symbol: "square.on.square.dashed",
+                gesture: "Command — tap to run",
+                notes: "Bakes the mirror into real geometry: every face on "
+                    + "the authored half gains a real mirrored twin, welded "
+                    + "along the symmetry plane so the seam stays "
+                    + "manifold. Runs once per enabled mirror axis. Radial "
+                    + "symmetry is NOT baked — its sector seams need "
+                    + "welding the engine does not do yet.",
+                demoFrames: [
+                    "square.righthalf.filled", "square.on.square.dashed",
+                    "square.split.2x1.fill", "square.fill",
+                ]
+            )
+        case .resymmetrize:
+            GalleryEntry(
+                title: "Re-symmetrize",
+                symbol: "arrow.trianglehead.2.clockwise.rotate.90",
+                gesture: "Command — tap to run",
+                notes: "Mirrors the authored half onto the other half of a "
+                    + "mesh that has drifted asymmetric, moving vertices "
+                    + "only — no faces are added or removed, so pins, tags "
+                    + "and topology survive. Vertices with no counterpart "
+                    + "on the authored half are left exactly where they "
+                    + "are, and the status line reports how many.",
+                demoFrames: [
+                    "square.lefthalf.filled", "arrow.left.and.right",
+                    "square.righthalf.filled", "square.split.2x1.fill",
+                ]
+            )
+        case .toggleAutoRelax:
+            GalleryEntry(
+                title: "Auto Relax",
+                symbol: "wand.and.sparkles",
+                gesture: "Command — tap to turn the mode on or off",
+                notes: "With Auto Relax on, every edit also redistributes "
+                    + "the topology around what you just touched, so quads "
+                    + "stay evenly spaced as you append along a strip. "
+                    + "Pinned vertices never move. The relax happens INSIDE "
+                    + "the edit's own journal entry, so one undo takes back "
+                    + "the edit and its redistribution together. The mode "
+                    + "is remembered between sessions.",
+                demoFrames: [
+                    "square.grid.3x3", "wand.and.sparkles",
+                    "square.grid.3x3.fill", "wind",
+                ]
+            )
+        case .batchCommands:
+            GalleryEntry(
+                title: "Batch commands",
+                symbol: "list.bullet.rectangle",
+                gesture: "Command — tap to open the panel",
+                notes: "Whole-mesh operations: snap all to Target, relax "
+                    + "all, subdivide, subdivide + reproject, triangulate, "
+                    + "clear loop tags and clear pins. Each runs as one "
+                    + "undoable step. Subdividing rebuilds every element "
+                    + "id, so it clears pins and tags in the SAME step — "
+                    + "one undo brings the cage and its annotations back "
+                    + "together.",
+                demoFrames: [
+                    "list.bullet.rectangle", "square.grid.2x2",
+                    "square.grid.3x3", "list.bullet.rectangle.fill",
+                ]
+            )
         }
     }
 }

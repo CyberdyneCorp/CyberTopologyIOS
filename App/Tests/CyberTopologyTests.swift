@@ -22,6 +22,38 @@ struct RootViewTests {
         #expect(app.body is WindowGroup<RootView>)
     }
 
+    /// REGRESSION (`CoverDismissalPlan`): an unrequested cover dismissal
+    /// used to re-open the URL WITHOUT closing the still-open `UIDocument`
+    /// — SwiftUI had only dropped the `$openDocument` binding. That left
+    /// two open documents autosaving one bundle and recorded a second
+    /// `.documentOpened` in the recovery journal with no `.documentClosed`
+    /// between them: the exact leak the accompanying comment claimed to
+    /// fix. Every unrequested outcome must now close the dismissed
+    /// document, whether or not it re-opens.
+    @Test func everyUnrequestedCoverDismissalClosesTheDismissedDocument() {
+        let url = URL(fileURLWithPath: "/tmp/dismissed.cybertopo")
+
+        // A requested close already did the closing and the journaling.
+        let requested = CoverDismissalPlan.plan(intendedURL: nil, reopens: 0, limit: 2)
+        #expect(requested == .requestedClose)
+        #expect(!requested.closesDismissedDocument)
+
+        // Within budget: close, THEN re-open.
+        for reopens in 0..<2 {
+            let plan = CoverDismissalPlan.plan(
+                intendedURL: url, reopens: reopens, limit: 2
+            )
+            #expect(plan == .closeThenReopen(url))
+            #expect(plan.closesDismissedDocument)
+        }
+
+        // Budget spent: still closes — the document must never be left
+        // open just because the re-open loop was abandoned.
+        let exhausted = CoverDismissalPlan.plan(intendedURL: url, reopens: 2, limit: 2)
+        #expect(exhausted == .closeAndGiveUp)
+        #expect(exhausted.closesDismissedDocument)
+    }
+
     /// The editor reaches the real engine through the CyberKit facade: the
     /// version label must carry a non-zero semantic version.
     @Test func editorShowsRealEngineVersion() throws {

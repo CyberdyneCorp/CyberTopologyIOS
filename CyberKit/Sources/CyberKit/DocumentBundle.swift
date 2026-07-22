@@ -78,16 +78,27 @@ public struct DocumentManifest: Codable, Equatable, Sendable {
     public var schemaVersion: Int
     public var stage: Stage
     public var objects: [Object]
+    /// Symmetry state (task 4.4; spec: retopology-tools / "Multi-axis and
+    /// radial symmetry"). DOCUMENT state, not a transient viewport
+    /// preference: reopening a document restores the axes, origin and
+    /// radial count the user was authoring under. Optional — absent in
+    /// pre-4.4 documents, which read back as symmetry off.
+    public var symmetry: SymmetrySettings?
 
     public init(
         schemaVersion: Int = DocumentManifest.currentSchemaVersion,
         stage: Stage = .retopology,
-        objects: [Object] = []
+        objects: [Object] = [],
+        symmetry: SymmetrySettings? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.stage = stage
         self.objects = objects
+        self.symmetry = symmetry
     }
+
+    /// Symmetry state with the pre-4.4 default filled in (symmetry off).
+    public var effectiveSymmetry: SymmetrySettings { symmetry ?? SymmetrySettings() }
 }
 
 /// Failure modes of reading/writing a document bundle.

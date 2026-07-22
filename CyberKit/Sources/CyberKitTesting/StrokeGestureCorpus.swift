@@ -355,6 +355,62 @@ public enum StrokeGestureCorpus {
         )
     }
 
+    // MARK: - Task 4.3 annotation recordings
+    //
+    // Recorded against the annotation-test seeding (AnnotationToolsTests:
+    // plane Target [-5, 5] + a 3x3-quad grid over (0...3, 0...3), all
+    // z = 0) under the harness camera's deterministic frame-to-fit. The
+    // interior edge v1(1,0)-v5(1,1) projects to the midpoint below.
+
+    /// Pin Flip hold-on-loop: the pen DWELLS on the interior edge
+    /// v1-v5 for 0.6 s (past `MeshEditController.pinHoldDuration`) with
+    /// only sub-pixel tremble — the gesture that flips the whole edge
+    /// loop's pins. The stage-1 expectedOutcome documents what the shape
+    /// classifier makes of a dwell; the tool replays it with Pin Flip
+    /// armed and asserts the resulting ANNOTATIONS.
+    public static func annotationPinLoopHold(
+        type: StrokeSample.TouchType = .pencil
+    ) -> StrokeFixture {
+        var samples: [StrokeSample] = []
+        let count = 72  // 0.6 s at 120 Hz
+        for i in 0...count {
+            let time = Double(i) * sampleInterval
+            let x = 0.5493 + 0.0012 * sin(Double(i) * 1.3)
+            let y = 0.4865 + 0.0012 * cos(Double(i) * 1.7)
+            samples.append(sample(x: x, y: y, time: time, index: i, of: count, type: type))
+        }
+        return StrokeFixture(
+            name: type == .pencil
+                ? "annotation_pin_loop_hold_pencil" : "annotation_pin_loop_hold_finger",
+            samples: samples,
+            expectedOutcome: "holdPoint:none"
+        )
+    }
+
+    /// Loop Info hover: a slow traverse along the MIDDLE of the same
+    /// interior edge (world t 0.4...0.6 of v1→v5). The traverse stays
+    /// clear of both endpoint vertices on purpose: near a vertex the hover
+    /// priority resolves to the merge-snap target instead, which is a
+    /// different preview and correctly shows no loop chip. Replayed
+    /// through the hover controller (not the stroke pipeline) — holding
+    /// the pen over an interior edge is what raises the inspector.
+    public static func annotationLoopInfoHover(
+        type: StrokeSample.TouchType = .pencil
+    ) -> StrokeFixture {
+        fixture(
+            name: type == .pencil
+                ? "annotation_loop_info_hover_pencil" : "annotation_loop_info_hover_finger",
+            // Stage-1 classification of the raw polyline: the traverse is
+            // short enough to read as a dwell. The inspector never routes
+            // through the grammar — it is replayed through the HOVER
+            // controller — so this only documents what the classifier
+            // makes of the recording.
+            expectedOutcome: "holdPoint:none",
+            points: path(through: [Point(0.5493, 0.4921), Point(0.5493, 0.4802)]),
+            type: type
+        )
+    }
+
     /// The full committed corpus, in deterministic order. The finger square
     /// exists so the suite can assert recognizer parity between input types
     /// (the UI-test injection hooks replay finger-typed fixtures).
@@ -369,6 +425,8 @@ public enum StrokeGestureCorpus {
             // Task 4.1 build-tool corpus:
             toolBuildQuadEdgeDrag(), toolBuildTriangleCornerDrag(),
             toolMergePairLine(), toolPathDistributeLine(), toolSurfaceCutLine(),
+            // Task 4.3 annotation corpus:
+            annotationPinLoopHold(), annotationLoopInfoHover(),
         ]
     }
 

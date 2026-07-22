@@ -27,6 +27,26 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
     /// apply and revert restore it verbatim. Topology and payload bytes
     /// are untouched.
     case annotationEdit(AnnotationEdit)
+    /// Symmetry-settings change (task 4.4): axes, origin, radial count.
+    /// Journaled like `setStage` — it changes what the NEXT authoring
+    /// stroke does, so undo has to step back over it or the history would
+    /// replay strokes under the wrong symmetry.
+    case setSymmetry(from: SymmetrySettings?, to: SymmetrySettings?)
+    /// Several commands that are ONE user-visible step (task 4.5): applied
+    /// in order, reverted in reverse order, journaled as a single node so a
+    /// single undo restores all of them together.
+    ///
+    /// This exists because the batch commands that rebuild element ids
+    /// (subdivide, triangulate) touch BOTH geometry and annotations: the
+    /// engine reassigns the ids the document's `MeshAnnotations` are keyed
+    /// on, so the orphaned annotations must be cleared in the SAME step as
+    /// the geometry change — two separate journal entries would let the
+    /// user undo the geometry while the annotations stayed cleared (or vice
+    /// versa), which is exactly the corruption this case prevents.
+    ///
+    /// Indirect: the payload contains `DocumentCommand` values, so the enum
+    /// is recursive.
+    indirect case compound(verb: String, commands: [DocumentCommand])
 
     /// Payload of a `meshEdit` command. `before`/`after` are complete
     /// engine payload snapshots of the edited object — exact revert data at
@@ -101,6 +121,10 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
             bundle.updateObject(id: edit.objectID) { object in
                 object.annotations = edit.after
             }
+        case .setSymmetry(_, let to):
+            bundle.manifest.symmetry = to
+        case .compound(_, let commands):
+            for command in commands { command.apply(to: &bundle) }
         }
     }
 
@@ -122,6 +146,34 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
             bundle.updateObject(id: edit.objectID) { object in
                 object.annotations = edit.before
             }
+        case .setSymmetry(let from, _):
+            bundle.manifest.symmetry = from
+        case .compound(_, let commands):
+            // Reverse order: the annotation edit was journaled against the
+            // state the mesh edit produced, so undoing it first restores
+            // the pre-compound state exactly.
+            for command in commands.reversed() { command.revert(on: &bundle) }
+        }
+    }
+
+    /// The payload bytes this command leaves `object` holding, or nil when
+    /// it does not touch that object's geometry.
+    ///
+    /// Lets a caller recognize ITS OWN commit when the resulting document
+    /// change comes back to it asynchronously (the camera-tool sessions'
+    /// snapshot-rebind hook): the bytes are unforgeable, where a "one of
+    /// my commits is in flight" flag is consumed by whichever change
+    /// arrives first and cannot tell a coalesced external edit apart.
+    public func resultingPayload(forObject object: UUID) -> Data? {
+        switch self {
+        case .meshEdit(let edit):
+            return edit.objectID == object ? edit.after : nil
+        case .compound(_, let commands):
+            // Last writer wins, matching apply order.
+            return commands.reversed().lazy
+                .compactMap { $0.resultingPayload(forObject: object) }.first
+        case .addObject, .annotationEdit, .setSymmetry, .setStage:
+            return nil
         }
     }
 }

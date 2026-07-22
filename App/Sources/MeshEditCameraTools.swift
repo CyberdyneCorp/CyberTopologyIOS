@@ -71,10 +71,24 @@ extension MeshEditController {
         var liveMesh: Mesh?
         var appliedTransform = matrix_identity_float4x4
         var mutated = false
-        /// Set right before an own commit reaches the journal: the
-        /// coordinator's snapshot-change hook re-pins instead of
-        /// cancelling (Patch Clone stays armed for repeat pastes).
-        var expectingOwnCommit = false
+        /// The payload bytes an OWN commit (a Patch Clone paste) just
+        /// wrote, so the coordinator's snapshot-change hook can re-pin
+        /// instead of cancelling and Patch Clone stays armed for repeat
+        /// pastes.
+        ///
+        /// A payload, NOT a Bool. `editMeshSnapshotWillChange` runs on
+        /// SwiftUI's next `updateUIView` pass, not synchronously with the
+        /// commit, so a one-bit "expecting my own commit" flag was consumed
+        /// by whatever snapshot change arrived first. If an EXTERNAL change
+        /// (undo tap, autosave conflict reload, batch command) coalesced
+        /// into the same pass, the coordinator saw ONE `payload !=
+        /// overlayPayload` transition, the flag ate it as "mine", and the
+        /// session stayed armed with `plan.faces` / `plan.pivot` naming
+        /// pre-reload topology — a later paste then cloned face ids
+        /// resolved against a different document revision. Matching the
+        /// exact bytes cannot be fooled that way: an external change never
+        /// produces the payload this session just wrote.
+        var committedPayload: Data?
     }
 
     /// True while the session holds live mesh edits a resync would
@@ -151,23 +165,52 @@ extension MeshEditController {
         }
         // A new selection replaces any armed session (discarding it).
         cancelCameraToolSession()
+        // …and the discard may have RELOADED the live EditMesh: cancelling
+        // a mutated Transform Vertices session fires `onDiscardLiveEdits`,
+        // which builds a FRESH `Mesh` from the pinned payload and rebinds
+        // `recognizerEditMesh`. `stroke.context` was pinned at stroke begin
+        // — where `resyncFromDocumentIfIdle()` was deliberately skipped
+        // because the session was active — so its `editMesh` is now the
+        // orphaned handle that still carries the edits we just discarded.
+        // Arming the new session off it would transform an invisible mesh
+        // (the overlay reads the rebound handle) and commit a payload
+        // containing the cancelled session's edits. Re-read the
+        // document-derived fields; the camera/ray half of the pinned
+        // context stays put so the stroke still resolves against the pose
+        // it was drawn under.
+        let context = refreshedDocumentContext(stroke.context)
         switch stroke.tool {
         case .patchClone:
-            beginPatchCloneSession(stroke, points: points)
+            beginPatchCloneSession(context: context, points: points)
         case .extendBoundary:
-            beginExtendBoundarySession(stroke, points: points, isHold: isTap)
+            beginExtendBoundarySession(context: context, points: points, isHold: isTap)
         case .transformVertices:
-            beginTransformVerticesSession(stroke, points: points)
+            beginTransformVerticesSession(context: context, points: points)
         default:
             break
         }
         publishCameraSession()
     }
 
+    /// `pinned` with its document-derived fields refreshed from the CURRENT
+    /// snapshot (live mesh handle, payload bytes, manifest entry,
+    /// annotations). Everything camera-shaped is kept exactly as pinned.
+    /// Falls back to the pinned context when no provider is installed
+    /// (headless tests that drive the sessions directly).
+    private func refreshedDocumentContext(_ pinned: Context) -> Context {
+        guard let fresh = contextProvider?() else { return pinned }
+        var context = pinned
+        context.editObject = fresh.editObject
+        context.editMesh = fresh.editMesh
+        context.editPayload = fresh.editPayload
+        context.annotations = fresh.annotations
+        context.documentHasEditMesh = fresh.documentHasEditMesh
+        return context
+    }
+
     // MARK: - Selection (session begin)
 
-    private func beginPatchCloneSession(_ stroke: ToolStroke, points: [SIMD2<Float>]) {
-        let context = stroke.context
+    private func beginPatchCloneSession(context: Context, points: [SIMD2<Float>]) {
         guard
             let mesh = context.editMesh, let payload = context.editPayload,
             let camera = context.camera
@@ -245,9 +288,8 @@ extension MeshEditController {
     }
 
     private func beginExtendBoundarySession(
-        _ stroke: ToolStroke, points: [SIMD2<Float>], isHold: Bool
+        context: Context, points: [SIMD2<Float>], isHold: Bool
     ) {
-        let context = stroke.context
         guard let mesh = context.editMesh, let camera = context.camera else { return }
         let pickRadius = context.sceneRadius * Self.vertexPickRadiusFraction
         let hits = strokeSurfaceHits(samples: points, context: context)
@@ -290,7 +332,10 @@ extension MeshEditController {
             mode: preferredExtendBoundaryMode,
             chain: chain,
             closed: closed,
-            step: max(length / Float(edgeCount), context.sceneRadius * 1e-4)
+            step: ExtendBoundaryPlan.step(
+                averageEdgeLength: length / Float(edgeCount),
+                sceneRadius: context.sceneRadius
+            )
         )
         var session = CameraToolSession(
             tool: .extendBoundary,
@@ -307,9 +352,8 @@ extension MeshEditController {
     }
 
     private func beginTransformVerticesSession(
-        _ stroke: ToolStroke, points: [SIMD2<Float>]
+        context: Context, points: [SIMD2<Float>]
     ) {
-        let context = stroke.context
         guard
             let mesh = context.editMesh, let object = context.editObject,
             let payload = context.editPayload, let camera = context.camera
@@ -514,11 +558,25 @@ extension MeshEditController {
     /// the fan) in ONE journal entry and ends, Transform Vertices re-snaps
     /// the moved vertices, journals once, reports, and ends.
     func commitCameraToolSession() {
-        guard var session = cameraSession else { return }
+        guard cameraSession != nil else { return }
+        // Context FIRST, session SECOND. `contextProvider()` runs
+        // `resyncFromDocumentIfIdle()`, which — for the plans that do not
+        // hold live mesh edits, so resync is not suppressed — can detect an
+        // external payload change (conflict reload, autosave-driven bundle
+        // update) and call `editMeshSnapshotWillChange()`, dropping the
+        // session synchronously. Capturing `session` before that would
+        // commit pre-reload element ids against the newly rebound mesh:
+        // the wrong faces pasted, or an `invalidArgument` throw, followed
+        // by the trailing `guard var kept` silently swallowing the result.
         guard let context = contextProvider?() else { return }
+        guard var session = cameraSession else { return }
         // Re-read the LIVE camera: unfed pose changes (animated reframe)
-        // must not commit a stale placement.
-        if let camera = context.camera {
+        // must not commit a stale placement — but ONLY through the same
+        // arbiter gate the feed itself goes through. Camera motion the
+        // gate deliberately withheld from the session (pen down /
+        // palm-rejected touch) never moved the ghost, so baking it in here
+        // would commit a placement the user never saw.
+        if context.cameraFeedsArmedTool, let camera = context.camera {
             session.currentView = camera.viewMatrix()
             session.currentDistance = camera.distance
             session.currentForward = camera.basis.forward
@@ -542,7 +600,7 @@ extension MeshEditController {
             let transaction = MeshEditTransaction(
                 object: object, mesh: mesh, currentPayload: payload
             )
-            session.expectingOwnCommit = true
+            session.committedPayload = nil
             cameraSession = session
             lastCommit = nil
             journalOrDiscard(verb: "tool.patchClone.paste") {
@@ -551,13 +609,23 @@ extension MeshEditController {
                     flipped: plan.flipped, snapping: context.snapper
                 )
                 onLiveEdit?()
-                return try transaction.command(verb: "tool.patchClone.paste")
+                let command = try transaction.command(verb: "tool.patchClone.paste")
+                // Pin the EXACT bytes this paste is about to write BEFORE
+                // the command is sent: `send` can drive the coordinator's
+                // snapshot rebind synchronously, and the hook has to be
+                // able to recognize these bytes as ours by then. A commit
+                // that produced nothing leaves it nil, so the next snapshot
+                // change is correctly treated as external.
+                if let payload = command?.resultingPayload(forObject: object.id),
+                    var pending = self.cameraSession {
+                    pending.committedPayload = payload
+                    self.cameraSession = pending
+                }
+                return command
             }
             guard var kept = cameraSession else { return }
             if lastCommit != nil {
                 plan.pasteCount += 1
-            } else {
-                kept.expectingOwnCommit = false
             }
             kept.plan = .patchClone(plan)
             cameraSession = kept
@@ -644,10 +712,15 @@ extension MeshEditController {
     /// change (undo, conflict reload) invalidates the selection ids, so
     /// the session is discarded. The live mesh is being reloaded by the
     /// caller either way, so no separate discard runs here.
-    func editMeshSnapshotWillChange() {
+    ///
+    /// - Parameter payload: the payload bytes the snapshot is rebinding TO.
+    ///   The session is only kept when they are byte-identical to what its
+    ///   own last paste wrote — see `Session.committedPayload` for why a
+    ///   bare flag could not tell the two apart.
+    func editMeshSnapshotWillChange(payload: Data?) {
         guard var session = cameraSession else { return }
-        if session.expectingOwnCommit {
-            session.expectingOwnCommit = false
+        if let expected = session.committedPayload, let payload, payload == expected {
+            session.committedPayload = nil
             cameraSession = session
             return
         }

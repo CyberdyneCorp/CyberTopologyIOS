@@ -107,6 +107,39 @@
 #         cyber_retopo_patch_clone / extend_boundary_grid /
 #         extend_boundary_fan / draw_strip / transform_vertices (with the
 #         re-snap report). TODO(upstream): PR and drop.
+#   0020  capi loop metrics (task 4.3, Loop Info inspector):
+#         retopo/loop_metrics.hpp (measureEdgeLoop — one edgeLoopFrom walk
+#         plus one pass over its edges, so the whole query is O(loop) as
+#         the spec demands) + capi CyberLoopMetrics /
+#         cyber_mesh_loop_metrics reporting edge/vertex counts, closedness,
+#         summed length, open-chain endpoints, boundary-edge count and the
+#         Target snapping state (scale-free tolerance = 2% of the loop's
+#         mean edge length). Read-only; render cache untouched.
+#         TODO(upstream): PR to CyberRemesherAndUV and drop the patch.
+#   0021  capi symmetry ops (task 4.4): retopo/symmetry.hpp gains
+#         `resymmetrize` (mirrors the working half onto the other IN PLACE
+#         — adds/removes nothing, so topology correspondence is preserved,
+#         and off-side vertices with no counterpart within the match
+#         tolerance are reported rather than destroyed); capi
+#         CyberSymmetry / cyber_retopo_snap_symmetry_plane (center-line
+#         weld) / cyber_retopo_apply_symmetry (bakes the mirror, existing
+#         header function) / cyber_retopo_resymmetrize with its report.
+#         One plane per call — multi-axis is the shell applying them per
+#         enabled axis; RADIAL symmetry is deliberately absent (see 4.4a).
+#         TODO(upstream): PR to CyberRemesherAndUV and drop the patch.
+#   0022  capi EditMesh batch commands (task 4.5): cyber_retopo_snap_all
+#         (project every unpinned vertex onto the Target, reporting count +
+#         max displacement), cyber_retopo_subdivide (retopo/commands.hpp
+#         subdivideAll = Mesh::linearSubdivide, with optional whole-mesh
+#         Target reprojection — that is "subdivide+reproject"; the engine
+#         has LINEAR subdivision only) and cyber_retopo_triangulate. No new
+#         entry point for relax-all: cyber_retopo_relax with radius <= 0
+#         already relaxes the whole mesh honoring the same PinSet. The
+#         header documents ELEMENT-ID STABILITY per op — subdivide rebuilds
+#         the mesh and reassigns EVERY id, triangulate preserves vertex and
+#         edge ids while adding face ids — and each op prunes exactly the
+#         handle overlay state its id churn invalidates.
+#         TODO(upstream): PR to CyberRemesherAndUV and drop the patch.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -210,10 +210,11 @@ struct ToolbarConfigurationTests {
 
     @Test func everyActionHasACompleteGalleryEntry() {
         // The gallery SHALL list every action (verbs + 3.4 grammar + 4.1
-        // build tools + 4.2 camera-as-manipulator tools) with help content
-        // and a demo-media slot; an empty field here would render as a
-        // blank help panel.
-        #expect(EditorAction.allCases.count == 25)
+        // build tools + 4.2 camera-as-manipulator tools + 4.3 annotation
+        // actions + 4.4 symmetry commands + 4.5 Auto Relax and the batch
+        // panel) with help content and a demo-media slot; an empty field
+        // here would render as a blank help panel.
+        #expect(EditorAction.allCases.count == 33)
         for action in EditorAction.allCases {
             let entry = action.gallery
             #expect(!entry.title.isEmpty, "\(action) title")

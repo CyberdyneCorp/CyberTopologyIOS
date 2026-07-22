@@ -498,6 +498,47 @@ extension MeshEditCameraToolTests {
         #expect(harness.bundle.payloads[object.payloadFile] == before)
     }
 
+    /// REGRESSION: `runBatchMeshEdit` / `withSymmetryTarget` take
+    /// `context.editMesh` — the LIVE handle — which an armed Transform
+    /// Vertices session has already mutated in place. Running a whole-mesh
+    /// command anyway journaled BOTH the batch op and the session's
+    /// uncommitted transform under the batch's verb, and the snapshot
+    /// rebind that followed dropped the session WITHOUT firing
+    /// `onDiscardLiveEdits` — permanently committing a placement the user
+    /// never confirmed, under someone else's undo entry.
+    @Test func wholeMeshCommandsRefuseToRunOverUncommittedSessionEdits() throws {
+        let harness = try makeSeededHarness()
+        let before = try payloadBefore(harness)
+        harness.selectTool(.transformVertices)
+        harness.stroke(verb: .pencil, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(0, 0, 0)),
+            harness.screenPoint(of: SIMD3(0, 2, 0)),
+        ]))
+        try #require(harness.editor.cameraSession != nil)
+        for _ in 0..<5 { harness.orbitAndFeed(byPoints: SIMD2(70, 30)) }
+        // The live mesh now carries the session's UNCOMMITTED transform.
+        let live = try #require(harness.coordinator.recognizerEditMesh)
+        #expect(simd_distance(try #require(live.vertexPosition(3)), SIMD3(0, 2, 0)) > 0.05)
+
+        var status: String?
+        harness.editor.onCameraToolStatus = { status = $0 }
+        #expect(!harness.editor.runBatchCommand(.relaxAll))
+        #expect(!harness.editor.applySymmetryNow())
+
+        #expect(harness.bundle.journal.depth == 0, "nothing journaled")
+        let object = try #require(harness.editObject)
+        #expect(harness.bundle.payloads[object.payloadFile] == before)
+        #expect(status == MeshEditController.liveEditsBlockWholeMeshCommand)
+        // The session is STILL armed — the user's in-flight placement was
+        // neither committed nor silently thrown away.
+        #expect(harness.editor.cameraSession != nil)
+
+        // ANTI-VACUITY: once the session commits, the same batch command runs.
+        harness.inputModel.commitCameraToolSession()
+        #expect(harness.editor.cameraSession == nil)
+        #expect(harness.editor.runBatchCommand(.relaxAll))
+    }
+
     /// Cancel discards the live camera edits: the mesh reloads from the
     /// document payload, nothing journals.
     @Test func transformVerticesCancelDiscardsLiveEdits() throws {
@@ -593,13 +634,138 @@ extension MeshEditCameraToolTests {
         try #require(harness.editor.cameraSession != nil)
         #expect(controller.cameraFeedsArmedTool)
 
-        // Cancelling closes the gate again.
+        // GATE OPEN: an orbit genuinely reaches the session (the ghost
+        // moves). Without this the closed-gate assertion below would be
+        // vacuous — nothing would prove the feed does anything at all.
+        let pinned = harness.editor.cameraSession?.currentView
+        harness.orbitAndFeed(byPoints: SIMD2(50, 20))
+        let fed = try #require(harness.editor.cameraSession?.currentView)
+        #expect(fed != pinned, "an orbit through an OPEN gate moves the session")
+
+        // GATE CLOSED while the session is still armed (this is the state
+        // a pen-down / palm-rejected touch produces): the SAME orbit must
+        // not reach the session.
+        controller.setCameraToolSessionArmed(false)
+        #expect(!controller.cameraFeedsArmedTool)
+        harness.orbitAndFeed(byPoints: SIMD2(50, 20))
+        #expect(
+            harness.editor.cameraSession?.currentView == fed,
+            "a CLOSED gate must not steer the placement"
+        )
+
+        // Cancelling ends the session outright.
+        controller.setCameraToolSessionArmed(true)
         harness.inputModel.cancelCameraToolSession()
         #expect(!controller.cameraFeedsArmedTool)
-
-        // And with the gate closed, orbits no longer reach the session.
-        harness.orbitAndFeed(byPoints: SIMD2(50, 20))
         #expect(harness.editor.cameraSession == nil)
+    }
+
+    /// The `!isPenDown` half of `InputArbiter.cameraFeedsArmedTool`, which
+    /// no test used to cover: a stray demoted touch that moved the camera
+    /// while the pen was down must not steer an armed placement.
+    @Test func theCameraToolGateClosesWhileThePenIsDown() {
+        var arbiter = InputArbiter()
+        arbiter.setCameraToolSessionArmed(true)
+        #expect(arbiter.cameraFeedsArmedTool)
+
+        _ = arbiter.touchBegan(1, kind: .pencil)
+        #expect(arbiter.isPenDown)
+        #expect(!arbiter.cameraFeedsArmedTool, "the pen closes the camera→tool gate")
+
+        _ = arbiter.touchEnded(1)
+        #expect(!arbiter.isPenDown)
+        #expect(arbiter.cameraFeedsArmedTool, "and the gate reopens at pen up")
+    }
+
+    /// REGRESSION: `commitCameraToolSession` used to re-read
+    /// `context.camera` UNCONDITIONALLY, so camera motion the arbiter had
+    /// deliberately withheld from the session (the ghost never moved) was
+    /// still baked into the placement at commit — pasting the patch
+    /// somewhere other than where the user saw it.
+    @Test func commitDoesNotBakeCameraMotionTheGateWithheld() throws {
+        let harness = try makeSeededHarness()
+        harness.selectTool(.patchClone)
+        harness.stroke(verb: .pencil, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(0.3, 1, 0)),
+            harness.screenPoint(of: SIMD3(1.1, 1, 0)),
+        ]))
+        try #require(harness.editor.cameraSession != nil)
+        harness.orbitAndFeed(byPoints: SIMD2(40, 15))
+        let ghostPose = try #require(harness.editor.cameraSession?.currentView)
+
+        // Close the gate, then move the RENDERER camera without feeding
+        // it (exactly what a palm-rejected touch does).
+        harness.inputModel.controller.setCameraToolSessionArmed(false)
+        harness.orbitAndFeed(byPoints: SIMD2(90, 60))
+        #expect(harness.editor.cameraSession?.currentView == ghostPose)
+
+        harness.inputModel.commitCameraToolSession()
+        // The commit placed the patch from the GHOST's pose, not the
+        // stray one: the session's pose is still what the ghost showed.
+        #expect(harness.editor.cameraSession?.currentView == ghostPose)
+        #expect(harness.bundle.journal.depth == 1, "the paste still journals")
+    }
+
+    /// REGRESSION: the snapshot-rebind hook used to be gated on a one-bit
+    /// `expectingOwnCommit` flag, consumed by whatever change arrived
+    /// first. The hook runs on SwiftUI's next update pass, not
+    /// synchronously with the paste, so an EXTERNAL change (undo, autosave
+    /// conflict reload, batch command) that coalesced into the same pass
+    /// was observed as a SINGLE `payload != overlayPayload` transition and
+    /// eaten as "my own commit": the session stayed armed against topology
+    /// it never selected against, and the next paste cloned face ids
+    /// resolved on a different document revision. The session now pins the
+    /// exact bytes its paste wrote, which an external change cannot forge.
+    @Test func externalSnapshotChangeDiscardsTheSessionEvenAfterAnOwnPaste() throws {
+        let harness = try makeSeededHarness()
+        harness.selectTool(.patchClone)
+        harness.stroke(verb: .pencil, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(0.3, 1, 0)),
+            harness.screenPoint(of: SIMD3(1.1, 1, 0)),
+        ]))
+        try #require(harness.editor.cameraSession != nil)
+        harness.orbitAndFeed(byPoints: SIMD2(40, 15))
+        harness.tap(at: SIMD3(2, 1, 0))
+        #expect(harness.bundle.journal.depth == 1)
+        // Repeatable paste: the session survived its OWN commit.
+        let armed = try #require(harness.editor.cameraSession)
+        #expect(harness.inputModel.cameraToolBanner != nil)
+
+        // A snapshot change carrying bytes this session did not write is
+        // external, whether or not an own commit just happened.
+        let foreign = Data("v 0 0 0\nv 1 0 0\nv 1 1 0\nf 1 2 3\n".utf8)
+        #expect(foreign != armed.committedPayload)
+        harness.editor.editMeshSnapshotWillChange(payload: foreign)
+        #expect(harness.editor.cameraSession == nil, "external change must disarm")
+        #expect(harness.inputModel.cameraToolBanner == nil)
+        #expect(harness.bundle.journal.depth == 1, "disarming journals nothing")
+    }
+
+    /// The other half of the same contract: the bytes the paste itself
+    /// wrote DO re-pin (that is what makes Patch Clone repeatable), and the
+    /// token is SINGLE-USE — a second snapshot change carrying the same
+    /// bytes is no longer "mine", so a replayed or duplicated rebind cannot
+    /// keep an invalidated session alive.
+    @Test func ownCommitPayloadIsSingleUse() throws {
+        let harness = try makeSeededHarness()
+        harness.selectTool(.patchClone)
+        harness.stroke(verb: .pencil, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(0.3, 1, 0)),
+            harness.screenPoint(of: SIMD3(1.1, 1, 0)),
+        ]))
+        try #require(harness.editor.cameraSession != nil)
+        harness.orbitAndFeed(byPoints: SIMD2(40, 15))
+        harness.inputModel.commitCameraToolSession()
+        // The real rebind already consumed the token and kept the session.
+        let armed = try #require(harness.editor.cameraSession)
+        #expect(armed.committedPayload == nil, "the token is consumed once")
+
+        let objectID = try #require(harness.editObject).id
+        let committed = try #require(
+            harness.committed.last?.resultingPayload(forObject: objectID)
+        )
+        harness.editor.editMeshSnapshotWillChange(payload: committed)
+        #expect(harness.editor.cameraSession == nil, "a replayed rebind disarms")
     }
 
     /// Selecting a verb persistently (disarming the tool) discards the
@@ -654,5 +820,122 @@ extension MeshEditCameraToolTests {
             )
             #expect(!harness.committed.isEmpty, "\(tool.rawValue) committed nothing")
         }
+    }
+}
+
+// MARK: - Live-mesh ownership (regressions)
+
+extension MeshEditCameraToolTests {
+    /// REGRESSION: `handleCameraToolStroke` cancelled the armed session —
+    /// which synchronously RELOADS the live EditMesh from the document
+    /// payload (`onDiscardLiveEdits` -> `reloadLiveEditMesh`, a brand new
+    /// `Mesh`) — and then armed the replacement from the stroke's PINNED
+    /// context, whose `editMesh` was the discarded handle. The new session
+    /// mutated an orphan: nothing moved on screen (the overlay reads the
+    /// rebound handle) and the eventual commit journaled a payload carrying
+    /// the CANCELLED session's transform on top of the new one.
+    @Test func reselectingAfterAMutatedSessionArmsOnTheReloadedLiveMesh() throws {
+        let harness = try makeSeededHarness()
+        let before = try payloadBefore(harness)
+        let object = try #require(harness.editObject)
+        harness.selectTool(.transformVertices)
+
+        // Arm on the LEFT column and orbit, so the live mesh is mutated.
+        harness.stroke(verb: .pencil, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(0, 0, 0)),
+            harness.screenPoint(of: SIMD3(0, 2, 0)),
+        ]))
+        try #require(harness.editor.cameraSession != nil)
+        for _ in 0..<5 { harness.orbitAndFeed(byPoints: SIMD2(70, 30)) }
+        let orphan = try #require(harness.editor.cameraSession?.liveMesh)
+        // ANTI-VACUITY: the discarded handle really does carry the edit.
+        #expect(simd_distance(try #require(orphan.vertexPosition(3)), SIMD3(0, 2, 0)) > 0.05)
+
+        // A NEW selection stroke (a drag, not a commit tap) replaces the
+        // session on the RIGHT column.
+        harness.stroke(verb: .pencil, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(4, 0, 0)),
+            harness.screenPoint(of: SIMD3(4, 2, 0)),
+        ]))
+        let rebound = try #require(harness.editor.cameraSession?.liveMesh)
+        #expect(rebound !== orphan, "the new session must not hold the discarded handle")
+        #expect(
+            rebound === harness.coordinator.recognizerEditMesh,
+            "it must hold the handle the overlay and recognizer render"
+        )
+        #expect(try #require(rebound.vertexPosition(3)) == SIMD3(0, 2, 0))
+
+        // Drive and commit the replacement: exactly the new column moves,
+        // and the cancelled session's transform is nowhere in the journal.
+        for _ in 0..<5 { harness.orbitAndFeed(byPoints: SIMD2(70, 30)) }
+        harness.inputModel.commitCameraToolSession()
+        #expect(harness.bundle.journal.depth == 1, "one entry, for the new session only")
+        let mesh = try harness.editMesh()
+        #expect(
+            simd_distance(try #require(mesh.vertexPosition(3)), SIMD3(0, 2, 0)) < 1e-4,
+            "the cancelled session's edit must not be journaled"
+        )
+        #expect(simd_distance(try #require(mesh.vertexPosition(5)), SIMD3(4, 2, 0)) > 0.05)
+
+        harness.undo()
+        #expect(harness.bundle.payloads[object.payloadFile] == before)
+    }
+
+    /// REGRESSION: `strokeBegan` opened a brush session while a camera-as-
+    /// manipulator session still held uncommitted live mesh edits. Unlike
+    /// the batch/symmetry paths it consulted no guard, so it pinned the
+    /// PRE-session payload as its transaction's `before` against an
+    /// already-transformed mesh: committing baked the user's unconfirmed
+    /// placement into the brush's entry, and the still-armed session's own
+    /// commit would later revert to those same bytes and wipe the brush
+    /// edit back out.
+    ///
+    /// The way in is a spring-loaded verb HOLD: `verbPressBegan` does not
+    /// disarm the tool (only a persistent tap does), so the session stays
+    /// armed while a brush verb drives the stroke.
+    @Test func aBrushStrokeIsRefusedWhileASessionHoldsUncommittedLiveEdits() throws {
+        let harness = try makeSeededHarness()
+        let before = try payloadBefore(harness)
+        let object = try #require(harness.editObject)
+        harness.selectTool(.transformVertices)
+        harness.stroke(verb: .pencil, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(0, 0, 0)),
+            harness.screenPoint(of: SIMD3(0, 2, 0)),
+        ]))
+        try #require(harness.editor.cameraSession != nil)
+        for _ in 0..<5 { harness.orbitAndFeed(byPoints: SIMD2(70, 30)) }
+        #expect(harness.editor.cameraSessionHoldsLiveMesh)
+
+        var status: String?
+        harness.editor.onCameraToolStatus = { status = $0 }
+        // Spring-loaded Tweak hold: the tool is NOT disarmed.
+        harness.inputModel.verbPressBegan(.tweak)
+        #expect(harness.editor.activeTool == .transformVertices)
+        harness.stroke(verb: .tweak, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(4, 0, 0)),
+            harness.screenPoint(of: SIMD3(3.2, 0.6, 0)),
+        ]))
+
+        #expect(harness.bundle.journal.depth == 0, "nothing journaled")
+        #expect(status == MeshEditController.liveEditsBlockStroke)
+        #expect(harness.bundle.payloads[object.payloadFile] == before)
+        #expect(
+            harness.editor.cameraSession != nil,
+            "the user's in-flight placement is neither committed nor discarded"
+        )
+
+        // ANTI-VACUITY: once the session commits, the very same stroke runs
+        // and journals normally.
+        harness.inputModel.commitCameraToolSession()
+        #expect(harness.editor.cameraSession == nil)
+        let depthAfterCommit = harness.bundle.journal.depth
+        status = nil
+        harness.inputModel.verbPressBegan(.tweak)
+        harness.stroke(verb: .tweak, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(4, 0, 0)),
+            harness.screenPoint(of: SIMD3(3.2, 0.6, 0)),
+        ]))
+        #expect(status != MeshEditController.liveEditsBlockStroke)
+        #expect(harness.bundle.journal.depth == depthAfterCommit + 1)
     }
 }

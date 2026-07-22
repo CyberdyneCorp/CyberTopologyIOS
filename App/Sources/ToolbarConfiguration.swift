@@ -71,6 +71,25 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     case extendBoundary
     case drawStrip
     case transformVertices
+    // Task 4.3 annotations (spec: retopology-tools / "Pins immune to
+    // smoothing", "Loop tags"). Pin Flip is a stroke tool; the two clears
+    // are immediate commands, also hosted by the 4.5 batch panel.
+    case pinFlip
+    case clearPins
+    case clearLoopTags
+    // Task 4.4 symmetry (spec: retopology-tools / "Multi-axis and radial
+    // symmetry"). All three are immediate commands; the axes/origin/radial
+    // count they act under live in the viewport settings popover.
+    case toggleSymmetry
+    case applySymmetry
+    case resymmetrize
+    // Task 4.5 (spec: retopology-tools / "Auto Relax", "EditMesh batch
+    // commands"). `toggleAutoRelax` flips the persisted Auto Relax MODE
+    // (no journal entry of its own — its effect rides inside the next
+    // edit's command); `batchCommands` opens the batch panel, whose
+    // commands each journal one undoable entry.
+    case toggleAutoRelax
+    case batchCommands
 
     /// The verb a toolbar slot holding this action selects; nil for
     /// gesture-grammar actions (drawn, not tapped) and tools.
@@ -82,6 +101,25 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
         case .tweak: .tweak
         case .erase: .erase
         default: nil
+        }
+    }
+
+    /// Immediate commands (tasks 4.3/4.4): actions that RUN when their
+    /// slot is tapped instead of arming a tool or selecting a verb. Each
+    /// journals at most ONE command — an `annotationEdit` for the clears,
+    /// a `setSymmetry` for the symmetry toggle, a `meshEdit` for the two
+    /// symmetry bakes — so one undo restores it. The two task-4.5 entries
+    /// are the deliberate exceptions: `toggleAutoRelax` flips a persisted
+    /// PREFERENCE (nothing to undo — the mode's effect on the document is
+    /// inside the next edit's own entry) and `batchCommands` only presents
+    /// the panel whose commands do the journaling.
+    var isImmediateCommand: Bool {
+        switch self {
+        case .clearPins, .clearLoopTags, .toggleSymmetry, .applySymmetry, .resymmetrize,
+            .toggleAutoRelax, .batchCommands:
+            true
+        default:
+            false
         }
     }
 
@@ -98,6 +136,7 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
         case .extendBoundary: .extendBoundary
         case .drawStrip: .drawStrip
         case .transformVertices: .transformVertices
+        case .pinFlip: .pinFlip
         default: nil
         }
     }

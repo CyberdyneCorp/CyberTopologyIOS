@@ -300,7 +300,8 @@ struct MetalViewportTests {
             overlayOpacity: .constant(0.7), xrayEnabled: .constant(true),
             occlusionBias: .constant(0.004), ghostDebugEnabled: .constant(true),
             resolutionScale: .constant(0.75), leftHandedToolbar: .constant(true),
-            snapHapticsEnabled: .constant(true), strokeDebugHUD: .constant(true)
+            snapHapticsEnabled: .constant(true), strokeDebugHUD: .constant(true),
+            subdivisionPreviewLevel: .constant(2), hasTarget: true
         )
         let host = UIHostingController(rootView: view)
         host.view.frame = CGRect(x: 0, y: 0, width: 400, height: 500)

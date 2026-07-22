@@ -50,6 +50,8 @@ struct ActionToolbarView: View {
                 VerbButton(verb: verb, model: model)
             } else if let tool = action.tool {
                 ToolButton(tool: tool, action: action, model: model)
+            } else if action.isImmediateCommand {
+                CommandButton(action: action, model: model)
             } else {
                 gestureActionButton(action)
             }
@@ -178,6 +180,36 @@ private struct ToolButton: View {
         }
         .accessibilityLabel(action.gallery.title)
         .accessibilityIdentifier("tool-\(action.rawValue)")
+        .accessibilityValue(isActive ? "active" : "inactive")
+    }
+}
+
+/// One immediate-command slot (task 4.3): tap RUNS the command (clear
+/// pins / clear loop tags) instead of arming anything. Each run journals
+/// exactly one `annotationEdit`, so one undo restores it.
+private struct CommandButton: View {
+    let action: EditorAction
+    let model: ViewportInputModel
+
+    var body: some View {
+        // Toggle-style commands (task 4.5's Auto Relax mode) read their
+        // on/off state back so the slot shows it; one-shot commands are
+        // always "inactive".
+        let isActive = model.isCommandActive(action)
+        Button {
+            model.runCommand(action)
+        } label: {
+            Image(systemName: action.gallery.symbol)
+                .font(.system(size: 17, weight: .medium))
+                .frame(width: 40, height: 40)
+                .foregroundStyle(isActive ? Color.accentColor : .primary)
+                .background(
+                    isActive ? Color.accentColor.opacity(0.25) : .clear,
+                    in: RoundedRectangle(cornerRadius: 8)
+                )
+        }
+        .accessibilityLabel(action.gallery.title)
+        .accessibilityIdentifier("command-\(action.rawValue)")
         .accessibilityValue(isActive ? "active" : "inactive")
     }
 }
