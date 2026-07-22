@@ -276,17 +276,20 @@ final class CyberTopologyUITests: XCTestCase {
         // Enable the HUD from the settings popover.
         app.buttons["viewport-settings"].tap()
         let hudToggle = app.switches["stroke-debug-toggle"]
-        XCTAssertTrue(hudToggle.waitForExistence(timeout: 5))
+        XCTAssertTrue(hudToggle.waitForExistence(timeout: 15))
         hudToggle.switches.firstMatch.tap()
         dismissPopover(app)
 
         // Inject the square stroke; the record appears in the HUD.
         let inject = app.buttons["inject-square-stroke"]
-        XCTAssertTrue(inject.waitForExistence(timeout: 5))
+        XCTAssertTrue(inject.waitForExistence(timeout: 15))
         inject.tap()
 
+        // Generous timeout: on cold CI simulators the injected stroke's
+        // capture -> engine recognizer -> HUD publish takes far longer
+        // than on a warm local machine (first observed CI-only failure).
         let record = app.descendants(matching: .any)["stroke-debug-record"].firstMatch
-        XCTAssertTrue(record.waitForExistence(timeout: 5))
+        XCTAssertTrue(record.waitForExistence(timeout: 30))
         XCTAssertFalse(record.label.isEmpty)
 
         // Visual-verification artifact: the HUD with polyline +
@@ -393,7 +396,7 @@ final class CyberTopologyUITests: XCTestCase {
 
         // Draw the quad (fixture replay through the real pipeline).
         let inject = app.buttons["inject-square-stroke"]
-        XCTAssertTrue(inject.waitForExistence(timeout: 5))
+        XCTAssertTrue(inject.waitForExistence(timeout: 15))
         inject.tap()
 
         // The authored EditMesh appears with exactly one quad, journaled.
