@@ -25,9 +25,13 @@ struct RootView: View {
             }
     }
 
+    // The TopoDocument is created INSIDE each task so the non-Sendable
+    // document never crosses an isolation boundary: newer Swift compilers
+    // (Xcode 26.6+) reject capturing it from the enclosing context even
+    // though both sides are MainActor.
     private func open(_ url: URL) {
-        let document = TopoDocument(fileURL: url)
         Task { @MainActor in
+            let document = TopoDocument(fileURL: url)
             guard await document.open() else { return }
             journal.handle(.documentOpened(url))
             openDocument = document
@@ -42,8 +46,8 @@ struct RootView: View {
         if !FileManager.default.fileExists(atPath: url.path) {
             try? TopoDocument.writeNewDocument(at: url)
         }
-        let document = TopoDocument(fileURL: url)
         Task { @MainActor in
+            let document = TopoDocument(fileURL: url)
             guard await document.open() else { return }
             let objects = document.bundle.manifest.objects
             if UITestSupport.seedTargetRequested,
@@ -79,3 +83,14 @@ struct RootView: View {
 
 /// `fullScreenCover(item:)` identity: one editor per document instance.
 extension TopoDocument: Identifiable {}
+
+/// Thread contract (checked by hand, enforced by convention): every app
+/// mutation of `bundle` goes through MainActor paths (perform/undoLast/
+/// redoLast/updateBundle are only called from MainActor UI code), and
+/// UIDocument invokes `contents(forType:)` on the queue that initiated the
+/// save (main) before handing the snapshot to its background writer — the
+/// background queue never touches `bundle` directly. Newer Swift compilers
+/// (Xcode 26.6+) reject even MainActor-to-MainActor Task captures of
+/// non-Sendable classes, so the contract is declared explicitly here.
+/// Revisit if a non-MainActor mutation path is ever added.
+extension TopoDocument: @unchecked Sendable {}
