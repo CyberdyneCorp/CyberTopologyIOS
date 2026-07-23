@@ -39,6 +39,7 @@ public struct StrokeInterpretation: Equatable, Sendable {
     public enum Action: String, Equatable, Sendable, CaseIterable {
         case none
         case createQuad
+        case createTriangle
         case insertLoop
         case tagLoop
         case dissolveEdge
@@ -293,6 +294,7 @@ public enum StrokeInterpreter {
     private static func action(_ raw: CyberStrokeAction) -> StrokeInterpretation.Action {
         switch raw {
         case CYBER_ACTION_CREATE_QUAD: return .createQuad
+        case CYBER_ACTION_CREATE_TRIANGLE: return .createTriangle
         case CYBER_ACTION_INSERT_LOOP: return .insertLoop
         case CYBER_ACTION_TAG_LOOP: return .tagLoop
         case CYBER_ACTION_DISSOLVE_EDGE: return .dissolveEdge

@@ -25,12 +25,32 @@ against synthesized strokes has already failed twice.
       resolves and Swift Testing flags it as unexpectedly passing. This is
       the acceptance criterion for task 3.
 
-## 2. Cut the grammar to three gestures
+## 2. Curate the grammar
 
-- [ ] 2.1 Engine: restrict `interpretStroke`'s candidate set to
-      `CreateQuad`, `CreateTriangle`, `DeleteFaces`. Leave `classifyShape`'s
-      shape enum intact for now (the tools still use shapes) but stop
-      emitting candidates for removed actions.
+Revised target (device feedback): the kept GESTURES are **CreateQuad,
+CreateTriangle, DeleteFaces (X), and InsertLoop (line crossing a face ring)**
+— not the proposal's original strict three. Everything else (tagLoop,
+mergeVertices, toggleVisibility, dissolveEdge, rotateEdge, hideRegion,
+createGrid) leaves the stroke path and stays as an armed tool.
+
+- [x] 2.1a **CreateTriangle added** (engine patch 0024): a closed stroke
+      whose corner estimate is a non-degenerate THREE-corner ring resolves to
+      `createTriangle`; four stays `createQuad`. Detection is conservative —
+      `polygonCorners` rejects near-collinear "triangles" (area/perimeter²),
+      so a flat lasso started at a tip is NOT a triangle, and the rescue path
+      (open strokes) always estimates a quad, since an open stroke's ends
+      make the seam-corner test meaningless. Full stack wired: engine enum,
+      `CYBER_ACTION_CREATE_TRIANGLE` (appended, values stable), Swift
+      `Action.createTriangle`, welded apply + alternative-swap, chip label.
+      Corner-to-corner and mid-edge triangles both detected; validated by
+      `closedTriangleResolvesToCreateTriangle` with the square/lasso/device
+      corpus held unchanged. On-device corpus validation of real triangle
+      strokes is the next step, mirroring the quad flow.
+- [ ] 2.1b Engine: restrict `interpretStroke` to the four kept gestures —
+      stop emitting tagLoop/mergeVertices/toggleVisibility/dissolveEdge/
+      rotateEdge/hideRegion/createGrid. Reorder so the quad/triangle
+      detection runs before grid/scribble (now that they no longer compete),
+      which also fixes the wigglier U that currently trips grid detection.
 - [ ] 2.2 App: remove the removed actions from `ActionCatalog`'s GESTURE
       entries, keeping their TOOL entries. Gallery help text must stop
       describing them as gestures.

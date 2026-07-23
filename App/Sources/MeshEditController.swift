@@ -667,8 +667,9 @@ final class MeshEditController {
         // payload to rebuild alternatives from — its chip is informational).
         if let object = context.editObject, let payload = context.editPayload {
             var corners: [SIMD3<Float>]?
-            if interpretation.candidates.contains(where: { $0.action == .createQuad }),
-                interpretation.quadCorners.count == 4 {
+            if interpretation.candidates.contains(where: {
+                $0.action == .createQuad || $0.action == .createTriangle
+            }), (3...4).contains(interpretation.quadCorners.count) {
                 corners = unprojectCorners(interpretation.quadCorners, in: context)
             }
             lastApplied = AppliedPencilStroke(
@@ -693,15 +694,20 @@ final class MeshEditController {
         samples: [StrokeSample], context: Context
     ) {
         switch best.action {
-        case .createQuad:
-            guard interpretation.quadCorners.count == 4 else { return }
+        case .createQuad, .createTriangle:
+            // Quad (4 corners) and triangle (3) share one welded create path;
+            // createWeldedFace/buildFace accept either ring size.
+            let sides = best.action == .createTriangle ? 3 : 4
+            guard interpretation.quadCorners.count == sides else { return }
+            let verb = best.action == .createTriangle
+                ? "pencil.createTriangle" : "pencil.createQuad"
             let mergeRadius = context.sceneRadius * Self.mergeSnapRadiusFraction
             applyCreate(
-                verb: "pencil.createQuad",
+                verb: verb,
                 screenPoints: interpretation.quadCorners,
                 context: context
             ) { mesh, corners, snapper in
-                // Weld onto existing topology: a quad drawn against an
+                // Weld onto existing topology: a face drawn against an
                 // existing edge shares it (task 4) instead of floating free.
                 try mesh.createWeldedFace(
                     at: corners, mergeRadius: mergeRadius, snapping: snapper
@@ -865,6 +871,8 @@ final class MeshEditController {
             return elementIDs(of: candidate, kind: .vertex).count == 2
         case .createQuad:
             return stroke.worldCorners?.count == 4
+        case .createTriangle:
+            return stroke.worldCorners?.count == 3
         case .none, .toggleVisibility, .tweakVertex, .createGrid:
             // Not swappable: no journal-entry equivalent (verb switch /
             // direction-dependent visibility) or no captured lattice.
@@ -936,17 +944,19 @@ final class MeshEditController {
             guard let edge = elementIDs(of: candidate, kind: .edge).first else { return nil }
             try mesh.rotateEdge(edge)
             verb = "pencil.rotateEdge"
-        case .createQuad:
-            guard let corners = stroke.worldCorners, corners.count == 4 else { return nil }
-            // Weld like the live gesture path, so a swap-to-quad shares
-            // edges identically (task 4).
+        case .createQuad, .createTriangle:
+            let sides = candidate.action == .createTriangle ? 3 : 4
+            guard let corners = stroke.worldCorners, corners.count == sides else { return nil }
+            // Weld like the live gesture path, so a swap shares edges
+            // identically (task 4).
             let context = contextProvider?()
             try mesh.createWeldedFace(
                 at: corners,
                 mergeRadius: (context?.sceneRadius ?? 1) * Self.mergeSnapRadiusFraction,
                 snapping: context?.snapper
             )
-            verb = "pencil.createQuad"
+            verb = candidate.action == .createTriangle
+                ? "pencil.createTriangle" : "pencil.createQuad"
         default:
             return nil
         }

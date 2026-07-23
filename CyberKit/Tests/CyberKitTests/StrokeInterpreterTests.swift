@@ -146,6 +146,34 @@ struct StrokeInterpreterTests {
         #expect(first == second)
     }
 
+    // MARK: - Triangle vs quad (change simplify-gesture-grammar, task 2/user set)
+
+    /// A closed three-corner stroke resolves to `createTriangle` with three
+    /// corners, while the four-corner square stays `createQuad`. Triangle
+    /// detection is conservative — three corners plus the seam count to
+    /// exactly three — so a quad is never misread as a triangle.
+    @Test("a three-corner closed stroke resolves to createTriangle")
+    func closedTriangleResolvesToCreateTriangle() throws {
+        let triangle = StrokeGestureCorpus.fixture(
+            name: "triangle_probe",
+            expectedOutcome: "closedLoop:createTriangle",
+            points: StrokeGestureCorpus.path(through: [
+                .init(0.50, 0.28), .init(0.71, 0.69), .init(0.29, 0.69),
+                .init(0.50, 0.29),
+            ]),
+            type: .pencil
+        )
+        let record = try interpret(triangle)
+        #expect(record.shape == .closedLoop)
+        #expect(record.best?.action == .createTriangle)
+        #expect(record.quadCorners.count == 3)
+
+        // The square is unmistakably four-sided and must not regress.
+        let square = try interpret(StrokeGestureCorpus.square())
+        #expect(square.best?.action == .createQuad)
+        #expect(square.quadCorners.count == 4)
+    }
+
     @Test("cancelled strokes are never interpreted")
     func cancelledStrokeProducesNoInterpretation() {
         let recognizer = StrokeRecognizerConsumer()

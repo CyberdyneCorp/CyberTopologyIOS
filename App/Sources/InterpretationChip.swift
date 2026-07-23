@@ -115,6 +115,7 @@ struct InterpretationChipState: Equatable {
         switch action {
         case .none: return "No match"
         case .createQuad: return "Quad"
+        case .createTriangle: return "Triangle"
         case .createGrid: return "Quad grid"
         case .insertLoop: return "Insert loop"
         case .tagLoop: return "Tag loop"
