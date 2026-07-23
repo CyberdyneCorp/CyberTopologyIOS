@@ -243,8 +243,16 @@ struct DocumentEditorView: View {
                     strokeDebugHUD: $strokeDebugHUD,
                     onRecordStroke: {
                         #if DEBUG
+                            // Dismiss the popover first, THEN present the
+                            // recorder — presenting a sheet while the
+                            // popover is still dismissing is dropped by
+                            // UIKit, leaving the button apparently dead.
+                            // Deferring to the next runloop lets the
+                            // dismissal commit before the sheet presents.
                             showingViewportSettings = false
-                            strokeRecorderPresented = true
+                            DispatchQueue.main.async {
+                                strokeRecorderPresented = true
+                            }
                         #endif
                     },
                     subdivisionPreviewLevel: $subdivisionPreviewLevel,

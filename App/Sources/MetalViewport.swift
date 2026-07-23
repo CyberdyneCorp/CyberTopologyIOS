@@ -1248,6 +1248,18 @@ struct ViewportSettingsView: View {
     var onSymmetryChange: (SymmetrySettings) -> Void = { _ in }
 
     var body: some View {
+        // Scrollable: the popover sizes to its content, and the full
+        // settings column is taller than the screen on smaller iPads —
+        // without this the bottom sections (Performance, and the whole
+        // DEBUG block with the stroke recorder) are clipped off with no way
+        // to reach them.
+        ScrollView {
+            content
+        }
+        .frame(minWidth: 300)
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Camera")
                 .font(.headline)
@@ -1363,6 +1375,15 @@ struct ViewportSettingsView: View {
                     .font(.headline)
                 Toggle("Ghost preview (DEBUG)", isOn: $ghostDebugEnabled)
                     .accessibilityIdentifier("ghost-debug-toggle")
+                Text(
+                    """
+                    Development aid: renders the EditMesh as ghost geometry \
+                    until the Weave solver (phase 5) produces real proposals.
+                    """
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: 300, alignment: .leading)
                 // Recognizer HUD (task 3.2): last stroke polyline +
                 // interpretation record over the viewport.
                 Toggle("Stroke recognizer HUD (DEBUG)", isOn: $strokeDebugHUD)
@@ -1374,10 +1395,8 @@ struct ViewportSettingsView: View {
                 Button("Record last stroke (DEBUG)…") { onRecordStroke() }
                     .accessibilityIdentifier("stroke-record-button")
                 Text(
-                    """
-                    Development aid: renders the EditMesh as ghost geometry \
-                    until the Weave solver (phase 5) produces real proposals.
-                    """
+                    "Saves the last stroke as a corpus fixture "
+                        + "(Files ▸ CyberTopology ▸ RecordedStrokes)."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1385,7 +1404,6 @@ struct ViewportSettingsView: View {
             #endif
         }
         .padding()
-        .frame(minWidth: 300)
     }
 
     /// Honest caption for the preview control (task 4.6). The engine has

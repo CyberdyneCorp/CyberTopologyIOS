@@ -340,6 +340,44 @@ final class CyberTopologyUITests: XCTestCase {
         }
     }
 
+    /// The DEBUG stroke recorder (change simplify-gesture-grammar, task 1.1)
+    /// must be REACHABLE from the settings popover, not merely present in
+    /// the accessibility tree. It sits at the very bottom of a settings
+    /// column that is taller than the screen on smaller iPads; before the
+    /// popover was made scrollable it was clipped off with no way to tap it
+    /// (reported: "where is Record last stroke?"). Existence assertions do
+    /// not catch this — a clipped element still `exists` — so this test
+    /// TAPS it and confirms the recorder actually opens.
+    @MainActor
+    func testStrokeRecorderIsReachableFromSettings() throws {
+        try skipIfInteractionUnsupported()
+        let app = launch(arguments: ["-UITestResetState", "-UITestOpenDocument"])
+
+        let settings = app.buttons["viewport-settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 15))
+        settings.tap()
+
+        let record = app.buttons["stroke-record-button"]
+        XCTAssertTrue(record.waitForExistence(timeout: 15))
+
+        // Scroll it into view if the popover is taller than the screen.
+        // Whether or not scrolling is needed, the button must end up
+        // hittable — that is the property the clipping bug violated.
+        var swipes = 0
+        while !record.isHittable && swipes < 8 {
+            app.swipeUp()
+            swipes += 1
+        }
+        XCTAssertTrue(record.isHittable, "Record button never became tappable")
+
+        record.tap()
+
+        // No stroke was drawn, so the recorder opens on its empty state —
+        // its presence proves the button reached its action.
+        let empty = app.staticTexts["stroke-export-empty"]
+        XCTAssertTrue(empty.waitForExistence(timeout: 10))
+    }
+
     /// Hold-chord spring-loaded verbs (task 3.1, spec: pencil-interaction /
     /// "Hold-chord spring-loaded modifiers"): a quick tap selects a verb
     /// persistently; holding another verb switches only for the duration of
