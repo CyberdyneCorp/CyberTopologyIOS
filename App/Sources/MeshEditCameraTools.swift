@@ -654,6 +654,10 @@ extension MeshEditController {
                 }
             } else {
                 journalOrDiscard(verb: "tool.extendBoundary.grid") {
+                    // The Auto Relax neighbourhood is the seam the rows are
+                    // appended onto plus every new outer chain (task 4.5a) —
+                    // "append along a strip", so the stacked rows even out.
+                    var relaxAround = plan.chain.compactMap { mesh.vertexPosition($0) }
                     var chain = plan.chain
                     for offset in plan.commitOffsets {
                         let extended = try mesh.extendBoundary(
@@ -661,7 +665,11 @@ extension MeshEditController {
                             rings: 1, snapping: context.snapper
                         )
                         chain = extended.outerChain
+                        relaxAround += chain.compactMap { mesh.vertexPosition($0) }
                     }
+                    try runAutoRelaxIfEnabled(
+                        mesh: mesh, context: context, around: relaxAround
+                    )
                     onLiveEdit?()
                     return try transaction.command(verb: "tool.extendBoundary.grid")
                 }
@@ -810,6 +818,10 @@ extension MeshEditController {
             try mesh.weldNewVerticesOntoExisting(
                 created, mergeRadius: min(pickRadius, width * Self.stripWeldWidthFraction)
             )
+            // Auto Relax (task 4.5a): Draw Strip is the spec's canonical
+            // "append along a strip" case — even out the quads over the strip
+            // path, inside the same transaction so it is one undo.
+            try runAutoRelaxIfEnabled(mesh: mesh, context: context, around: stations)
             onLiveEdit?()
             return try transaction.command(verb: "tool.drawStrip")
         }

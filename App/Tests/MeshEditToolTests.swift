@@ -377,6 +377,37 @@ extension MeshEditToolTests {
         #expect(try harness.editMesh().vertexCount == 6)
     }
 
+    /// Task 4.5a: the Merge Pair TOOL runs Auto Relax when the mode is on,
+    /// INSIDE its one journal entry — the collapse is exactly the local
+    /// unevenness the pass exists to smooth. Same stroke with the mode off
+    /// leaves the neighbours where they were.
+    @Test func mergePairToolRunsAutoRelaxInsideItsOneEntry() throws {
+        // Baseline: merge with Auto Relax OFF. Set the controller flag
+        // DIRECTLY, not through the model's `setAutoRelax`, so this test never
+        // writes the shared persisted preference (which sibling tests read at
+        // init) — each harness owns its own controller.
+        let off = try makeSeededHarness()
+        off.coordinator.meshEditor.autoRelaxEnabled = false
+        off.selectTool(.mergePair)
+        off.coordinator.inputModel.inject(fixture: StrokeGestureCorpus.toolMergePairLine())
+        let offPositions = try off.editMesh().positions()
+
+        // Same seed, same stroke, Auto Relax ON.
+        let on = try makeSeededHarness()
+        on.coordinator.meshEditor.autoRelaxEnabled = true
+        on.selectTool(.mergePair)
+        on.coordinator.inputModel.inject(fixture: StrokeGestureCorpus.toolMergePairLine())
+
+        // The relax rode inside the merge's transaction — still ONE entry.
+        #expect(on.bundle.journal.depth == 1)
+        #expect(try committedMeshEditVerb(on) == "tool.mergePair.vertices")
+        // ...and it redistributed geometry the OFF run left in place.
+        #expect(
+            try on.editMesh().positions() != offPositions,
+            "Auto Relax redistributed the neighbours after the merge"
+        )
+    }
+
     /// A stroke across the shared edge of two triangles merges them into
     /// one quad (the MergeP face-pair mode).
     @Test func mergePairAcrossTrianglePairDissolvesIntoQuad() throws {

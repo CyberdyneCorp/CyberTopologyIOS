@@ -309,7 +309,16 @@ extension MeshEditController {
         if let from = mesh.nearestVertex(to: hitStart, maxDistance: pickRadius),
             let to = mesh.nearestVertex(to: hitEnd, maxDistance: pickRadius),
             from.vertex != to.vertex {
-            applyElementEdit(verb: "tool.mergePair.vertices", context: context) { mesh in
+            // Auto Relax (task 4.5a) evens the quads around the collapsed pair
+            // — the merge is exactly the kind of local unevenness the pass
+            // exists to smooth. Neighbourhood = the two merged vertices.
+            let neighbourhood = [from.vertex, to.vertex].compactMap {
+                mesh.vertexPosition($0)
+            }
+            applyElementEdit(
+                verb: "tool.mergePair.vertices", context: context,
+                autoRelaxAround: neighbourhood
+            ) { mesh in
                 try mesh.mergeVertices(
                     keep: to.vertex, remove: from.vertex, atMidpoint: true
                 )
@@ -325,7 +334,15 @@ extension MeshEditController {
         else { return }
         let adjacent = mesh.edgeFaces(of: edge.edge)
         guard adjacent.count == 2, adjacent.allSatisfy({ $0.sides == 3 }) else { return }
-        applyElementEdit(verb: "tool.mergePair.quad", context: context) { mesh in
+        // Auto Relax (task 4.5a) around the dissolved edge, so the two merged
+        // triangles' neighbours redistribute into an even quad.
+        let neighbourhood = mesh.edgeEndpoints(of: edge.edge).map { ends in
+            [ends.0, ends.1].compactMap { mesh.vertexPosition($0) }
+        } ?? []
+        applyElementEdit(
+            verb: "tool.mergePair.quad", context: context,
+            autoRelaxAround: neighbourhood
+        ) { mesh in
             try mesh.dissolveEdges([edge.edge])
         }
     }
