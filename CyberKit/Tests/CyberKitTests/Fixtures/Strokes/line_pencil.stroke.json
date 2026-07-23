@@ -1,5 +1,5 @@
 {
-  "expectedOutcome" : "line:toggleVisibility",
+  "expectedOutcome" : "line:none",
   "name" : "line_pencil",
   "samples" : [
     {

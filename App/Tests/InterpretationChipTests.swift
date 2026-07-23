@@ -8,14 +8,19 @@ import Testing
 /// stroke resolution, dismissed the moment the next stroke begins, and
 /// auto-dismissed with a stale-timer-proof generation token.
 struct InterpretationChipStateTests {
+    // Under the curated grammar the only genuinely ambiguous stroke carries
+    // kept actions only: a closed outline whose corner estimate sits between
+    // four and three corners ranks createQuad over createTriangle. (The state
+    // machine itself is action-agnostic — this fixture just keeps the two-
+    // candidate path exercised without referencing a retired gesture.)
     private let ambiguous = StrokeInterpretation(
-        shape: .line, shapeConfidence: 0.99, context: .edge,
+        shape: .closedLoop, shapeConfidence: 0.99, context: .face,
         candidates: [
-            .init(action: .insertLoop, confidence: 0.74, elements: [
-                .init(kind: .edge, id: 1), .init(kind: .edge, id: 5),
+            .init(action: .createQuad, confidence: 0.74, elements: [
+                .init(kind: .face, id: 1),
             ]),
-            .init(action: .tagLoop, confidence: 0.35, elements: [
-                .init(kind: .edge, id: 3),
+            .init(action: .createTriangle, confidence: 0.35, elements: [
+                .init(kind: .face, id: 1),
             ]),
         ]
     )
@@ -28,12 +33,12 @@ struct InterpretationChipStateTests {
             interpretation: ambiguous, appliedIndex: 0, alternatives: [1]
         )
         let chip = machine.chip
-        #expect(chip?.title == "Insert loop")
+        #expect(chip?.title == "Quad")
         #expect(chip?.detail == "74%")
         #expect(chip?.alternatives.count == 1)
         #expect(chip?.alternatives.first?.id == 1)
-        #expect(chip?.alternatives.first?.action == .tagLoop)
-        #expect(chip?.alternatives.first?.label == "Tag loop")
+        #expect(chip?.alternatives.first?.action == .createTriangle)
+        #expect(chip?.alternatives.first?.label == "Triangle")
     }
 
     @Test func replaceAfterSwapShowsTheSwappedResultWithSwapBack() {
@@ -49,9 +54,9 @@ struct InterpretationChipStateTests {
             interpretation: ambiguous, appliedIndex: 1, alternatives: [0]
         )
         let chip = machine.chip
-        #expect(chip?.title == "Tag loop")
+        #expect(chip?.title == "Triangle")
         #expect(chip?.detail == "35%")
-        #expect(chip?.alternatives.first?.action == .insertLoop)
+        #expect(chip?.alternatives.first?.action == .createQuad)
         #expect(chip?.generation != first)
     }
 
@@ -64,14 +69,15 @@ struct InterpretationChipStateTests {
         #expect(machine.chip?.detail == nil)
         #expect(machine.chip?.alternatives.isEmpty == true)
 
-        // Recognized but nothing applied (e.g. a non-vertical visibility
-        // line): the chip says what matched and that nothing changed.
+        // Recognized but nothing applied (e.g. a line over empty surface with
+        // no quad ring to cut): the chip says what matched and that nothing
+        // changed.
         let inert = StrokeInterpretation(
             shape: .line, shapeConfidence: 0.9, context: .emptySurface,
-            candidates: [.init(action: .toggleVisibility, confidence: 0.5, elements: [])]
+            candidates: [.init(action: .insertLoop, confidence: 0.5, elements: [])]
         )
         machine.strokeResolved(interpretation: inert, appliedIndex: nil, alternatives: [])
-        #expect(machine.chip?.title == "Visibility — no change")
+        #expect(machine.chip?.title == "Insert loop — no change")
         #expect(machine.chip?.detail == "50%")
 
         // A best-of-nothing record reads as unrecognized.

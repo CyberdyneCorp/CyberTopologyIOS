@@ -1,0 +1,111 @@
+diff --git a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+index e259568..c1b4780 100644
+--- a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
++++ b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+@@ -1202,54 +1202,20 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
+             break;
+         }
+         case StrokeShape::Line: {
++            // A line CROSSING a face ring inserts a loop (the kept LoopCut
++            // gesture); the whole quad ring the line crosses is the target
++            // (loops.hpp), the first ring edge seeding cyber_retopo_insert_loop.
++            // mergeVertices, tagLoop and toggleVisibility are tools now, not
++            // stroke gestures, so a line that merely runs along an edge or
++            // over empty space resolves to nothing.
+             if (proj != nullptr) {
+-                const std::optional<VertexId> v0 =
+-                    proj->nearestVertex(stroke.front(), contextParams.vertexRadius);
+-                const std::optional<VertexId> v1 =
+-                    proj->nearestVertex(stroke.back(), contextParams.vertexRadius);
+-                if (v0 && v1 && !(*v0 == *v1)) {
+-                    addCandidate(out, InterpretedAction::MergeVertices, 0.9f * shapeConf,
+-                                 {{ElementRef::Kind::Vertex, v0->value},
+-                                  {ElementRef::Kind::Vertex, v1->value}});
+-                }
+-                // Loop insert vs loop tag disambiguation (spec scenario): a
+-                // stroke running ALONG the loop tags it — even when it
+-                // grazes transverse edges near vertices — while a stroke
+-                // CROSSING edges inserts a full loop around the quad ring.
+-                // Elements carry the complete walks (loops.hpp): the whole
+-                // edge loop for a tag, the whole ring for an insert (the
+-                // first ring edge seeds cyber_retopo_insert_loop).
+                 const std::vector<EdgeId> crossed = proj->edgesCrossing(stroke);
+-                const float along =
+-                    proj->fractionAlongEdges(stroke, contextParams.edgeRadius);
+-                const std::vector<EdgeId> loop =
+-                    probeEdge ? edgeLoopFrom(proj->mesh(), *probeEdge)
+-                              : std::vector<EdgeId>{};
+-                if (along >= 0.6f && probeEdge) {
+-                    addCandidate(out, InterpretedAction::TagLoop,
+-                                 0.8f * along * shapeConf, edgeRefs(loop));
+-                    if (!crossed.empty()) {
+-                        addCandidate(
+-                            out, InterpretedAction::InsertLoop, 0.4f * shapeConf,
+-                            edgeRefs(quadRingFromEdge(proj->mesh(), crossed.front()).edges));
+-                    }
+-                } else if (!crossed.empty()) {
++                if (!crossed.empty()) {
+                     addCandidate(
+                         out, InterpretedAction::InsertLoop, 0.75f * shapeConf,
+                         edgeRefs(quadRingFromEdge(proj->mesh(), crossed.front()).edges));
+-                    if (probeEdge) {
+-                        addCandidate(out, InterpretedAction::TagLoop, 0.35f * shapeConf,
+-                                     edgeRefs(loop));
+-                    }
+                 }
+             }
+-            if (out.candidates.empty() && out.context == UnderStroke::EmptySurface) {
+-                // A straight line IN EMPTY SPACE touching nothing is the
+-                // visibility gesture (invert / show-all, resolved by
+-                // direction in the shell). A line over mesh elements that
+-                // matched no rule stays None — it must not hide geometry.
+-                addCandidate(out, InterpretedAction::ToggleVisibility, 0.5f * shapeConf);
+-            }
+             break;
+         }
+         case StrokeShape::ClosedLoop: {
+@@ -1272,19 +1238,12 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
+             break;
+         }
+         case StrokeShape::Circle: {
+-            // A round closed stroke is a (round-ish) quad draw. RotateEdge
+-            // stays for a small circle scoped to one edge; hideRegion is no
+-            // longer a stroke gesture, so a large enclosing circle just
+-            // creates a quad rather than hiding what it encloses.
+-            if (probeEdge && out.context != UnderStroke::EmptySurface) {
+-                addCandidate(out, InterpretedAction::RotateEdge, 0.85f * shapeConf,
+-                             {{ElementRef::Kind::Edge, probeEdge->value}});
+-                addCandidate(out, InterpretedAction::CreateQuad, 0.3f * shapeConf);
+-            } else if (out.context == UnderStroke::EmptySurface) {
+-                addCandidate(out, InterpretedAction::CreateQuad, 0.6f * shapeConf);
+-            } else {
+-                addCandidate(out, InterpretedAction::CreateQuad, 0.4f * shapeConf);
+-            }
++            // A round closed stroke is a (round-ish) quad draw. rotateEdge and
++            // hideRegion are tools now, not stroke gestures — a circle only
++            // ever creates a quad.
++            addCandidate(
++                out, InterpretedAction::CreateQuad,
++                (out.context == UnderStroke::EmptySurface ? 0.6f : 0.4f) * shapeConf);
+             break;
+         }
+         case StrokeShape::Scribble: {
+@@ -1345,14 +1304,10 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
+             // here, and it resolves to nothing rather than hiding faces.
+             break;
+         }
+-        case StrokeShape::Grid: {
+-            // One-stroke grid → block of quads. Strongest over empty
+-            // surface; still offered over existing topology, weaker.
+-            addCandidate(
+-                out, InterpretedAction::CreateGrid,
+-                (out.context == UnderStroke::EmptySurface ? 0.9f : 0.5f) * shapeConf);
+-            break;
+-        }
++        case StrokeShape::Grid:
++            // createGrid is retired from the stroke grammar — a one-stroke
++            // grid is a tool now, not a Pencil gesture. The Grid SHAPE still
++            // classifies (classifyShape is unchanged) but resolves to nothing.
+         case StrokeShape::Unknown:
+             break;
+     }

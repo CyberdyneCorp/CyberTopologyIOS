@@ -499,18 +499,17 @@ final class CyberTopologyUITests: XCTestCase {
         XCTAssertTrue(quadRow.waitForExistence(timeout: 5))
     }
 
-    /// Task 3.5 end to end (spec: pencil-interaction / "Post-stroke
-    /// interpretation chip" + "One-tap misrecognition fix"), via fixture
+    /// Task 3.5 / simplify-gesture-grammar end to end (spec: pencil-
+    /// interaction / "Post-stroke interpretation chip"), via fixture
     /// injection (XCUITest cannot synthesize Pencil touches, and fingers
-    /// never author — task 3.9): the vertical stroke along the seeded strip's middle edge
-    /// is genuinely ambiguous — it applies as TAG LOOP and the chip offers
-    /// the INSERT LOOP alternative (the spec's exact misrecognition pair).
-    /// ONE tap swaps the applied result in place (the tag annotation
-    /// reverts, the loop insert splits the mesh), and the undo gestures
-    /// prove the journal holds exactly ONE entry for the stroke after the
-    /// swap — no extra undo step.
+    /// never author — task 3.9): under the curated grammar a line drawn
+    /// across the seeded strip's ring resolves DIRECTLY to insert loop —
+    /// there is no longer a tag-vs-insert misread to swap. The chip states
+    /// "Insert loop", the strip splits in the same stroke, no alternative is
+    /// offered, and the undo gestures prove the whole insert is one journal
+    /// entry.
     @MainActor
-    func testInterpretationChipSwapsAlternativeInPlace() throws {
+    func testRingStrokeInsertsLoopDirectlyWithoutAmbiguity() throws {
         try skipIfInteractionUnsupported()
         let app = launch(arguments: [
             "-UITestResetState", "-UITestOpenDocument", "-UITestSeedEditMeshStrip",
@@ -524,31 +523,17 @@ final class CyberTopologyUITests: XCTestCase {
         XCTAssertTrue(row.label.contains("6 v"), "row: \(row.label)")
         XCTAssertTrue(row.label.contains("2 f"), "row: \(row.label)")
 
-        // The ambiguous stroke (fixture replay through the real pipeline).
+        // The ring stroke (fixture replay through the real pipeline).
         let inject = app.buttons["inject-ring-stroke"]
         XCTAssertTrue(inject.waitForExistence(timeout: 5))
         inject.tap()
 
-        // Applied: tag loop — an annotation, so the mesh counts are
-        // untouched; the chip states it and offers the insert alternative.
+        // Applied directly: insert loop splits the strip (one or both quads
+        // depending on which crossed edge seeded the walk under the live
+        // camera framing; the invariant is the SPLIT).
         let title = app.staticTexts["interpretation-chip-title"]
         XCTAssertTrue(title.waitForExistence(timeout: 5))
-        XCTAssertEqual(title.label, "Tag loop")
-        XCTAssertTrue(row.label.contains("2 f"), "row: \(row.label)")
-
-        // Chip screenshot for the visual record.
-        let shot = XCTAttachment(screenshot: app.screenshot())
-        shot.name = "interpretation-chip"
-        shot.lifetime = .keepAlways
-        add(shot)
-
-        // ONE TAP: the applied result is REPLACED (not stacked) — the tag
-        // reverts and the recognizer's ranked ring splits the strip (one
-        // or both quads depending on which crossed edge seeded the walk
-        // under the live camera framing; the invariant is the SPLIT).
-        let alternative = app.buttons["chip-alternative-insertLoop"]
-        XCTAssertTrue(alternative.waitForExistence(timeout: 5))
-        alternative.tap()
+        XCTAssertEqual(title.label, "Insert loop")
         XCTAssertTrue(
             waitForLabel(of: row) { !$0.contains("2 f") }, "row: \(row.label)"
         )
@@ -556,14 +541,20 @@ final class CyberTopologyUITests: XCTestCase {
             row.label.contains("3 f") || row.label.contains("4 f"),
             "row: \(row.label)"
         )
-        XCTAssertEqual(title.label, "Insert loop")
-        // The swapped chip offers the original reading back.
-        XCTAssertTrue(app.buttons["chip-alternative-tagLoop"].exists)
+
+        // Chip screenshot for the visual record.
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "interpretation-chip"
+        shot.lifetime = .keepAlways
+        add(shot)
+
+        // The curated grammar leaves the stroke unambiguous — no tag
+        // alternative to swap to.
+        XCTAssertFalse(app.buttons["chip-alternative-tagLoop"].exists)
 
         // Journal invariant via the undo gesture: the FIRST undo reverts
         // the whole stroke (back to the seeded strip counts, seed import
-        // remains), the SECOND removes the seeded object — the swap added
-        // no extra journal entry.
+        // remains), the SECOND removes the seeded object.
         viewport.tap(withNumberOfTaps: 1, numberOfTouches: 3)
         XCTAssertTrue(waitForLabel(of: row) { $0.contains("2 f") }, "row: \(row.label)")
         XCTAssertTrue(row.label.contains("6 v"), "row: \(row.label)")

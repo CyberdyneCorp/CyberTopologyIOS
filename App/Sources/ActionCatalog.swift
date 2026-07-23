@@ -37,9 +37,10 @@ extension EditorAction {
                 title: "Pencil",
                 symbol: "pencil",
                 gesture: "Verb — tap to select, hold to spring-load",
-                notes: "The authoring verb: draw quads, grids, loops and "
-                    + "every other gesture directly on the Target surface. "
-                    + "New geometry snaps continuously onto the Target.",
+                notes: "The authoring verb: draw the curated Pencil grammar — "
+                    + "quads, triangles, loop cuts and delete-X — directly on "
+                    + "the Target surface. New geometry snaps continuously "
+                    + "onto the Target.",
                 demoFrames: ["pencil", "pencil.line", "square.dashed", "square"]
             )
         case .relax:
@@ -107,10 +108,12 @@ extension EditorAction {
             GalleryEntry(
                 title: "Grid stroke",
                 symbol: "square.grid.3x3",
-                gesture: "Pencil verb — serpentine stroke over the surface",
-                notes: "One back-and-forth lattice stroke drops a whole "
-                    + "welded block of quads in a single journal entry — "
-                    + "the fastest way to cover open surface.",
+                gesture: "Retired gesture — a dedicated grid tool is planned",
+                notes: "Dropping a whole welded block of quads in one stroke "
+                    + "left the curated Pencil grammar (simplify-gesture-"
+                    + "grammar): a serpentine stroke was too easily confused "
+                    + "with a quad or a scribble. The capability returns as an "
+                    + "armed tool; until then, build quads individually.",
                 demoFrames: [
                     "scribble", "square.grid.3x2", "square.grid.3x3.fill",
                 ]
@@ -121,9 +124,9 @@ extension EditorAction {
                 symbol: "rectangle.split.3x1",
                 gesture: "Pencil verb — line ACROSS a quad ring",
                 notes: "A stroke across a ring of quads splits every quad "
-                    + "in the ring, inserting a full edge loop. If the "
-                    + "recognizer reads a tag instead, the post-stroke chip "
-                    + "offers the swap.",
+                    + "in the ring, inserting a full edge loop. A line is now "
+                    + "always read as a loop insert (the curated grammar "
+                    + "dropped line-along tagging).",
                 demoFrames: [
                     "rectangle.portrait", "rectangle.split.2x1",
                     "rectangle.split.3x1",
@@ -133,11 +136,12 @@ extension EditorAction {
             GalleryEntry(
                 title: "Tag loop",
                 symbol: "point.forward.to.point.capsulepath",
-                gesture: "Pencil verb — line ALONG an edge loop",
-                notes: "Marks the whole loop (shown highlighted) for the "
-                    + "Weave solver to respect as a flow constraint. "
-                    + "Tagging is an annotation — the mesh itself is "
-                    + "untouched.",
+                gesture: "Retired gesture — a loop-tag tool is planned",
+                notes: "Marking a loop for the Weave solver left the curated "
+                    + "Pencil grammar (simplify-gesture-grammar): a line ALONG "
+                    + "a loop and a line ACROSS one (Insert loop) were too easily "
+                    + "confused. The capability returns as an armed tool; Clear "
+                    + "loop tags still removes existing tags.",
                 demoFrames: [
                     "point.forward.to.point.capsulepath",
                     "capsule", "capsule.fill",
@@ -147,9 +151,12 @@ extension EditorAction {
             GalleryEntry(
                 title: "Dissolve edge",
                 symbol: "scribble",
-                gesture: "Pencil verb — scribble over an edge",
-                notes: "A quick zig-zag over an edge dissolves it, merging "
-                    + "the faces on both sides into one.",
+                gesture: "Retired gesture — use the Merge pair tool",
+                notes: "Dissolving an edge left the curated Pencil grammar "
+                    + "(simplify-gesture-grammar), where a scribble now only "
+                    + "ever means Delete. The capability lives on in the Merge "
+                    + "pair tool: stroke across the shared edge of two "
+                    + "triangles to merge them into one quad.",
                 demoFrames: ["scribble", "scribble.variable", "square"]
             )
         case .crossDelete:
@@ -166,9 +173,12 @@ extension EditorAction {
             GalleryEntry(
                 title: "Merge vertices",
                 symbol: "arrow.triangle.merge",
-                gesture: "Pencil verb — line from vertex to vertex",
-                notes: "A stroke connecting two vertices welds them into "
-                    + "one, closing small gaps without a drag.",
+                gesture: "Retired gesture — use the Merge pair tool",
+                notes: "Welding two vertices with a line left the curated "
+                    + "Pencil grammar (simplify-gesture-grammar), where a line "
+                    + "now only ever means Insert loop. The capability lives on "
+                    + "in the Merge pair tool: stroke from one vertex to another "
+                    + "to collapse the pair at its midpoint.",
                 demoFrames: [
                     "circle.grid.2x1", "arrow.triangle.merge", "circle.fill",
                 ]
@@ -177,10 +187,12 @@ extension EditorAction {
             GalleryEntry(
                 title: "Rotate edge",
                 symbol: "arrow.trianglehead.2.clockwise.rotate.90",
-                gesture: "Pencil verb — small circle over an edge",
-                notes: "Circling an interior edge rotates it: a triangle "
-                    + "pair flips its diagonal, a quad pair turns its "
-                    + "shared edge to redirect the topology flow.",
+                gesture: "Retired gesture — an edge-rotate tool is planned",
+                notes: "Rotating an interior edge (a triangle pair flips its "
+                    + "diagonal, a quad pair turns its shared edge) left the "
+                    + "curated Pencil grammar (simplify-gesture-grammar): a "
+                    + "small circle clashed with the quad outline. The "
+                    + "capability returns as an armed tool.",
                 demoFrames: [
                     "arrow.trianglehead.2.clockwise.rotate.90",
                     "square.split.diagonal.2x2", "square.split.diagonal",
@@ -201,21 +213,24 @@ extension EditorAction {
             GalleryEntry(
                 title: "Hide region",
                 symbol: "lasso",
-                gesture: "Pencil verb — lasso starting in empty space",
-                notes: "A lasso that STARTS over empty space hides the "
-                    + "enclosed EditMesh faces so you can work on the "
-                    + "geometry behind them. Hidden faces stay in the "
-                    + "document and journal.",
+                gesture: "Retired gesture — a hide/show tool is planned",
+                notes: "Hiding the faces inside a lasso (to reach geometry "
+                    + "behind them) left the curated Pencil grammar (simplify-"
+                    + "gesture-grammar): a lasso was too easily read as a quad "
+                    + "or a delete. The capability returns as an armed tool; "
+                    + "hidden faces always stayed in the document and journal.",
                 demoFrames: ["lasso", "circle.dashed", "eye.slash"]
             )
         case .visibilityLines:
             GalleryEntry(
                 title: "Show hidden",
                 symbol: "eye",
-                gesture: "Pencil verb — two vertical lines in empty space",
-                notes: "Two quick vertical lines over empty space invert "
-                    + "the hidden set; drawn again they show everything — "
-                    + "the escape hatch after a lasso-hide.",
+                gesture: "Retired gesture — a hide/show tool is planned",
+                notes: "Inverting the hidden set with two vertical lines left "
+                    + "the curated Pencil grammar (simplify-gesture-grammar), "
+                    + "where a line now only ever means Insert loop. The "
+                    + "capability returns as an armed tool alongside Hide "
+                    + "region.",
                 demoFrames: ["eye.slash", "line.diagonal", "eye"]
             )
         case .buildQuad:

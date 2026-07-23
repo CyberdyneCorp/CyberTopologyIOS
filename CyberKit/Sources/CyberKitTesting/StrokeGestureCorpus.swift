@@ -42,7 +42,7 @@ public enum StrokeGestureCorpus {
     public static func line(type: StrokeSample.TouchType = .pencil) -> StrokeFixture {
         fixture(
             name: type == .pencil ? "line_pencil" : "line_finger",
-            expectedOutcome: "line:toggleVisibility",
+            expectedOutcome: "line:none",
             points: path(through: [Point(0.22, 0.75), Point(0.78, 0.28)]),
             type: type
         )
@@ -143,7 +143,7 @@ public enum StrokeGestureCorpus {
     public static func grid(type: StrokeSample.TouchType = .pencil) -> StrokeFixture {
         fixture(
             name: type == .pencil ? "grid_pencil" : "grid_finger",
-            expectedOutcome: "grid:createGrid",
+            expectedOutcome: "grid:none",
             points: path(through: [
                 Point(0.22, 0.66), Point(0.22, 0.36), Point(0.42, 0.36),
                 Point(0.42, 0.66), Point(0.62, 0.66), Point(0.62, 0.36),
@@ -157,7 +157,7 @@ public enum StrokeGestureCorpus {
     public static func lineDown(type: StrokeSample.TouchType = .pencil) -> StrokeFixture {
         fixture(
             name: type == .pencil ? "line_down_pencil" : "line_down_finger",
-            expectedOutcome: "line:toggleVisibility",
+            expectedOutcome: "line:none",
             points: path(through: [Point(0.50, 0.20), Point(0.52, 0.80)]),
             type: type
         )
@@ -167,7 +167,7 @@ public enum StrokeGestureCorpus {
     public static func lineUp(type: StrokeSample.TouchType = .pencil) -> StrokeFixture {
         fixture(
             name: type == .pencil ? "line_up_pencil" : "line_up_finger",
-            expectedOutcome: "line:toggleVisibility",
+            expectedOutcome: "line:none",
             points: path(through: [Point(0.50, 0.80), Point(0.48, 0.20)]),
             type: type
         )
@@ -181,7 +181,7 @@ public enum StrokeGestureCorpus {
     ) -> StrokeFixture {
         fixture(
             name: type == .pencil ? "ring_insert_line_pencil" : "ring_insert_line_finger",
-            expectedOutcome: "line:toggleVisibility",
+            expectedOutcome: "line:none",
             points: path(through: [Point(0.50, 0.15), Point(0.50, 0.85)]),
             type: type
         )
@@ -194,7 +194,7 @@ public enum StrokeGestureCorpus {
     ) -> StrokeFixture {
         fixture(
             name: type == .pencil ? "loop_tag_line_pencil" : "loop_tag_line_finger",
-            expectedOutcome: "line:toggleVisibility",
+            expectedOutcome: "line:none",
             points: path(through: [Point(0.25, 0.50), Point(0.75, 0.50)]),
             type: type
         )
@@ -204,7 +204,7 @@ public enum StrokeGestureCorpus {
     public static func mergeLine(type: StrokeSample.TouchType = .pencil) -> StrokeFixture {
         fixture(
             name: type == .pencil ? "merge_line_pencil" : "merge_line_finger",
-            expectedOutcome: "line:toggleVisibility",
+            expectedOutcome: "line:none",
             points: path(through: [Point(0.10, 0.90), Point(0.90, 0.10)]),
             type: type
         )
@@ -303,7 +303,7 @@ public enum StrokeGestureCorpus {
     ) -> StrokeFixture {
         fixture(
             name: type == .pencil ? "tool_build_quad_edge_pencil" : "tool_build_quad_edge_finger",
-            expectedOutcome: "line:toggleVisibility",
+            expectedOutcome: "line:none",
             points: path(through: [Point(0.5337, 0.5111), Point(0.5327, 0.5894)]),
             type: type
         )
@@ -317,7 +317,7 @@ public enum StrokeGestureCorpus {
         fixture(
             name: type == .pencil
                 ? "tool_build_triangle_corner_pencil" : "tool_build_triangle_corner_finger",
-            expectedOutcome: "line:toggleVisibility",
+            expectedOutcome: "line:none",
             points: path(through: [Point(0.5000, 0.5000), Point(0.4390, 0.5535)]),
             type: type
         )
@@ -330,7 +330,7 @@ public enum StrokeGestureCorpus {
     ) -> StrokeFixture {
         fixture(
             name: type == .pencil ? "tool_merge_pair_pencil" : "tool_merge_pair_finger",
-            expectedOutcome: "line:toggleVisibility",
+            expectedOutcome: "line:none",
             points: path(through: [Point(0.5000, 0.5000), Point(0.5691, 0.5227)]),
             type: type
         )
@@ -344,7 +344,7 @@ public enum StrokeGestureCorpus {
         fixture(
             name: type == .pencil
                 ? "tool_path_distribute_pencil" : "tool_path_distribute_finger",
-            expectedOutcome: "line:toggleVisibility",
+            expectedOutcome: "line:none",
             points: path(through: [Point(0.5000, 0.5000), Point(0.7177, 0.5714)]),
             type: type
         )
@@ -357,7 +357,7 @@ public enum StrokeGestureCorpus {
     ) -> StrokeFixture {
         fixture(
             name: type == .pencil ? "tool_surface_cut_pencil" : "tool_surface_cut_finger",
-            expectedOutcome: "line:toggleVisibility",
+            expectedOutcome: "line:none",
             points: path(through: [Point(0.5333, 0.5396), Point(0.5358, 0.3579)]),
             type: type
         )

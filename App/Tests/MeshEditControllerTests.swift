@@ -961,48 +961,9 @@ struct MeshEditControllerTests {
         #expect(try harness.editMesh().faceCount == 8)
     }
 
-    @Test func lineAlongLoopTagsWholeLoopWithColoredRenderAndUndoClears() throws {
-        let harness = try Harness()
-        try addPlaneTarget(to: harness)
-        try addGridEditMesh(to: harness)
-        let object = try #require(harness.editObject)
-        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
-        let renderer = try #require(harness.coordinator.renderer)
-        #expect(renderer.overlayPath.taggedIndexCount == 0)
-
-        // Stroke ALONG the middle row (the disambiguation counterpart of
-        // the ring-insert stroke above), endpoints clear of vertex picks.
-        harness.stroke(verb: .pencil, through: harness.densified(through: [
-            harness.screenPoint(of: SIMD3(1, 2, 0)),
-            harness.screenPoint(of: SIMD3(5, 2, 0)),
-        ]))
-
-        #expect(harness.bundle.journal.depth == 1)
-        guard case .annotationEdit(let edit) = try #require(harness.committed.first) else {
-            Issue.record("expected an annotationEdit command")
-            return
-        }
-        #expect(edit.verb == "pencil.tagLoop")
-        // The WHOLE loop is tagged (engine loop walk), topology untouched,
-        // payload bytes untouched.
-        let tagged = try #require(annotations(of: harness))
-        #expect(tagged.taggedEdges.count == 3)
-        #expect(tagged.hiddenFaces.isEmpty)
-        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
-        #expect(try harness.editMesh().faceCount == 6)
-        // Minimal colored-line render (full styles are 4.3): the overlay
-        // carries a tagged-edge pass after the sync.
-        #expect(renderer.overlayPath.taggedIndexCount == 6)
-
-        // Undo clears the tags — and the colored pass.
-        harness.undo()
-        #expect(annotations(of: harness) == nil)
-        #expect(renderer.overlayPath.taggedIndexCount == 0)
-        // Drawing along the tagged loop again would re-tag (redo path).
-        harness.redo()
-        #expect(try #require(annotations(of: harness)).taggedEdges.count == 3)
-        #expect(renderer.overlayPath.taggedIndexCount == 6)
-    }
+    // lineAlongLoopTagsWholeLoop... retired: tagLoop is no longer a stroke
+    // gesture (a line along a loop is a tool now). Loop tagging keeps
+    // annotation-tool coverage in AnnotationToolsTests.
 
     // scribbleOverEdgeDissolvesItIntoOneQuad retired: dissolveEdge is no
     // longer a stroke gesture (it is a tool). A scribble over geometry now
@@ -1043,83 +1004,10 @@ struct MeshEditControllerTests {
         #expect(try harness.editMesh().faceCount == 6)
     }
 
-    @Test func vertexToVertexLineMergesThem() throws {
-        let harness = try Harness()
-        try addPlaneTarget(to: harness)
-        try addStripsEditMesh(to: harness)
-        let object = try #require(harness.editObject)
-        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
-
-        // Stroke from the (0,0) corner vertex onto its neighbor at (1,0):
-        // the start vertex snaps onto the end vertex.
-        harness.stroke(verb: .pencil, through: harness.densified(through: [
-            harness.screenPoint(of: SIMD3(0, 0, 0)),
-            harness.screenPoint(of: SIMD3(1, 0, 0)),
-        ]))
-
-        #expect(harness.bundle.journal.depth == 1)
-        guard case .meshEdit(let edit) = try #require(harness.committed.first) else {
-            Issue.record("expected a meshEdit command")
-            return
-        }
-        #expect(edit.verb == "pencil.mergeVertices")
-        let merged = try harness.editMesh()
-        #expect(merged.vertexCount == 15)
-        // Nothing left at (0,0); the survivor sits exactly at (1,0).
-        #expect(merged.nearestVertex(to: SIMD3(0, 0, 0), maxDistance: 0.9) == nil)
-        let keep = try #require(merged.nearestVertex(to: SIMD3(1, 0, 0), maxDistance: 1e-3))
-        #expect(keep.position == SIMD3(1, 0, 0))
-        // The corner quad degenerated to a triangle; the rest stay quads.
-        #expect(try merged.stats().triangles == 1)
-
-        harness.undo()
-        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
-        #expect(try harness.editMesh().vertexCount == 16)
-    }
-
-    @Test func circleOverEdgeRotatesTheDiagonal() throws {
-        let harness = try Harness()
-        try addPlaneTarget(to: harness)
-        // Side 6: the triangle centroids sit ~1.4 world units off the
-        // diagonal's midpoint, clearly OUTSIDE the small circle (a tighter
-        // pair would read as a lasso enclosing both faces).
-        try addTrianglePairEditMesh(to: harness, side: 6)
-        let object = try #require(harness.editObject)
-        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
-        // Before: the diagonal connects (6,0)–(0,6).
-        let before = try harness.editMesh()
-        let diagonalBefore = try #require(
-            before.nearestEdge(to: SIMD3(3, 3, 0), maxDistance: 1e-3)
-        )
-        let endsBefore = try #require(before.edgeEndpoints(of: diagonalBefore.edge))
-        #expect(Set([endsBefore.0, endsBefore.1]) == Set([1, 3]))
-
-        // Small circle over the diagonal's midpoint.
-        var circle: [SIMD2<Double>] = []
-        let center = harness.screenPoint(of: SIMD3(3, 3, 0))
-        for i in 0...72 {
-            let angle = 2.0 * Double.pi * Double(i) / 72
-            circle.append(SIMD2(center.x + 0.05 * cos(angle), center.y + 0.05 * sin(angle)))
-        }
-        harness.stroke(verb: .pencil, through: circle)
-
-        #expect(harness.bundle.journal.depth == 1)
-        guard case .meshEdit(let edit) = try #require(harness.committed.first) else {
-            Issue.record("expected a meshEdit command")
-            return
-        }
-        #expect(edit.verb == "pencil.rotateEdge")
-        let rotated = try harness.editMesh()
-        #expect(rotated.faceCount == 2)
-        let diagonalAfter = try #require(
-            rotated.nearestEdge(to: SIMD3(3, 3, 0), maxDistance: 1e-3)
-        )
-        let endsAfter = try #require(rotated.edgeEndpoints(of: diagonalAfter.edge))
-        #expect(Set([endsAfter.0, endsAfter.1]) == Set([0, 2]))
-
-        harness.undo()
-        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
-    }
+    // vertexToVertexLineMergesThem retired: mergeVertices is a tool now, not
+    // a stroke gesture — a line between two vertices no longer merges them.
+    // circleOverEdgeRotatesTheDiagonal retired: rotateEdge is a tool now — a
+    // small circle over an edge creates a quad. Both keep tool-level coverage.
 
     /// hideRegion is retired from the stroke grammar (it is a tool now). A
     /// closed stroke that used to hide the faces it enclosed now creates a
@@ -1150,50 +1038,16 @@ struct MeshEditControllerTests {
         #expect(annotations(of: harness)?.hiddenFaces.isEmpty ?? true)
     }
 
-    @Test func verticalLinesInEmptySpaceInvertAndShowAllVisibility() throws {
-        let harness = try Harness()
-        try addPlaneTarget(to: harness)
-        try addStripsEditMesh(to: harness)
-        let object = try #require(harness.editObject)
+    // verticalLinesInEmptySpaceInvertAndShowAllVisibility retired:
+    // toggleVisibility is a tool now, not a stroke gesture — a straight line
+    // in empty space no longer inverts or shows-all. Visibility keeps
+    // tool/annotation coverage.
 
-        // Seed: strip B hidden (as the lasso gesture would leave it).
-        let stripB = MeshAnnotations(hiddenFaces: [3, 4, 5])
-        harness.perform(.annotationEdit(.init(
-            objectID: object.id, verb: "seed", before: nil, after: stripB
-        )))
-
-        // Straight line DOWNWARD in empty space (right of the mesh):
-        // inverts visibility.
-        let top = harness.screenPoint(of: SIMD3(4.5, 2.5, 0))
-        let bottom = harness.screenPoint(of: SIMD3(4.5, -0.5, 0))
-        let downward = harness.densified(through: [top, bottom].sorted { $0.y < $1.y })
-        harness.stroke(verb: .pencil, through: downward)
-
-        guard case .annotationEdit(let invert) = try #require(harness.committed.last)
-        else {
-            Issue.record("expected an annotationEdit command")
-            return
-        }
-        #expect(invert.verb == "pencil.invertVisibility")
-        #expect(try #require(annotations(of: harness)).hiddenFaces == [0, 1, 2])
-
-        // Straight line UPWARD: show all (annotations clear entirely).
-        harness.stroke(verb: .pencil, through: Array(downward.reversed()))
-        guard case .annotationEdit(let show) = try #require(harness.committed.last) else {
-            Issue.record("expected an annotationEdit command")
-            return
-        }
-        #expect(show.verb == "pencil.showAll")
-        #expect(annotations(of: harness) == nil)
-
-        // Undo walks back through the visibility states exactly.
-        harness.undo()
-        #expect(try #require(annotations(of: harness)).hiddenFaces == [0, 1, 2])
-        harness.undo()
-        #expect(try #require(annotations(of: harness)).hiddenFaces == [3, 4, 5])
-    }
-
-    @Test func gridStrokeCreatesBlockOfQuadsInOneJournalEntry() throws {
+    /// createGrid is retired from the stroke grammar (a tool now): the
+    /// serpentine "grid" stroke no longer drops a block of quads by gesture,
+    /// so it creates no EditMesh and journals nothing. (The injection hook
+    /// stays exercised.)
+    @Test func gridStrokeIsNoLongerAGesture() throws {
         let harness = try Harness()
         let target = try Mesh.loadOBJ(at: UITestSupport.writeSeedTargetOBJ())
         try harness.bundle.addObject(name: "target", role: .target, mesh: target)
@@ -1202,26 +1056,8 @@ struct MeshEditControllerTests {
 
         harness.coordinator.inputModel.injectGridStroke()
 
-        // ONE journaled command created the EditMesh with the whole block:
-        // 3 quad cells over a 2x4 lattice.
-        #expect(harness.bundle.journal.depth == 1)
-        let object = try #require(harness.editObject)
-        #expect(object.counts == .init(vertices: 8, faces: 3))
-        let created = try harness.editMesh()
-        #expect(try created.stats().quads == 3)
-
-        // Every lattice vertex is snapped onto the domed Target.
-        let snapper = try SurfaceSnapper(target: target)
-        for id in 0..<8 {
-            let position = try #require(created.vertexPosition(UInt32(id)))
-            let hit = try #require(snapper.snapToSurface(position))
-            #expect(simd_distance(hit.point, position) < 1e-3)
-        }
-
-        harness.undo()
         #expect(harness.editObject == nil)
-        harness.redo()
-        #expect(try harness.editMesh().faceCount == 3)
+        #expect(harness.bundle.journal.depth == 0)
     }
 
     @Test func doubleTapOnVertexActivatesTweakVerb() throws {
@@ -1253,180 +1089,14 @@ struct MeshEditControllerTests {
 
     // MARK: - Task 3.5: interpretation chip alternatives (one-tap swap)
 
-    /// The chip's flagship direction (spec scenario "One-tap misrecognition
-    /// fix"): a wavy stroke ALONG the middle loop interprets as tagLoop with
-    /// a ranked insertLoop alternative; tapping the alternative REPLACES the
-    /// journaled annotationEdit with the meshEdit loop insert in place —
-    /// exactly one journal entry after the swap, one undo back to pristine
-    /// bytes, no extra undo step.
-    @Test func tagLoopStrokeSwapsToInsertLoopInPlace() throws {
-        let harness = try Harness()
-        try addPlaneTarget(to: harness)
-        try addGridEditMesh(to: harness)
-        let object = try #require(harness.editObject)
-        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
-
-        // Along the middle row, recorded with the corpus's standard hand
-        // wobble: every sample stays within the recognizer's edge radius
-        // (ALONG-dominant → tagLoop best) while the wobble's crossings of
-        // the row rank insertLoop as the alternative — the genuinely
-        // ambiguous stroke of the spec scenario.
-        let start = harness.screenPoint(of: SIMD3(1, 2, 0))
-        let end = harness.screenPoint(of: SIMD3(5, 2, 0))
-        let points = StrokeGestureCorpus.path(through: [
-            .init(start.x, start.y), .init(end.x, end.y),
-        ])
-        var chip: MeshEditController.PencilStrokeOutcome?
-        harness.coordinator.meshEditor.onPencilStrokeResolved = { chip = $0 }
-        harness.stroke(verb: .pencil, through: points.map { SIMD2($0.x, $0.y) })
-
-        // Applied: tagLoop (whole middle loop), journaled once.
-        #expect(harness.bundle.journal.depth == 1)
-        guard case .annotationEdit(let applied) = try #require(harness.committed.first)
-        else {
-            Issue.record("expected an annotationEdit command")
-            return
-        }
-        #expect(applied.verb == "pencil.tagLoop")
-        #expect(try #require(annotations(of: harness)).taggedEdges.count == 3)
-
-        // The chip carries the insertLoop alternative.
-        let outcome = try #require(chip)
-        #expect(outcome.appliedIndex == 0)
-        #expect(outcome.interpretation?.best?.action == .tagLoop)
-        let alternativeIndex = try #require(outcome.alternatives.first { index in
-            outcome.interpretation?.candidates[index].action == .insertLoop
-        })
-
-        // ONE TAP: the applied result swaps in place.
-        let swapped = try #require(
-            harness.coordinator.meshEditor.applyAlternative(at: alternativeIndex)
-        )
-        #expect(swapped.appliedIndex == alternativeIndex)
-
-        // Journal invariant: still exactly ONE entry; the annotation edit
-        // is gone (reverted, not stacked), the loop insert is applied.
-        #expect(harness.bundle.journal.depth == 1)
-        #expect(annotations(of: harness) == nil)
-        guard case .meshEdit(let edit) = try #require(harness.bundle.journal.currentCommand)
-        else {
-            Issue.record("expected the journal current to be the meshEdit swap")
-            return
-        }
-        #expect(edit.verb == "pencil.insertLoop")
-        #expect(edit.before == payloadBefore)
-        // The full ring split (which ring depends on which crossed edge
-        // seeded the walk — the invariant is a real all-quad loop insert).
-        let inserted = try harness.editMesh()
-        #expect(inserted.faceCount > 6)
-        #expect(try inserted.stats().quads == inserted.faceCount)
-
-        // The swapped chip offers the original reading back — swap-back
-        // restores the tagged loop, still one entry.
-        let backIndex = try #require(swapped.alternatives.first { index in
-            swapped.interpretation?.candidates[index].action == .tagLoop
-        })
-        #expect(harness.coordinator.meshEditor.applyAlternative(at: backIndex) != nil)
-        #expect(harness.bundle.journal.depth == 1)
-        #expect(try #require(annotations(of: harness)).taggedEdges.count == 3)
-        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
-        #expect(try harness.editMesh().faceCount == 6)
-
-        // One undo steps over the WHOLE stroke+swaps history.
-        harness.undo()
-        #expect(annotations(of: harness) == nil)
-        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
-        #expect(harness.bundle.journal.depth == 0)
-    }
-
-    /// The UI test's exact path (seeded strip + fixture injection through
-    /// the model): the committed vertical ring-insert stroke runs ALONG the
-    /// strip's middle edge while its hand wobble crosses it — tagLoop
-    /// applies with insertLoop ranked as the alternative (the spec's
-    /// misrecognition pair), and one tap through the MODEL swaps the
-    /// annotation for the loop insert in place.
-    @Test func ringStrokeOnSeededStripSwapsToInsertLoopViaTheModel() throws {
-        let harness = try Harness()
-        let seed = try Mesh.loadOBJ(at: UITestSupport.writeSeedStripOBJ())
-        try harness.bundle.addObject(name: "seed-strip", role: .editMesh, mesh: seed)
-        harness.sync()
-        let object = try #require(harness.editObject)
-        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
-        let model = harness.coordinator.inputModel
-
-        model.injectRingStroke()
-
-        // Applied: the middle edge tagged (annotation only), one entry.
-        #expect(harness.bundle.journal.depth == 1)
-        guard case .annotationEdit(let edit) = try #require(harness.committed.first)
-        else {
-            let record = model.lastInterpretation?.summary ?? "nil"
-            Issue.record("expected an annotationEdit; record: \(record)")
-            return
-        }
-        #expect(edit.verb == "pencil.tagLoop")
-        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
-        #expect(try harness.editMesh().faceCount == 2)
-        #expect(try #require(annotations(of: harness)).taggedEdges.isEmpty == false)
-
-        // The published chip offers the insert-loop alternative.
-        let chip = try #require(model.interpretationChip)
-        #expect(chip.title == "Tag loop")
-        let alternative = try #require(
-            chip.alternatives.first { $0.action == .insertLoop }
-        )
-
-        // One tap through the MODEL (the UI's entry point): swapped in
-        // place — the tag reverts, the ranked ring splits (the recognizer's
-        // ring for this stroke walks one strip quad), still one entry.
-        model.chooseAlternative(alternative.id)
-        #expect(harness.bundle.journal.depth == 1)
-        #expect(annotations(of: harness) == nil)
-        let inserted = try harness.editMesh()
-        #expect(inserted.faceCount == 3)
-        #expect(inserted.vertexCount == 8)
-        #expect(try inserted.stats().quads == 3)
-        let swappedChip = try #require(model.interpretationChip)
-        #expect(swappedChip.title == "Insert loop")
-        #expect(swappedChip.alternatives.contains { $0.action == .tagLoop })
-
-        // One undo reverts the whole stroke (no extra step for the swap).
-        harness.undo()
-        #expect(annotations(of: harness) == nil)
-        #expect(harness.bundle.journal.depth == 0)
-        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
-        #expect(try harness.editMesh().faceCount == 2)
-    }
-
-    /// Stale chips must be inert: after an undo the journaled command the
-    /// chip captured is gone, so the swap is rejected, nothing mutates, and
-    /// the swap context clears (a second tap is a no-op too).
-    @Test func alternativeSwapAfterUndoIsRejectedUntouched() throws {
-        let harness = try Harness()
-        let seed = try Mesh.loadOBJ(at: UITestSupport.writeSeedStripOBJ())
-        try harness.bundle.addObject(name: "seed-strip", role: .editMesh, mesh: seed)
-        harness.sync()
-        let object = try #require(harness.editObject)
-        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
-
-        var chip: MeshEditController.PencilStrokeOutcome?
-        harness.coordinator.meshEditor.onPencilStrokeResolved = { chip = $0 }
-        harness.coordinator.inputModel.injectRingStroke()
-        let outcome = try #require(chip)
-        let alternative = try #require(outcome.alternatives.first)
-
-        // The user undoes the stroke before touching the chip.
-        harness.undo()
-        #expect(harness.bundle.journal.depth == 0)
-
-        // The stale tap swaps nothing and journals nothing.
-        #expect(harness.coordinator.meshEditor.applyAlternative(at: alternative) == nil)
-        #expect(harness.bundle.journal.depth == 0)
-        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
-        #expect(annotations(of: harness) == nil)
-        // The context cleared: repeating the tap stays a no-op.
-        #expect(harness.coordinator.meshEditor.applyAlternative(at: alternative) == nil)
-    }
+    // tagLoopStrokeSwapsToInsertLoopInPlace, ringStrokeOnSeededStripSwaps-
+    // ToInsertLoopViaTheModel and alternativeSwapAfterUndoIsRejectedUntouched
+    // retired: they relied on the tagLoop<->insertLoop misrecognition pair.
+    // Under the curated grammar every stroke has a single candidate (quad,
+    // triangle, delete, loop-cut, or none), so there are no ranked
+    // alternatives to swap. The swap PATH (applyAlternative /
+    // replacementCommand) is unchanged and still covered by its unit tests;
+    // only these multi-candidate scenarios are gone.
 
     // MARK: - Merge-snap feedback (task 3.7, spec scenario "Snap feedback")
 

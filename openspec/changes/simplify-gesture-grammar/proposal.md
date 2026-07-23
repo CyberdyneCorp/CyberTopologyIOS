@@ -47,20 +47,28 @@ the gesture path does not.
 
 ## What Changes
 
-- **Reduce the Pencil gesture grammar to three actions**: create quad face,
-  create triangle face, delete faces. Remove `hideRegion`, `dissolveEdge`,
-  `tagLoop`, `insertLoop`, `mergeVertices`, `rotateEdge`, `createGrid`, and
+- **Reduce the Pencil gesture grammar to four actions**: create quad face,
+  create triangle face, delete faces, and insert an edge loop (a straight
+  line drawn ACROSS a quad ring). Remove `hideRegion`, `dissolveEdge`,
+  `tagLoop`, `mergeVertices`, `rotateEdge`, `createGrid`, and
   `toggleVisibility` from the stroke grammar.
-  - These capabilities do NOT disappear — they remain available as explicit
-    armed TOOLS (the task 4.1/4.2 `RetopoTool` layer) and as batch commands.
-    Only the *gesture* bindings are removed. A tool the user arms
+  - Device feedback (2026-07-22) revised the original strict-three target:
+    `insertLoop` is kept because a line ACROSS a ring is geometrically
+    distinct from a closed quad outline, a self-crossing X, and a three-corner
+    triangle — it never competed for the quad branch — while `tagLoop` (a line
+    ALONG a loop) DID collide with it and is removed. A line is now always
+    read as an insert loop.
+  - The removed capabilities do NOT disappear — they remain available as
+    explicit armed TOOLS (the task 4.1/4.2 `RetopoTool` layer) and as batch
+    commands. Only the *gesture* bindings are removed. A tool the user arms
     deliberately cannot be triggered by a misread stroke.
-- **Collapse the shape classifier accordingly.** With only three actions,
-  the classifier separates closed-ish / X-ish / everything-else instead of
-  nine shapes. `Grid`, `Lasso`, `Scribble` and `Circle` leave the grammar's
-  decision path.
-- **Re-tune closed-vs-open against the reduced grammar.** With no scribble
-  or grid competing, the nearly-closed rescue can be aggressive: an open
+- **Collapse the shape classifier accordingly.** With only four actions,
+  the classifier separates closed-quad / closed-triangle / X-ish /
+  line-across-ring / everything-else instead of nine shapes. `Grid`, `Lasso`
+  and `Scribble` leave the grammar's decision path; `Circle` resolves to a
+  quad.
+- **Re-tune closed-vs-open against the reduced grammar.** With no scribble,
+  grid or lasso competing, the nearly-closed rescue can be aggressive: an open
   stroke with quad-like corner structure is a quad. Seam-overshoot
   self-intersections stop disqualifying a closed stroke.
 - **Weld created faces onto existing topology.** Corners landing within a
@@ -83,7 +91,7 @@ the gesture path does not.
   `MeshEditControllerTests/scribbleOverEdgeDissolvesItIntoOneQuad` retires
   with the gesture; edge dissolve keeps tool-level coverage.
 - Traceability: grammar scenarios in `tests/traceability.yaml` under
-  `pencil-interaction` need rewriting against the three-gesture table.
+  `pencil-interaction` need rewriting against the four-gesture table.
 
 ## Prerequisite: record real strokes first
 

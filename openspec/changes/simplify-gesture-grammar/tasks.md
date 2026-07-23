@@ -46,21 +46,35 @@ createGrid) leaves the stroke path and stays as an armed tool.
       `closedTriangleResolvesToCreateTriangle` with the square/lasso/device
       corpus held unchanged. On-device corpus validation of real triangle
       strokes is the next step, mirroring the quad flow.
-- [ ] 2.1b Engine: restrict `interpretStroke` to the four kept gestures —
-      stop emitting tagLoop/mergeVertices/toggleVisibility/dissolveEdge/
-      rotateEdge/hideRegion/createGrid. Reorder so the quad/triangle
-      detection runs before grid/scribble (now that they no longer compete),
-      which also fixes the wigglier U that currently trips grid detection.
-- [ ] 2.2 App: remove the removed actions from `ActionCatalog`'s GESTURE
-      entries, keeping their TOOL entries. Gallery help text must stop
-      describing them as gestures.
-- [ ] 2.3 Interpretation chip: alternatives can only offer the three
-      actions; the swap path (`performReplacingLast`) is unchanged.
-- [ ] 2.4 Retire the gesture-level tests and goldens for removed actions;
-      verify each capability still has TOOL-level coverage before deleting
-      anything. Anything left uncovered gets a tool test in the same change.
-- [ ] 2.5 Rewrite the `pencil-interaction` grammar scenarios in
-      `tests/traceability.yaml`.
+- [x] 2.1b Engine (patch 0029): `interpretStroke` restricted to the four
+      kept gestures — Line emits only InsertLoop (a line crossing edges),
+      Circle emits only CreateQuad, Grid falls through to None, and
+      tagLoop/mergeVertices/toggleVisibility/dissolveEdge/rotateEdge/
+      hideRegion/createGrid are no longer emitted. The quad/triangle rescue
+      runs before grid/scribble so the wigglier U no longer trips grid
+      detection. Corpus + device-stroke tests assert the new resolutions and
+      pass through a clean engine rebuild.
+- [x] 2.2 App (`ActionCatalog`): the removed gestures' gallery help text no
+      longer calls them Pencil gestures. mergeLine/scribbleDissolve point at
+      the Merge pair TOOL (real coverage); gridStroke/loopTag/edgeRotate/
+      visibilityLasso/visibilityLines are marked retired-from-grammar with the
+      capability returning as an armed tool (see Deferred). The enum cases stay
+      (persisted toolbars + tests reference them) but describe reality; the
+      `.pencil` and `loopInsert` notes drop the stale grid/tag-swap language.
+- [x] 2.3 Interpretation chip: alternatives are limited by what the engine
+      emits — only the four kept actions — and the swap path
+      (`performReplacingLast`) is unchanged. The action-agnostic state-machine
+      tests were re-based off the retired tagLoop/toggleVisibility fixtures
+      onto the one plausible curated ambiguity (quad vs triangle).
+- [x] 2.4 Gesture-level tests/goldens for the removed actions retired
+      (StrokeInterpreter, MeshEditController, App swap tests, corpus goldens);
+      the underlying mesh OPS keep tool-level coverage in `GrammarMeshOpsTests`
+      (dissolve/merge/rotate/grid/hide/tag), since only the gesture bindings
+      were removed. No capability lost its op coverage.
+- [x] 2.5 `tests/traceability.yaml` pencil-interaction + gesture-regression
+      lists rewritten to the four-gesture reality; proposal and the
+      pencil-interaction spec delta reconciled from the original strict-three
+      to the shipped four (InsertLoop kept). `check_traceability.py` green.
 
 ## 3. Re-tune closed-vs-open
 
@@ -112,8 +126,16 @@ createGrid) leaves the stroke path and stays as an armed tool.
 
 ## 5. Deferred / explicitly out of scope
 
+- **Tool-ifying the gesture-only capabilities without an existing tool.**
+  The design keeps grid fill, loop tag, edge rotate and region hide/show as
+  armed tools, but only merge/dissolve currently have one (the Merge pair
+  tool). Building dedicated arm-a-tool paths for createGrid, tagLoop,
+  rotateEdge and hideRegion/toggleVisibility is a follow-up; until then their
+  underlying ops keep coverage in `GrammarMeshOpsTests` and their gallery
+  tiles say so. Their `EditorAction` cases remain so persisted toolbars and
+  the batch panel keep resolving.
 - Auto Relax after welded creation (task 4.5a of the parent change already
   tracks the missing create paths).
 - Restoring any removed gesture as a MODIFIED gesture (e.g. delete-faces via
-  a different stroke) — if the three-gesture set proves too small, that is a
+  a different stroke) — if the four-gesture set proves too small, that is a
   new proposal with its own device evidence.

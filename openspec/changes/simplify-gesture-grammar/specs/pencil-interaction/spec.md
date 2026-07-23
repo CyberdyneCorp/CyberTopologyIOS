@@ -4,27 +4,36 @@
 
 ### Requirement: Contextual gesture grammar
 
-The Pencil stroke grammar SHALL express exactly three authoring actions:
-create a quad face, create a triangle face, and delete faces. Every other
-retopology capability (edge dissolve, loop insert, loop tag, merge, edge
-rotate, grid fill, region visibility) SHALL be reachable only through an
-explicitly armed tool or a batch command, never through stroke
-interpretation.
+The Pencil stroke grammar SHALL express exactly four authoring actions:
+create a quad face, create a triangle face, delete faces, and insert an edge
+loop (a straight line drawn ACROSS a quad ring). Every other retopology
+capability (edge dissolve, loop tag, merge, edge rotate, grid fill, region
+visibility) SHALL be reachable only through an explicitly armed tool or a
+batch command, never through stroke interpretation.
 
 Rationale: the classifier is a deterministic geometric heuristic over
 hand-tuned thresholds, not a learned model. Separating nine shapes made the
 quad branch the narrowest in the cascade, and device testing showed a single
 intended quad gesture resolving as quad, lasso, scribble and unknown across
 consecutive strokes. Every attempt to widen the quad branch collided with a
-neighbouring gesture. A three-action grammar is a problem this classifier can
-solve reliably; a nine-action one is not. A capability the user arms
-deliberately cannot be triggered by a misread stroke.
+neighbouring gesture. A four-action grammar is a problem this classifier can
+solve reliably; a nine-action one is not. Loop insert is kept because a line
+ACROSS a ring is geometrically distinct from every other kept shape (it is
+open and straight, not a closed outline or a self-crossing X) and so never
+competes for the quad branch; loop tag (a line ALONG a loop), which DID
+compete, is removed. A capability the user arms deliberately cannot be
+triggered by a misread stroke.
 
 #### Scenario: A closed stroke creates a quad
 - **WHEN** a closed (or nearly closed) stroke with quad-like corner
   structure is drawn on the Target
 - **THEN** it SHALL resolve to create-quad, whether or not the stroke
   overshoots or stops short of its own start point
+
+#### Scenario: A line across a ring inserts a loop
+- **WHEN** a straight line is drawn across a ring of quads
+- **THEN** it SHALL resolve to insert-loop, splitting every quad in the ring
+- **AND** a line SHALL never resolve to loop tag (removed from the grammar)
 
 #### Scenario: Stroke ambiguity never destroys work
 - **WHEN** a stroke cannot be classified with useful confidence

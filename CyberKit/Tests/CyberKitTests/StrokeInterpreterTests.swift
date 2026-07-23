@@ -242,11 +242,13 @@ struct StrokeInterpreterTests {
         return { (mesh, Self.cubeViewProjection, 1) }
     }
 
-    @Test("vertex-to-vertex line resolves to a merge of those vertices")
-    func lineBetweenVerticesResolvesMerge() throws {
+    /// mergeVertices is retired from the grammar (a tool now): a line drawn
+    /// between two vertices offers no gesture — it must not merge them.
+    @Test("vertex-to-vertex line offers no gesture (merge is a tool)")
+    func lineBetweenVerticesOffersNoGesture() throws {
         // Cube corners v0 and v2 project to (0.1, 0.9) and (0.9, 0.1).
         let fixture = StrokeGestureCorpus.fixture(
-            name: "merge_line", expectedOutcome: "line:mergeVertices",
+            name: "merge_line", expectedOutcome: "line:none",
             points: StrokeGestureCorpus.path(through: [
                 .init(0.1, 0.9), .init(0.9, 0.1),
             ]),
@@ -254,14 +256,8 @@ struct StrokeInterpreterTests {
         )
         let record = try interpret(fixture, context: cubeContext())
         #expect(record.shape == .line)
-        // Context is resolved at the probe point — a line probes at its
-        // midpoint, which sits over the cube face; the merge targets live in
-        // the candidate's element list, not in the context field.
-        #expect(record.context == .face)
-        let best = try #require(record.best)
-        #expect(best.action == .mergeVertices)
-        #expect(best.elements.map(\.kind) == [.vertex, .vertex])
-        #expect(best.elements.map(\.id) == [0, 2])
+        #expect(record.best?.action == StrokeInterpretation.Action.none)
+        #expect(!record.candidates.map(\.action).contains(.mergeVertices))
     }
 
     @Test("hold on a vertex resolves to tweak of that vertex")
@@ -283,8 +279,10 @@ struct StrokeInterpreterTests {
         #expect(record.best?.elements == [.init(kind: .vertex, id: 2)])
     }
 
-    @Test("small circle over an edge resolves to rotate-edge with alternatives")
-    func circleOverEdgeResolvesRotate() throws {
+    /// rotateEdge is retired from the grammar (a tool now): a small circle
+    /// over an edge resolves to createQuad, not a rotate.
+    @Test("small circle over an edge resolves to createQuad, not rotate")
+    func circleOverEdgeResolvesQuad() throws {
         // Midpoint of the cube's projected top border edge is (0.5, 0.1).
         var points: [StrokeGestureCorpus.Point] = []
         for i in 0...72 {
@@ -292,18 +290,13 @@ struct StrokeInterpreterTests {
             points.append(.init(0.5 + 0.05 * cos(angle), 0.1 + 0.05 * sin(angle)))
         }
         let fixture = StrokeGestureCorpus.fixture(
-            name: "rotate_circle", expectedOutcome: "circle:rotateEdge",
+            name: "rotate_circle", expectedOutcome: "circle:createQuad",
             points: points, type: .pencil
         )
         let record = try interpret(fixture, context: cubeContext())
         #expect(record.shape == .circle)
-        #expect(record.context == .edge)
-        let best = try #require(record.best)
-        #expect(best.action == .rotateEdge)
-        #expect(best.elements.count == 1)
-        #expect(best.elements.first?.kind == .edge)
-        // The record carries ranked alternatives (design D5).
-        #expect(record.candidates.count > 1)
+        #expect(record.best?.action == .createQuad)
+        #expect(!record.candidates.map(\.action).contains(.rotateEdge))
     }
 
     @Test("X over a face resolves to delete-faces")
@@ -397,19 +390,15 @@ struct StrokeInterpreterTests {
             }
     }
 
-    @Test("one-stroke grid classifies as grid with a 2x4 lattice estimate")
-    func gridStrokeClassifiesWithLattice() throws {
+    /// The Grid SHAPE still classifies (classifyShape is unchanged, so the
+    /// tool layer can still read it), but createGrid is retired from the
+    /// stroke grammar — a one-stroke grid is a tool now, so it resolves to
+    /// nothing rather than dropping a block of quads by gesture.
+    @Test("one-stroke grid classifies as grid but resolves to no gesture")
+    func gridStrokeClassifiesButOffersNoGesture() throws {
         let record = try interpret(try committedFixture(named: "grid_pencil"))
         #expect(record.shape == .grid)
-        #expect(record.best?.action == .createGrid)
-        let grid = try #require(record.gridSize)
-        #expect(grid.rows == 1)
-        #expect(grid.cols == 3)
-        #expect(record.quadCorners.count == (grid.rows + 1) * (grid.cols + 1))
-        // Lattice sanity: row 0 near the rails' downstroke side, columns
-        // ordered with the stroke (rails at x ~ 0.30/0.44/0.58/0.72).
-        let xs = record.quadCorners.prefix(4).map(\.x)
-        #expect(xs == xs.sorted())
+        #expect(record.best?.action == StrokeInterpretation.Action.none)
     }
 
     /// Spec scenario "Loop insert vs loop tag disambiguation", insert half:
@@ -429,38 +418,16 @@ struct StrokeInterpreterTests {
         // the middle column's three horizontal edges, bottom to top.
         let rings = try endpointSets(of: best, in: mesh)
         #expect(rings == [Set([1, 2]), Set([5, 6]), Set([9, 10])])
-        // Ranked alternatives exist (the tag reading of the same stroke).
-        #expect(record.candidates.map(\.action).contains(.tagLoop))
+        // tagLoop is retired from the grammar — insertLoop is the only line
+        // gesture, no tag alternative.
+        #expect(!record.candidates.map(\.action).contains(.tagLoop))
     }
 
-    /// Spec scenario "Loop insert vs loop tag disambiguation", tag half:
-    /// the same-length stroke ALONG the middle loop resolves to tagging the
-    /// WHOLE loop (walked through the interior valence-4 vertices).
-    @Test("line along a loop resolves to tagging the whole loop")
-    func lineAlongLoopResolvesWholeLoopTag() throws {
-        let mesh = try gridMesh()
-        let record = try interpret(
-            try committedFixture(named: "loop_tag_line_pencil"),
-            context: { (mesh, Self.cubeViewProjection, 1) }
-        )
-        #expect(record.shape == .line)
-        let best = try #require(record.best)
-        #expect(best.action == .tagLoop)
-        // Whole middle row (walk order runs prepend-first; compare as set).
-        let loop = try endpointSets(of: best, in: mesh)
-        #expect(Set(loop) == Set([Set([4, 5]), Set([5, 6]), Set([6, 7])]))
-    }
-
-    @Test("committed merge-line fixture resolves to merging its end vertices")
-    func committedMergeLineResolvesMerge() throws {
-        let record = try interpret(
-            try committedFixture(named: "merge_line_pencil"), context: cubeContext()
-        )
-        let best = try #require(record.best)
-        #expect(best.action == .mergeVertices)
-        #expect(best.elements.map(\.kind) == [.vertex, .vertex])
-        #expect(best.elements.map(\.id) == [0, 2])
-    }
+    // lineAlongLoopResolvesWholeLoopTag and committedMergeLineResolvesMerge
+    // retired: tagLoop and mergeVertices are tools now, not stroke gestures.
+    // A line along a loop or between two vertices no longer resolves to a
+    // gesture (loop-cut by CROSSING edges is covered above); the capabilities
+    // keep tool-level coverage.
 
     /// The committed scribble fixture now deletes the faces it covers
     /// (dissolveEdge retired from the grammar), never an edge dissolve.
@@ -474,15 +441,16 @@ struct StrokeInterpreterTests {
         #expect(best.elements.allSatisfy { $0.kind == .face })
     }
 
-    @Test("committed rotate-circle fixture resolves to rotate-edge")
-    func committedRotateCircleResolvesRotate() throws {
+    /// rotateEdge is retired from the grammar (a tool now): a small circle
+    /// over an edge resolves to createQuad, not a rotate.
+    @Test("committed circle fixture resolves to createQuad, never rotate-edge")
+    func committedCircleResolvesQuadNotRotate() throws {
         let record = try interpret(
             try committedFixture(named: "rotate_circle_pencil"), context: cubeContext()
         )
         #expect(record.shape == .circle)
-        let best = try #require(record.best)
-        #expect(best.action == .rotateEdge)
-        #expect(best.elements.first?.kind == .edge)
+        #expect(record.best?.action == .createQuad)
+        #expect(!record.candidates.map(\.action).contains(.rotateEdge))
     }
 
     /// X over a region: every face whose centroid lies under the X's
@@ -523,17 +491,17 @@ struct StrokeInterpreterTests {
         #expect(record.best?.elements == [.init(kind: .vertex, id: 2)])
     }
 
-    /// A straight line over mesh elements that matches no grammar rule must
-    /// NOT offer toggle-visibility (that gesture lives in empty space); the
-    /// stage-1-only replay of the same fixture still does.
-    @Test("visibility line offer is restricted to empty space")
-    func visibilityLineRequiresEmptySpace() throws {
+    /// toggleVisibility is retired from the grammar (a tool now): a straight
+    /// line resolves to nothing whether it is over a face or over empty
+    /// space — it never toggles visibility by gesture, and it must not hide
+    /// or delete anything.
+    @Test("a straight line offers no gesture anywhere")
+    func straightLineOffersNoGesture() throws {
         let fixture = try committedFixture(named: "line_down_pencil")
         let overFace = try interpret(fixture, context: cubeContext())
-        #expect(overFace.context == .face)
         #expect(overFace.best?.action == StrokeInterpretation.Action.none)
         let emptyStage1 = try interpret(fixture)
-        #expect(emptyStage1.best?.action == .toggleVisibility)
+        #expect(emptyStage1.best?.action == StrokeInterpretation.Action.none)
     }
 
     // MARK: - Quad-corner estimates (engine patch 0008 regression)

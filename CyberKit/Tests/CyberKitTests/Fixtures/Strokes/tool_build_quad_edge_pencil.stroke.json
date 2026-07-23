@@ -1,5 +1,5 @@
 {
-  "expectedOutcome" : "line:toggleVisibility",
+  "expectedOutcome" : "line:none",
   "name" : "tool_build_quad_edge_pencil",
   "samples" : [
     {

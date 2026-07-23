@@ -289,37 +289,35 @@ scenarios:
       - MeshEditingTests/moveAppliesGeodesicFalloff
       - MeshEditingTests/moveIgnoresDisconnectedComponent
       - MeshEditControllerTests/moveDragsWithGeodesicFalloffIgnoringDisconnectedComponent
-    # Task 3.4: both halves against the same committed grid32 mesh + the
-    # real engine recognizer — a stroke ACROSS the quad ring interprets as
-    # insertLoop whose elements walk the WHOLE ring (engine loop walk, capi
-    # cyber_retopo_insert_loop splits every ring quad), a stroke ALONG the
-    # loop interprets as tagLoop carrying the whole loop; the app-level
-    # tests replay both strokes through capture → recognizer → controller
-    # and assert the resulting mesh/annotation state plus undo.
+    # Task 3.4 + simplify-gesture-grammar: against the committed grid32 mesh
+    # and the real engine recognizer, a stroke ACROSS the quad ring interprets
+    # as insertLoop whose elements walk the WHOLE ring (engine loop walk, capi
+    # cyber_retopo_insert_loop splits every ring quad). loop TAG (a line ALONG
+    # a loop) left the curated grammar — a line is now always an insert loop —
+    # so its former gesture tests retire; the tag ANNOTATION op keeps
+    # tool-level coverage (GrammarMeshOpsTests/taggedEdgesSurfaceInRenderBuffers
+    # under the QA regression suite). The app-level test replays the stroke
+    # through capture → recognizer → controller and asserts mesh state + undo.
     Loop insert vs loop tag disambiguation:
       - StrokeInterpreterTests/lineAcrossRingResolvesFullLoopInsert
-      - StrokeInterpreterTests/lineAlongLoopResolvesWholeLoopTag
+      - StrokeInterpreterTests/straightLineOffersNoGesture
       - MeshEditControllerTests/lineAcrossRingInsertsFullEdgeLoopAndUndoRestoresBytes
-      - MeshEditControllerTests/lineAlongLoopTagsWholeLoopWithColoredRenderAndUndoClears
-    # Task 3.5: the spec's exact misrecognition pair, driven through the
-    # REAL engine recognizer — an along-the-loop stroke (recorded with the
-    # corpus's standard hand wobble) applies as tagLoop with insertLoop
-    # ranked as the alternative; one tap rebuilds the alternative from the
-    # byte-exact pre-stroke snapshot and the document swaps the journaled
-    # command IN PLACE (UndoJournal.replaceCurrent +
-    # TopoDocument.performReplacingLast): exactly one journal entry after
-    # the swap, a single undo steps over it, stale chips (undo landed
-    # first) are rejected untouched. The UI test drives the finger
-    # injection path end to end — stroke, chip, alternative tap, mesh
-    # counts, and the undo-gesture journal invariant.
+    # Task 3.5 + simplify-gesture-grammar: the interpretation chip's one-tap
+    # swap MECHANISM is unchanged (UndoJournal.replaceCurrent +
+    # TopoDocument.performReplacingLast swap the journaled command IN PLACE:
+    # one entry after the swap, a single undo steps over it, stale chips are
+    # rejected). Under the curated grammar the tag-vs-insert misread pair is
+    # gone, so the state-machine coverage exercises the swap over the only
+    # remaining plausible ambiguity — quad vs triangle corner count. The UI
+    # test now asserts the ring stroke inserts a loop DIRECTLY with no
+    # alternative to swap.
     One-tap misrecognition fix:
-      - MeshEditControllerTests/tagLoopStrokeSwapsToInsertLoopInPlace
-      - MeshEditControllerTests/ringStrokeOnSeededStripSwapsToInsertLoopViaTheModel
-      - MeshEditControllerTests/alternativeSwapAfterUndoIsRejectedUntouched
+      - InterpretationChipStateTests/showPublishesTitleConfidenceAndAlternatives
+      - InterpretationChipStateTests/replaceAfterSwapShowsTheSwappedResultWithSwapBack
       - UndoJournalTests/replaceCurrentKeepsExactlyOneEntry
       - TopoDocumentUndoTests/performReplacingLastSwapsAtomicallyAndGuardsStaleChips
       - InterpretationChipStateTests/nextStrokeWhileVisibleDismissesImmediately
-      - CyberTopologyUITests/testInterpretationChipSwapsAlternativeInPlace
+      - CyberTopologyUITests/testRingStrokeInsertsLoopDirectlyWithoutAmbiguity
     # Task 3.6: hover probes drive the FULL query path the hover recognizer
     # feeds — coordinator entry → live camera ray → engine Target raycast →
     # engine nearest-edge pick → interior-edge gate → the REAL engine
@@ -390,28 +388,33 @@ scenarios:
     # through capture → recognizer → verb layer it creates a journaled,
     # target-snapped quad (golden-filed engine result in
     # quadCreateMatchesGolden), and undo restores the exact bytes.
-    # Task 3.4 grows the corpus to the FULL grammar: every entry has a
-    # committed stroke fixture (provenance-pinned, goldened) replayed
-    # through the real engine recognizer with the interpretation asserted
-    # against seeded meshes, the engine op goldened where deterministic
-    # (GrammarMeshOpsTests), and an end-to-end capture → recognizer →
-    # controller → journal test with undo coverage
-    # (MeshEditControllerTests).
+    # Task 3.4 grew the corpus to the full grammar; simplify-gesture-grammar
+    # then CURATED the stroke path down to four gestures (create quad, create
+    # triangle, delete faces, insert loop). The GESTURE tests assert the cut:
+    # a scribble/lasso/circle no longer dissolve/hide/rotate — they resolve to
+    # delete/quad/quad — a grid classifies but offers no gesture, and a lone
+    # line offers none (tag removed). The underlying mesh OPS (dissolve, merge,
+    # rotate, grid, hide, tag) keep tool-level coverage in GrammarMeshOpsTests,
+    # since simplify-gesture-grammar removed only their gesture bindings, not
+    # the ops. End-to-end capture → recognizer → controller → journal coverage
+    # with undo lives in MeshEditControllerTests.
     Gesture grammar regression suite:
       - StrokeInterpreterTests/committedFixturesReplayThroughEngineRecognizer
       - StrokeInterpreterTests/corpusMatchesGenerators
       - StrokeInterpreterTests/interpretationRecordsMatchGoldens
       - StrokeInterpreterTests/interpretationIsDeterministic
-      - StrokeInterpreterTests/gridStrokeClassifiesWithLattice
+      - StrokeInterpreterTests/squareOnEmptySurfaceResolvesCreateQuad
+      - StrokeInterpreterTests/closedTriangleResolvesToCreateTriangle
       - StrokeInterpreterTests/lineAcrossRingResolvesFullLoopInsert
-      - StrokeInterpreterTests/lineAlongLoopResolvesWholeLoopTag
-      - StrokeInterpreterTests/committedMergeLineResolvesMerge
-      - StrokeInterpreterTests/committedDissolveScribbleResolvesDissolve
-      - StrokeInterpreterTests/committedRotateCircleResolvesRotate
+      - StrokeInterpreterTests/straightLineOffersNoGesture
+      - StrokeInterpreterTests/lineBetweenVerticesOffersNoGesture
+      - StrokeInterpreterTests/gridStrokeClassifiesButOffersNoGesture
+      - StrokeInterpreterTests/committedScribbleResolvesDelete
+      - StrokeInterpreterTests/committedCircleResolvesQuadNotRotate
       - StrokeInterpreterTests/committedCrossResolvesRegionDelete
-      - StrokeInterpreterTests/committedHideLassoResolvesHide
+      - StrokeInterpreterTests/committedHideLassoResolvesQuad
+      - StrokeInterpreterTests/closedXResolvesToDeleteNotHide
       - StrokeInterpreterTests/committedTapResolvesTweakVertex
-      - StrokeInterpreterTests/visibilityLineRequiresEmptySpace
       - GrammarMeshOpsTests/loopWalksMatchGridTopology
       - GrammarMeshOpsTests/insertLoopSplitsWholeOpenRing
       - GrammarMeshOpsTests/insertLoopWrapsClosedRing
@@ -424,15 +427,12 @@ scenarios:
       - GrammarMeshOpsTests/taggedEdgesSurfaceInRenderBuffers
       - MeshEditControllerTests/squareFixtureCreatesJournaledQuadOnSeededTarget
       - MeshEditControllerTests/squareFixtureAppendsQuadToExistingEditMesh
-      - MeshEditControllerTests/gridStrokeCreatesBlockOfQuadsInOneJournalEntry
+      - MeshEditControllerTests/tallThinQuadCreatesASimpleFaceNotABowtie
+      - MeshEditControllerTests/degeneratePencilQuadDiscardsAndJournalsNothing
+      - MeshEditControllerTests/gridStrokeIsNoLongerAGesture
       - MeshEditControllerTests/lineAcrossRingInsertsFullEdgeLoopAndUndoRestoresBytes
-      - MeshEditControllerTests/lineAlongLoopTagsWholeLoopWithColoredRenderAndUndoClears
-      - MeshEditControllerTests/scribbleOverEdgeDissolvesItIntoOneQuad
+      - MeshEditControllerTests/closedStrokeOverFacesCreatesQuadAndHidesNothing
       - MeshEditControllerTests/xOverAFaceDeletesItAndUndoRestores
-      - MeshEditControllerTests/vertexToVertexLineMergesThem
-      - MeshEditControllerTests/circleOverEdgeRotatesTheDiagonal
-      - MeshEditControllerTests/lassoFromEmptySpaceHidesEnclosedFacesAndUndoShows
-      - MeshEditControllerTests/verticalLinesInEmptySpaceInvertAndShowAllVisibility
       - MeshEditControllerTests/doubleTapOnVertexActivatesTweakVerb
       - MeshEditingTests/quadCreateMatchesGolden
     # Device-only frame-time tests skip on simulator via XCTSkip with an

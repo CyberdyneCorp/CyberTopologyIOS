@@ -1,5 +1,5 @@
 {
-  "expectedOutcome" : "grid:createGrid",
+  "expectedOutcome" : "grid:none",
   "name" : "grid_pencil",
   "samples" : [
     {

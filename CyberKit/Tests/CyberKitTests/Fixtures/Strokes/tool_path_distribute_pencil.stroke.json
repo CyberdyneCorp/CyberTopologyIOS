@@ -1,5 +1,5 @@
 {
-  "expectedOutcome" : "line:toggleVisibility",
+  "expectedOutcome" : "line:none",
   "name" : "tool_path_distribute_pencil",
   "samples" : [
     {
