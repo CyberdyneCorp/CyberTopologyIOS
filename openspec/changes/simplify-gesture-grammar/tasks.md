@@ -5,14 +5,25 @@ against synthesized strokes has already failed twice.
 
 ## 1. Real-stroke corpus (prerequisite)
 
-- [ ] 1.1 Capture 3-5 real failing quad strokes on device with the task-1.1b
-      fixture recorder: adjacent-to-existing-quad, overshooting the seam,
-      stopping short of the seam, on a curved surface. Commit under
-      `CyberKit/Tests/CyberKitTests/Fixtures/Strokes/` with provenance
-      (device, Target model, what the user intended).
-- [ ] 1.2 Add a failing-by-design test asserting each records `createQuad`.
-      It documents the bug before the fix, and becomes the acceptance
-      criterion for task 3.
+- [x] 1.1 Capture 3-5 real failing quad strokes on device with the task-1.1b
+      fixture recorder. Committed under
+      `CyberKit/Tests/CyberKitTests/Fixtures/DeviceStrokes/` — NOT
+      `Fixtures/Strokes/`, which is a synthetic corpus whose every file must
+      match a code generator (`corpusMatchesGenerators`) and replay to its
+      expected outcome; captured strokes satisfy neither. Four strokes, one
+      per side of a central quad, each an open "U" adjacent to the shared
+      edge; all recorded `shape=unknown; none:0.20` on device. Provenance
+      (device, Target, intent, what the recognizer answered) is embedded in
+      each fixture and summarized in `DeviceStrokes/PROVENANCE.md`.
+      (Deferred: overshoot / stop-short / curved-surface variants — the four
+      adjacent-quad captures already reproduce the bug; add the others if the
+      re-tune needs more geometry.)
+- [x] 1.2 `DeviceStrokeCorpusTests` asserts each capture resolves to
+      `createQuad` through the real engine recognizer. Failing by design
+      today, wrapped per-fixture in `withKnownIssue` so the suite stays green
+      while the bug is documented; when the re-tune lands, each known issue
+      resolves and Swift Testing flags it as unexpectedly passing. This is
+      the acceptance criterion for task 3.
 
 ## 2. Cut the grammar to three gestures
 
