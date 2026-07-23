@@ -67,19 +67,27 @@ against synthesized strokes has already failed twice.
 
 ## 4. Weld created faces onto existing topology
 
-- [ ] 4.1 Engine: corner-resolution pass for `createQuad`/`createTriangle` —
-      a corner within a scale-free radius of an existing vertex reuses it; a
-      corner on an existing edge shares that edge. Follow the Build Quad
-      tool's release-merge semantics (task 4.1 of the parent change) rather
-      than inventing new rules.
-- [ ] 4.2 App: route the gesture path through it inside the stroke's single
-      `MeshEditTransaction`, so one undo still removes the whole face.
-- [ ] 4.3 Acceptance test from the reference application's counts: starting
-      from one quad (4 v / 4 e / 1 f), drawing an adjacent quad sharing one
-      edge yields 6 v / 7 e / 2 f — +2 vertices, +3 edges, +1 face, NOT +4
-      vertices and a disconnected face.
-- [ ] 4.4 Anti-vacuity: a quad drawn far from existing topology still
-      creates 4 new vertices.
+- [x] 4.1 `Mesh.createWeldedFace(at:mergeRadius:snapping:)` (CyberKit): each
+      corner within `mergeRadius` (the tool's `mergeSnapRadiusFraction` of the
+      scene) of an existing vertex resolves to `.existing` UP FRONT, so
+      `buildFace` corrects the new face's winding against the reused boundary
+      edge, then a safety-net merge folds any leftover new vertex onto a
+      coincident existing one. Follows the Build Quad tool's release-merge
+      semantics (app-side resolution via `buildFace`) rather than a new C API.
+      Corner-on-edge splitting is deferred: vertex reuse already yields the
+      reference counts for the adjacent-quad case; edge-splitting is a
+      refinement for corners landing mid-edge.
+- [x] 4.2 `MeshEditController` gesture `createQuad` (and the alternative-swap
+      rebuild) route through it. The weld's `buildFace` + merges run inside
+      the closure `applyCreate` executes within the stroke's one
+      `MeshEditTransaction`, so a single undo removes the whole welded face.
+- [x] 4.3 `BuildToolsOpsTests/weldedFaceSharesEdgeWithAdjacentQuad`: one quad
+      (4v/4e/1f) + an adjacent quad sharing an edge yields exactly 6v/7e/2f,
+      and the shared edge borders both faces.
+- [x] 4.4 `weldedFaceFarFromTopologyIsStandalone` (a far quad still adds 4
+      new vertices, stays disconnected) plus `weldedFaceOnEmptyMeshCreates-
+      Standalone` (first stroke of a retopo). Full suite green: 560 app +
+      271 CyberKit.
 
 ## 5. Deferred / explicitly out of scope
 

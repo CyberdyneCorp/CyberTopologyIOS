@@ -133,6 +133,64 @@ struct BuildToolsOpsTests {
         #expect(next != 1, "new face must traverse 0 -> 1 in reverse, ring: \(ring), apex \(apex)")
     }
 
+    // MARK: - Gesture face welding (change simplify-gesture-grammar, task 4)
+
+    /// Task 4.3 acceptance from the reference application's counts: a quad
+    /// drawn adjacent to an existing quad, two of its corners on the shared
+    /// edge, welds — +2 vertices, +3 edges, +1 face (6v / 7e / 2f), NOT a
+    /// free-floating duplicate (+4 vertices, a disconnected face).
+    @Test("createWeldedFace shares an edge with an adjacent quad (6v/7e/2f)")
+    func weldedFaceSharesEdgeWithAdjacentQuad() throws {
+        let quad = try singleQuad()
+        #expect(quad.vertexCount == 4)
+        #expect(quad.edgeCount == 4)
+        #expect(quad.faceCount == 1)
+        // Adjacent quad to the right; corners 0 and 3 sit on the existing
+        // right edge, verts id1 (1,0,0) and id2 (1,1,0).
+        let built = try quad.createWeldedFace(
+            at: [SIMD3(1, 0, 0), SIMD3(2, 0, 0), SIMD3(2, 1, 0), SIMD3(1, 1, 0)],
+            mergeRadius: 0.1
+        )
+        #expect(quad.vertexCount == 6, "expected +2 vertices, got \(quad.vertexCount)")
+        #expect(quad.edgeCount == 7, "expected +3 edges, got \(quad.edgeCount)")
+        #expect(quad.faceCount == 2, "expected +1 face, got \(quad.faceCount)")
+        #expect(built.newVertices.count == 2)
+        // The shared edge now borders BOTH faces — a real weld, not an
+        // overlap.
+        let shared = try edge(of: quad, near: SIMD3(1, 0.5, 0))
+        #expect(quad.edgeFaces(of: shared).count == 2)
+    }
+
+    /// Task 4.4 anti-vacuity: a quad drawn far from any topology still
+    /// creates four new vertices and stays disconnected — the weld must not
+    /// collapse an isolated quad onto unrelated geometry.
+    @Test("createWeldedFace far from topology is a standalone quad (+4 vertices)")
+    func weldedFaceFarFromTopologyIsStandalone() throws {
+        let quad = try singleQuad()
+        try quad.createWeldedFace(
+            at: [SIMD3(10, 10, 0), SIMD3(11, 10, 0), SIMD3(11, 11, 0), SIMD3(10, 11, 0)],
+            mergeRadius: 0.1
+        )
+        #expect(quad.vertexCount == 8, "4 original + 4 new")
+        #expect(quad.faceCount == 2)
+        // The original right edge still borders only its own face.
+        let rightEdge = try edge(of: quad, near: SIMD3(1, 0.5, 0))
+        #expect(quad.edgeFaces(of: rightEdge).count == 1)
+    }
+
+    /// The first stroke of a retopo: an empty mesh has nothing to weld to,
+    /// so every corner is new.
+    @Test("createWeldedFace on an empty mesh creates the first quad")
+    func weldedFaceOnEmptyMeshCreatesStandalone() throws {
+        let mesh = try Mesh()
+        try mesh.createWeldedFace(
+            at: [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 1, 0), SIMD3(0, 1, 0)],
+            mergeRadius: 0.1
+        )
+        #expect(mesh.vertexCount == 4)
+        #expect(mesh.faceCount == 1)
+    }
+
     @Test("buildFace corner quad: one existing vertex + three snapped points")
     func buildFaceCornerQuadSnapsNewPoints() throws {
         let quad = try singleQuad()

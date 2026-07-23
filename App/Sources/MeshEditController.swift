@@ -695,12 +695,17 @@ final class MeshEditController {
         switch best.action {
         case .createQuad:
             guard interpretation.quadCorners.count == 4 else { return }
+            let mergeRadius = context.sceneRadius * Self.mergeSnapRadiusFraction
             applyCreate(
                 verb: "pencil.createQuad",
                 screenPoints: interpretation.quadCorners,
                 context: context
             ) { mesh, corners, snapper in
-                try mesh.createFace(at: corners, snapping: snapper)
+                // Weld onto existing topology: a quad drawn against an
+                // existing edge shares it (task 4) instead of floating free.
+                try mesh.createWeldedFace(
+                    at: corners, mergeRadius: mergeRadius, snapping: snapper
+                )
             }
         case .createGrid:
             guard let grid = interpretation.gridSize,
@@ -933,7 +938,14 @@ final class MeshEditController {
             verb = "pencil.rotateEdge"
         case .createQuad:
             guard let corners = stroke.worldCorners, corners.count == 4 else { return nil }
-            try mesh.createFace(at: corners, snapping: contextProvider?()?.snapper)
+            // Weld like the live gesture path, so a swap-to-quad shares
+            // edges identically (task 4).
+            let context = contextProvider?()
+            try mesh.createWeldedFace(
+                at: corners,
+                mergeRadius: (context?.sceneRadius ?? 1) * Self.mergeSnapRadiusFraction,
+                snapping: context?.snapper
+            )
             verb = "pencil.createQuad"
         default:
             return nil

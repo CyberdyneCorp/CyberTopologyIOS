@@ -74,6 +74,54 @@ extension Mesh {
         )
     }
 
+    /// Creates a face over `corners` that WELDS onto existing topology
+    /// (Pencil quad/triangle gesture; change simplify-gesture-grammar task
+    /// 4). Each corner within `mergeRadius` of an existing vertex reuses it,
+    /// so a quad drawn adjacent to an existing quad's edge SHARES that edge
+    /// (+2 vertices / +3 edges / +1 face) instead of landing as a
+    /// free-floating duplicate (+4 vertices / a disconnected face).
+    ///
+    /// Same release-merge semantics as the Build Quad tool: corners are
+    /// resolved to existing vertices UP FRONT, so `buildFace` sees the shared
+    /// slots and corrects the new face's winding against the reused boundary
+    /// edge (coherent normals across the weld). A safety-net merge then folds
+    /// any new vertex that still coincides with an existing one — a corner
+    /// just outside the pick, or one whose nearest vertex a sibling slot
+    /// already claimed — never onto the new face's own ring, which would
+    /// degenerate it. On an empty mesh (the first stroke of a retopo) nothing
+    /// is in range and every corner is new, so a standalone face is created.
+    @discardableResult
+    public func createWeldedFace(
+        at corners: [SIMD3<Float>], mergeRadius: Float,
+        snapping snapper: SurfaceSnapper? = nil
+    ) throws -> BuiltFace {
+        var slots: [BuildRingSlot] = []
+        slots.reserveCapacity(corners.count)
+        var claimed = Set<UInt32>()
+        for corner in corners {
+            if let pick = nearestVertex(to: corner, maxDistance: mergeRadius),
+                !claimed.contains(pick.vertex) {
+                slots.append(.existing(pick.vertex))
+                claimed.insert(pick.vertex)
+            } else {
+                slots.append(.point(corner))
+            }
+        }
+        let built = try buildFace(ring: slots, snapping: snapper)
+        let ring = Set(built.ringVertices)
+        for vertex in built.newVertices {
+            guard
+                let position = vertexPosition(vertex),
+                let pick = nearestVertex(
+                    to: position, maxDistance: mergeRadius, excluding: vertex
+                ),
+                !ring.contains(pick.vertex)
+            else { continue }
+            try mergeVertices(keep: pick.vertex, remove: vertex)
+        }
+        return built
+    }
+
     /// Grows the single triangle on a BOUNDARY edge into a quad (Build
     /// Quad's triangle-edge drag): splits the edge and drops the new ring
     /// vertex at `point` (snapped when a snapper is given). Returns the new
