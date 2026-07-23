@@ -1,0 +1,45 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index fdb97c0..209eac6 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -239,6 +239,13 @@ const float* cyber_mesh_colors_ptr(const CyberMesh* mesh, size_t* out_count);
+ size_t cyber_mesh_live_faces(const CyberMesh* mesh, uint32_t* out_faces,
+                              size_t max_faces);
+ 
++/* Stable vertex ids around one face, in ring order. copy_positions
++ * convention: returns the face's vertex COUNT (its valence) and fills at
++ * most max_verts entries of out_verts (which may be NULL when max_verts is
++ * 0, for size queries). Returns 0 for a dead or out-of-range face id. */
++size_t cyber_mesh_face_vertices(const CyberMesh* mesh, uint32_t face,
++                                uint32_t* out_verts, size_t max_verts);
++
+ /* Replaces the hidden-face set (faces may be NULL when face_count is 0 —
+  * show all). Hidden faces are dropped from the triangle, edge, and normal
+  * streams; vertices used exclusively by hidden faces are dropped from the
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index 47835a1..eb376fa 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -749,6 +749,22 @@ size_t cyber_mesh_live_faces(const CyberMesh* mesh, uint32_t* out_faces,
+     return total;
+ }
+ 
++size_t cyber_mesh_face_vertices(const CyberMesh* mesh, uint32_t face,
++                                uint32_t* out_verts, size_t max_verts) {
++    if (mesh == nullptr || !mesh->mesh.isAlive(cyber::FaceId{face})) {
++        return 0;
++    }
++    const std::vector<cyber::VertexId> verts =
++        mesh->mesh.faceVertices(cyber::FaceId{face});
++    if (out_verts != nullptr) {
++        const size_t count = std::min(verts.size(), max_verts);
++        for (size_t i = 0; i < count; ++i) {
++            out_verts[i] = verts[i].value;
++        }
++    }
++    return verts.size();
++}
++
+ CyberStatus cyber_mesh_set_hidden_faces(CyberMesh* mesh, const uint32_t* faces,
+                                         size_t face_count) {
+     if (mesh == nullptr || (faces == nullptr && face_count > 0)) {

@@ -284,6 +284,18 @@ extension Mesh {
         }
     }
 
+    /// Stable vertex ids around `face`, in ring order — empty for a dead or
+    /// out-of-range face id. The read query the face-only operations need to
+    /// contribute an Auto Relax neighbourhood (task 4.5a) and that element-id
+    /// provenance can use instead of a position diff.
+    public func faceVertices(_ face: UInt32) -> [UInt32] {
+        let count = cyber_mesh_face_vertices(handle, face, nil, 0)
+        guard count > 0 else { return [] }
+        return [UInt32](unsafeUninitializedCapacity: count) { buffer, written in
+            written = cyber_mesh_face_vertices(handle, face, buffer.baseAddress, count)
+        }
+    }
+
     /// Stable ids of every live vertex. The capi has no vertex-liveness
     /// enumerator, so this scans ids by position query (dead ids return nil,
     /// the same signal `payloadIDCompaction` relies on) up to the live count

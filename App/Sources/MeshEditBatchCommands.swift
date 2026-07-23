@@ -166,9 +166,10 @@ extension MeshEditController {
     }
 
     /// World positions of the elements a grammar candidate addresses — the
-    /// neighbourhood its Auto Relax pass runs over. Face elements
-    /// contribute nothing (the engine exposes no face-centroid query), so
-    /// face-only operations get no Auto Relax pass; see tasks.md 4.5a.
+    /// neighbourhood its Auto Relax pass runs over. Face elements resolve to
+    /// their ring vertices (engine `faceVertices` query, task 4.5a), so a
+    /// face-only op like X-delete now redistributes the topology around the
+    /// hole it left.
     func autoRelaxPoints(
         of elements: [StrokeInterpretation.Element], mesh: Mesh?
     ) -> [SIMD3<Float>] {
@@ -184,7 +185,9 @@ extension MeshEditController {
                     if let position = mesh.vertexPosition(vertex) { points.append(position) }
                 }
             case .face:
-                continue
+                for vertex in mesh.faceVertices(element.id) {
+                    if let position = mesh.vertexPosition(vertex) { points.append(position) }
+                }
             }
         }
         return points

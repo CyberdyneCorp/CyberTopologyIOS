@@ -754,7 +754,14 @@ final class MeshEditController {
         case .deleteFaces:
             let faces = elementIDs(of: best, kind: .face)
             guard !faces.isEmpty else { return }
-            applyElementEdit(verb: "pencil.deleteFaces", context: context) { mesh in
+            // Auto Relax (task 4.5a) evens the topology around the hole. The
+            // neighbourhood is the deleted faces' rings, resolved BEFORE the
+            // delete runs (the argument is evaluated first, while the faces
+            // are still alive) via the engine `faceVertices` query.
+            applyElementEdit(
+                verb: "pencil.deleteFaces", context: context,
+                autoRelaxAround: autoRelaxPoints(of: best.elements, mesh: context.editMesh)
+            ) { mesh in
                 try mesh.deleteFaces(faces)
             }
         case .mergeVertices:

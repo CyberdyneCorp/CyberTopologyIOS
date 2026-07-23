@@ -1004,6 +1004,54 @@ struct MeshEditControllerTests {
         #expect(try harness.editMesh().faceCount == 6)
     }
 
+    /// Task 4.5a (face-only Auto Relax, enabled by the engine `faceVertices`
+    /// query): deleting a face with Auto Relax on redistributes the topology
+    /// around the hole — the face's ring is now a resolvable neighbourhood —
+    /// while the same delete with the mode off leaves the neighbours put. One
+    /// journal entry either way.
+    @Test func deleteFacesRunsAutoRelaxAroundTheHole() throws {
+        // Deletes the face adjacent to the perturbed vertex (1.35, 0.75).
+        func deleteInteriorFace(on harness: Harness) {
+            harness.stroke(verb: .pencil, through: harness.densified(through: [
+                harness.screenPoint(of: SIMD3(1.2, 1.1, 0)),
+                harness.screenPoint(of: SIMD3(1.9, 1.7, 0)),
+                harness.screenPoint(of: SIMD3(1.9, 1.1, 0)),
+                harness.screenPoint(of: SIMD3(1.2, 1.7, 0)),
+            ], samplesPerSegment: 16))
+        }
+
+        // Auto Relax OFF baseline.
+        let off = try Harness()
+        try addPlaneTarget(to: off)
+        try addPerturbedGridEditMesh(to: off)
+        off.coordinator.meshEditor.autoRelaxEnabled = false
+        deleteInteriorFace(on: off)
+        #expect(off.bundle.journal.depth == 1)
+        let offMesh = try off.editMesh()
+        #expect(offMesh.faceCount == 8)
+        let offPositions = offMesh.positions()
+
+        // Auto Relax ON — same seed, same delete.
+        let on = try Harness()
+        try addPlaneTarget(to: on)
+        try addPerturbedGridEditMesh(to: on)
+        on.coordinator.meshEditor.autoRelaxEnabled = true
+        deleteInteriorFace(on: on)
+
+        #expect(on.bundle.journal.depth == 1)  // delete + relax = one entry
+        guard case .meshEdit(let edit) = try #require(on.committed.first) else {
+            Issue.record("expected a meshEdit command")
+            return
+        }
+        #expect(edit.verb == "pencil.deleteFaces")
+        let onMesh = try on.editMesh()
+        #expect(onMesh.faceCount == 8, "the same face was deleted")
+        #expect(
+            onMesh.positions() != offPositions,
+            "Auto Relax redistributed the vertices around the deleted face"
+        )
+    }
+
     // vertexToVertexLineMergesThem retired: mergeVertices is a tool now, not
     // a stroke gesture — a line between two vertices no longer merges them.
     // circleOverEdgeRotatesTheDiagonal retired: rotateEdge is a tool now — a

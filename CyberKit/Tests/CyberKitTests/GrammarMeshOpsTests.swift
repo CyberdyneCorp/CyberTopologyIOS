@@ -362,6 +362,25 @@ struct GrammarMeshOpsTests {
         #expect(grid.liveFaceIDs() == [0, 1, 3, 4, 5])
     }
 
+    @Test("faceVertices returns a face's ring of live vertices; dead faces are empty")
+    func faceVerticesReturnsTheRing() throws {
+        let grid = try grid32()
+        let ring = grid.faceVertices(0)
+        #expect(ring.count == 4)               // grid32 is all quads
+        #expect(Set(ring).count == 4)          // distinct ids
+        #expect(ring.allSatisfy { grid.vertexPosition($0) != nil })
+        // Consecutive ring vertices are joined by a live edge (it really is
+        // the face's boundary, in order).
+        for i in ring.indices {
+            let a = try #require(grid.vertexPosition(ring[i]))
+            let b = try #require(grid.vertexPosition(ring[(i + 1) % ring.count]))
+            #expect(grid.nearestEdge(to: (a + b) * 0.5, maxDistance: 1e-3) != nil)
+        }
+        // A dead face id yields nothing.
+        try grid.deleteFaces([0])
+        #expect(grid.faceVertices(0).isEmpty)
+    }
+
     // MARK: - MeshAnnotations transforms + journal command
 
     @Test("annotation transforms are deterministic and normalize ordering")
