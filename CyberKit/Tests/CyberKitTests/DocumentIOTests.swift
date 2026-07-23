@@ -41,6 +41,92 @@ struct DocumentIOTests {
         #expect(mesh.faceCount == 6)
     }
 
+    // MARK: - Object removal + import replacement (manage-document-objects)
+
+    /// Applying `addObject` then `importCommand` for the SAME role replaces
+    /// (not stacks), and a single undo restores the previous object exactly.
+    @Test("re-importing a same-role object replaces it; one undo restores the previous")
+    func reimportReplacesSameRole() throws {
+        var bundle = DocumentBundle()
+        let first = try bundle.importCommand(
+            for: fixtureURL("cube_colored"), name: "modelA", role: .target
+        )
+        first.apply(to: &bundle)
+        let before = bundle
+        #expect(bundle.manifest.objects.filter { $0.role == .target }.count == 1)
+
+        // Import a second Target: must be a replace compound.
+        let replace = try bundle.importCommand(
+            for: fixtureURL("cube_colored"), name: "modelB", role: .target
+        )
+        guard case .compound(let verb, let commands) = replace else {
+            Issue.record("expected a replace compound, got \(replace)")
+            return
+        }
+        #expect(verb == "import.replace")
+        #expect(commands.count == 2)
+
+        replace.apply(to: &bundle)
+        let targets = bundle.manifest.objects.filter { $0.role == .target }
+        #expect(targets.count == 1, "still exactly one Target")
+        #expect(targets.first?.name == "modelB")
+
+        // One undo restores modelA as the only Target, byte-exact.
+        replace.revert(on: &bundle)
+        #expect(bundle.manifest.objects == before.manifest.objects)
+        #expect(bundle.payloads == before.payloads)
+    }
+
+    /// Importing into an EMPTY slot is a plain add (anti-vacuity), and one
+    /// undo removes it.
+    @Test("importing into an empty slot adds; one undo removes it")
+    func importIntoEmptySlotAdds() throws {
+        var bundle = DocumentBundle()
+        let command = try bundle.importCommand(
+            for: fixtureURL("cube_colored"), name: "modelA", role: .target
+        )
+        guard case .addObject = command else {
+            Issue.record("expected a plain addObject into an empty slot, got \(command)")
+            return
+        }
+        command.apply(to: &bundle)
+        #expect(bundle.manifest.objects.count == 1)
+        command.revert(on: &bundle)
+        #expect(bundle.manifest.objects.isEmpty)
+        #expect(bundle.payloads.isEmpty)
+    }
+
+    /// Deleting a Target leaves an EditMesh intact; a single undo restores
+    /// the Target with byte-exact payload.
+    @Test("removeObject deletes one object, leaves the other, and undoes exactly")
+    func removeObjectDeletesAndUndoes() throws {
+        var bundle = DocumentBundle()
+        try bundle.importCommand(for: fixtureURL("cube_colored"), name: "T", role: .target)
+            .apply(to: &bundle)
+        try bundle.importCommand(for: fixtureURL("cube_colored"), name: "E", role: .editMesh)
+            .apply(to: &bundle)
+        let before = bundle
+        let target = try #require(bundle.manifest.objects.first { $0.role == .target })
+
+        let remove = try #require(bundle.removeObjectCommand(id: target.id))
+        remove.apply(to: &bundle)
+        #expect(bundle.manifest.objects.map(\.role) == [.editMesh], "only the EditMesh remains")
+        #expect(bundle.payloads[target.payloadFile] == nil, "the Target's payload is gone")
+
+        remove.revert(on: &bundle)
+        #expect(bundle.manifest.objects == before.manifest.objects)
+        #expect(bundle.payloads == before.payloads)
+    }
+
+    /// An unknown id yields no command (no crash, no accidental deletion).
+    @Test("removeObjectCommand is nil for an unknown id")
+    func removeObjectUnknownIDIsNil() throws {
+        var bundle = DocumentBundle()
+        try bundle.importCommand(for: fixtureURL("cube_colored"), name: "T", role: .target)
+            .apply(to: &bundle)
+        #expect(bundle.removeObjectCommand(id: UUID()) == nil)
+    }
+
     @Test("vertex colors survive the engine payload round-trip")
     func vertexColorsPreserved() throws {
         let bundle = DocumentBundle()

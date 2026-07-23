@@ -17,6 +17,12 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
     /// file. TODO: move payload bytes to a content-addressed store if
     /// journal size becomes a problem for very large imports.
     case addObject(object: DocumentManifest.Object, payload: Data)
+    /// Object removal (delete, or the remove half of an import replacement).
+    /// Carries the manifest entry, its payload bytes, and the object's
+    /// ORIGINAL index so undo restores it verbatim AND in place — a Target
+    /// removed from the middle of the object list comes back where it was,
+    /// keeping the undo byte- and order-exact.
+    case removeObject(object: DocumentManifest.Object, payload: Data, index: Int)
     /// Mesh-level edit of one object (task 3.3, the five RT verbs): carries
     /// the EXACT before/after payload bytes plus the manifest bookkeeping
     /// (counts, revision), so apply and revert are byte-exact in both
@@ -111,6 +117,9 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
         case .addObject(let object, let payload):
             bundle.payloads[object.payloadFile] = payload
             bundle.manifest.objects.append(object)
+        case .removeObject(let object, _, _):
+            bundle.manifest.objects.removeAll { $0.id == object.id }
+            bundle.payloads.removeValue(forKey: object.payloadFile)
         case .meshEdit(let edit):
             bundle.payloads[edit.payloadFile] = edit.after
             bundle.updateObject(id: edit.objectID) { object in
@@ -136,6 +145,11 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
         case .addObject(let object, _):
             bundle.manifest.objects.removeAll { $0.id == object.id }
             bundle.payloads.removeValue(forKey: object.payloadFile)
+        case .removeObject(let object, let payload, let index):
+            bundle.payloads[object.payloadFile] = payload
+            bundle.manifest.objects.insert(
+                object, at: min(max(index, 0), bundle.manifest.objects.count)
+            )
         case .meshEdit(let edit):
             bundle.payloads[edit.payloadFile] = edit.before
             bundle.updateObject(id: edit.objectID) { object in
@@ -172,7 +186,7 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
             // Last writer wins, matching apply order.
             return commands.reversed().lazy
                 .compactMap { $0.resultingPayload(forObject: object) }.first
-        case .addObject, .annotationEdit, .setSymmetry, .setStage:
+        case .addObject, .removeObject, .annotationEdit, .setSymmetry, .setStage:
             return nil
         }
     }

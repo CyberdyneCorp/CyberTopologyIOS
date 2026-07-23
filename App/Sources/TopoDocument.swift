@@ -112,6 +112,13 @@ final class TopoDocument: UIDocument, ObservableObject {
         perform(command)
     }
 
+    /// Removes the object `id` (delete affordance) as one undoable step.
+    /// No-op for an unknown id.
+    func removeObject(id: UUID) {
+        guard let command = bundle.removeObjectCommand(id: id) else { return }
+        perform(command)
+    }
+
     /// Exports every EditMesh object as OBJ+MTL into the user-visible
     /// Export folder; returns the written URLs.
     func exportEditMeshes() throws -> [URL] {

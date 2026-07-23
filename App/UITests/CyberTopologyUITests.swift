@@ -141,6 +141,29 @@ final class CyberTopologyUITests: XCTestCase {
         XCTAssertTrue(status.label.hasPrefix("Exported"))
     }
 
+    /// Object removal (change: manage-document-objects): the per-row delete
+    /// control removes that object, and undo restores it — one journaled
+    /// step.
+    @MainActor
+    func testDeleteEditMeshRemovesRowAndUndoRestores() throws {
+        let app = launch(arguments: [
+            "-UITestResetState", "-UITestOpenDocument", "-UITestSeedEditMesh",
+        ])
+        let row = app.descendants(matching: .any)["object-row-seed-quad"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+
+        app.buttons["object-delete-editmesh"].firstMatch.tap()
+        XCTAssertFalse(
+            row.waitForExistence(timeout: 3), "the EditMesh row should be gone after delete"
+        )
+
+        // Undo (toolbar) restores it — one step.
+        app.buttons["undo"].tap()
+        XCTAssertTrue(
+            row.waitForExistence(timeout: 5), "undo should restore the deleted EditMesh"
+        )
+    }
+
     /// Gesture arbitration (spec: viewport-rendering / "Robust camera
     /// system"): camera drags/pinches/double-taps on the viewport must not
     /// fire undo/redo, and the multi-finger taps must keep working after

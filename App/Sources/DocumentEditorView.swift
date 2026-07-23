@@ -305,8 +305,21 @@ struct DocumentEditorView: View {
                         Text(object.role == .target ? "Target" : "EditMesh")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        // Delete affordance (change: manage-document-objects):
+                        // removes this object as one undoable step.
+                        Button {
+                            document.removeObject(id: object.id)
+                            journal.handle(.documentEdited)
+                        } label: {
+                            Image(systemName: "trash")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityIdentifier(
+                            "object-delete-\(object.role == .target ? "target" : "editmesh")"
+                        )
                     }
-                    .accessibilityElement(children: .combine)
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("object-row-\(object.name)")
                 }
             }

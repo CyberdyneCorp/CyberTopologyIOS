@@ -48,7 +48,33 @@ extension DocumentBundle {
             payloadFile: "\(id.uuidString).payload",
             counts: .init(vertices: mesh.vertexCount, faces: mesh.faceCount)
         )
-        return .addObject(object: object, payload: try mesh.payloadData())
+        let add = DocumentCommand.addObject(object: object, payload: try mesh.payloadData())
+        // Single-instance import: an existing object of the SAME role is
+        // replaced, not stacked. The remove + add land as one undoable step,
+        // so a single undo restores the previous object exactly. Importing
+        // into an empty slot is a plain add.
+        if let existing = removeObjectCommand(role: role) {
+            return .compound(verb: "import.replace", commands: [existing, add])
+        }
+        return add
+    }
+
+    /// A `removeObject` command for the object `id`, carrying its current
+    /// manifest entry and payload so undo restores it verbatim. Nil for an
+    /// unknown id or one whose payload is missing.
+    public func removeObjectCommand(id: UUID) -> DocumentCommand? {
+        guard
+            let index = manifest.objects.firstIndex(where: { $0.id == id }),
+            let payload = payloads[manifest.objects[index].payloadFile]
+        else { return nil }
+        return .removeObject(object: manifest.objects[index], payload: payload, index: index)
+    }
+
+    /// A `removeObject` command for the FIRST object of `role` (the
+    /// single-instance import slot), or nil when the slot is empty.
+    public func removeObjectCommand(role: DocumentManifest.Object.Role) -> DocumentCommand? {
+        guard let object = manifest.objects.first(where: { $0.role == role }) else { return nil }
+        return removeObjectCommand(id: object.id)
     }
 
     /// Exports one object as OBJ + MTL into `directory` (created if needed).
