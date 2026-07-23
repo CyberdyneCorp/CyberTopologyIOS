@@ -161,6 +161,30 @@ struct BuildToolsOpsTests {
         #expect(quad.edgeFaces(of: shared).count == 2)
     }
 
+    /// REGRESSION (device: welded quads twisted into a bowtie): a large,
+    /// scene-relative mergeRadius on a big Target can exceed a small quad, so
+    /// a corner welds to the WRONG distant vertex and twists the ring. Here
+    /// the same adjacent quad is welded with a mergeRadius (3.0) far larger
+    /// than the quad's unit edges: uncapped, corner (2,0) would weld to the
+    /// existing (1,1) — a whole diagonal away — collapsing/twisting the face.
+    /// The quad-relative cap keeps the weld to the shared edge only.
+    @Test("createWeldedFace does not weld to a far vertex under a huge mergeRadius")
+    func weldedFaceCapsMergeToQuadScale() throws {
+        let quad = try singleQuad()
+        let built = try quad.createWeldedFace(
+            at: [SIMD3(1, 0, 0), SIMD3(2, 0, 0), SIMD3(2, 1, 0), SIMD3(1, 1, 0)],
+            mergeRadius: 3.0
+        )
+        // Same clean weld as with a small radius: 6v / 7e / 2f, two new
+        // corners, shared edge bordering both faces — NOT a collapsed ring.
+        #expect(quad.vertexCount == 6, "wrong-vertex weld twisted the ring: \(quad.vertexCount) v")
+        #expect(quad.edgeCount == 7)
+        #expect(quad.faceCount == 2)
+        #expect(built.newVertices.count == 2)
+        let shared = try edge(of: quad, near: SIMD3(1, 0.5, 0))
+        #expect(quad.edgeFaces(of: shared).count == 2)
+    }
+
     /// Task 4.4 anti-vacuity: a quad drawn far from any topology still
     /// creates four new vertices and stays disconnected — the weld must not
     /// collapse an isolated quad onto unrelated geometry.

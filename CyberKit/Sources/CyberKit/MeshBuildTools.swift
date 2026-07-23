@@ -95,11 +95,28 @@ extension Mesh {
         at corners: [SIMD3<Float>], mergeRadius: Float,
         snapping snapper: SurfaceSnapper? = nil
     ) throws -> BuiltFace {
+        // Cap the weld radius to the QUAD's own scale, not just the scene.
+        // `mergeRadius` is a fraction of the whole Target's radius; on a large
+        // model with small hand-drawn quads it can exceed the quad itself, so
+        // a corner welds to a WRONG distant vertex and twists the ring into a
+        // bowtie. A corner may only reuse a vertex much closer than the quad's
+        // own shortest edge — a shared-edge vertex sits ~on the corner, well
+        // inside this, while an opposite/wrong corner sits a whole edge away.
+        var shortestEdge = Float.greatestFiniteMagnitude
+        for index in corners.indices {
+            let a = corners[index]
+            let b = corners[(index + 1) % corners.count]
+            shortestEdge = min(shortestEdge, simd_distance(a, b))
+        }
+        let radius =
+            shortestEdge.isFinite && shortestEdge > 0
+            ? min(mergeRadius, shortestEdge * 0.35) : mergeRadius
+
         var slots: [BuildRingSlot] = []
         slots.reserveCapacity(corners.count)
         var claimed = Set<UInt32>()
         for corner in corners {
-            if let pick = nearestVertex(to: corner, maxDistance: mergeRadius),
+            if let pick = nearestVertex(to: corner, maxDistance: radius),
                 !claimed.contains(pick.vertex) {
                 slots.append(.existing(pick.vertex))
                 claimed.insert(pick.vertex)
@@ -113,7 +130,7 @@ extension Mesh {
             guard
                 let position = vertexPosition(vertex),
                 let pick = nearestVertex(
-                    to: position, maxDistance: mergeRadius, excluding: vertex
+                    to: position, maxDistance: radius, excluding: vertex
                 ),
                 !ring.contains(pick.vertex)
             else { continue }
