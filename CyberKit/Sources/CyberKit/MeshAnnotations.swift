@@ -284,6 +284,30 @@ extension Mesh {
         }
     }
 
+    /// Stable ids of every live vertex. The capi has no vertex-liveness
+    /// enumerator, so this scans ids by position query (dead ids return nil,
+    /// the same signal `payloadIDCompaction` relies on) up to the live count
+    /// plus a fragmentation headroom. Used to capture what an op CREATED by
+    /// diffing the set before and after — provenance the position of a snapped
+    /// vertex can no longer reconstruct (task 4.4b seam welding).
+    public func liveVertexIDs() -> Set<UInt32> {
+        let live = vertexCount
+        guard live > 0 else { return [] }
+        var ids = Set<UInt32>()
+        ids.reserveCapacity(live)
+        var id: UInt32 = 0
+        let limit = live + Self.liveVertexProbeHeadroom
+        while ids.count < live, Int(id) < limit {
+            if vertexPosition(id) != nil { ids.insert(id) }
+            id += 1
+        }
+        return ids
+    }
+
+    /// Headroom on the id-liveness scan above the live count, matching
+    /// `payloadIDCompaction`'s probe window.
+    private static let liveVertexProbeHeadroom = 4096
+
     /// Pushes annotation state into the handle's render filters: hidden
     /// faces drop out of the render streams, tagged edges surface through
     /// `RenderBuffers.taggedEdgeIndices`. Stale ids are skipped engine-side.

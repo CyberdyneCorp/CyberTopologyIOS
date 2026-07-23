@@ -405,17 +405,17 @@ extension Mesh {
     /// that keeps the pass from dragging off-seam geometry onto the center
     /// line.
     ///
-    /// **KNOWN RESIDUAL (task 4.4b).** This closes the seam only when the
-    /// twins really are coincident. When the Target is ASYMMETRIC about the
-    /// mirror plane, the snap inside `createFace` moves the mirrored copy
-    /// of a near-plane corner differently from the authored one, and the two
-    /// can end up on the plane but further apart than `weldTolerance` — a
-    /// crack this coincidence-based pass cannot close without welding at a
-    /// radius that would also swallow unrelated on-plane cage vertices. The
-    /// correct fix is provenance-aware welding (merge corner *j* of the
-    /// authored ring with corner *j* of each replica, no radius guessing at
-    /// all), which needs the replica rings rather than a flat point list.
-    /// See `SymmetryToolsTests/curvedTargetSeamResidual`.
+    /// **This is the COINCIDENCE pass, for callers that only have a flat
+    /// point list** (apply-symmetry bakes, tests). It closes the seam only
+    /// when the twins really are coincident — on an ASYMMETRIC Target the snap
+    /// inside `createFace` can leave them on the plane but further apart than
+    /// `weldTolerance`, and widening the radius would swallow unrelated
+    /// on-plane cage vertices. The authoring path (`applyCreate`) no longer
+    /// relies on this: it captures each copy's created vertices and calls the
+    /// PROVENANCE overload `weldSeamVertices(_:rings:created:searchRadius:)`,
+    /// which pairs twins by the ring they came from and closes the seam
+    /// regardless of the snap drift. See
+    /// `SymmetryToolsTests/curvedTargetSeamResidual`.
     ///
     /// - Parameter searchRadius: how far from an authored point to look for
     ///   the vertex it became. Callers that snap to a Target should pass
@@ -474,6 +474,109 @@ extension Mesh {
             }
         }
         return welded
+    }
+
+    /// PROVENANCE-aware seam weld (task 4.4b) — the fix for the residual the
+    /// coincidence pass above leaves on ASYMMETRIC Targets. Instead of pairing
+    /// twins by where the Target snap left them (which fails when the mirrored
+    /// copy of a near-plane corner snaps differently from the authored one, or
+    /// when the two are symmetric about the plane and a single search point
+    /// cannot tell them apart), this pairs them by the ring they came from.
+    ///
+    /// `rings[c]` is copy c's authored corner locators (copy 0 = the authored
+    /// ring, the rest its symmetric replicas) and `created[c]` is the set of
+    /// vertices copy c CREATED — captured by the caller as a live-id diff
+    /// around each build, before any snap moved them. A corner ON a mirror
+    /// plane is a reflection FIXED POINT, so every copy that reaches the seam
+    /// shares the exact same PRE-SNAP locator there; grouping by that locator
+    /// pairs the twins with no radius guessing. Within one copy the near-plane
+    /// vertex is the only created vertex close to that corner (the far corners
+    /// are a whole edge away), so it resolves unambiguously even after the
+    /// snap drifted it off the locator.
+    ///
+    /// Returns the number of merges performed.
+    @discardableResult
+    public func weldSeamVertices(
+        _ settings: SymmetrySettings, rings: [[SIMD3<Float>]],
+        created: [[UInt32]], searchRadius: Float? = nil
+    ) throws -> Int {
+        let tolerance = settings.weldTolerance
+        guard tolerance > 0, !settings.mirrorAxes.isEmpty,
+            rings.count == created.count, !rings.isEmpty
+        else { return 0 }
+        let search = max(searchRadius ?? tolerance, tolerance)
+        var welded = 0
+        var removed = Set<UInt32>()
+        for axis in settings.mirrorAxes {
+            let plane = settings.plane(for: axis)
+            // Per-copy seam vertices, keyed by their projected-on-plane
+            // location so fixed-point twins group together.
+            var keys: [SIMD3<Float>] = []
+            var vertices: [UInt32] = []
+            for copy in rings.indices {
+                for corner in rings[copy] {
+                    let signedDistance = simd_dot(corner - plane.origin, plane.normal)
+                    // A SEAM corner is one the user drew ON the plane: gated at
+                    // the tight weld tolerance, which is exactly the band
+                    // `snapToSymmetryPlanes` pulls onto the plane. The generous
+                    // `search` is only for RESOLVING the vertex the corner
+                    // became — using it as the seam gate would let a far corner
+                    // (a whole edge away) in, and its projection onto the plane
+                    // would then share a key with the opposite copy's far
+                    // corner and wrongly weld them.
+                    guard abs(signedDistance) <= tolerance else { continue }
+                    guard let vertex = nearestCreatedVertex(
+                        in: created[copy], to: corner, within: search, excluding: removed
+                    ) else { continue }
+                    keys.append(corner - plane.normal * signedDistance)
+                    vertices.append(vertex)
+                }
+            }
+            // Group by key coincidence; merge each group to one shared vertex.
+            var used = [Bool](repeating: false, count: vertices.count)
+            for i in vertices.indices where !used[i] {
+                var group = [vertices[i]]
+                used[i] = true
+                for j in (i + 1)..<vertices.count where !used[j] {
+                    guard simd_distance(keys[i], keys[j]) <= tolerance else { continue }
+                    used[j] = true
+                    if !group.contains(vertices[j]) { group.append(vertices[j]) }
+                }
+                guard group.count > 1 else { continue }
+                // Keep a vertex already exactly on the plane (the snap put the
+                // seam vertices there), so no merge drifts the seam off it.
+                let keep = group.first { vertex in
+                    guard let position = vertexPosition(vertex) else { return false }
+                    return abs(simd_dot(position - plane.origin, plane.normal)) <= tolerance
+                } ?? group[0]
+                for vertex in group where vertex != keep && !removed.contains(vertex) {
+                    try mergeVertices(keep: keep, remove: vertex)
+                    removed.insert(vertex)
+                    welded += 1
+                }
+            }
+        }
+        return welded
+    }
+
+    /// The vertex in `ids` closest to `point`, within `radius`, skipping the
+    /// already-merged. Positions are read live, so a merged (dead) id returns
+    /// nil and is ignored.
+    private func nearestCreatedVertex(
+        in ids: [UInt32], to point: SIMD3<Float>, within radius: Float,
+        excluding removed: Set<UInt32>
+    ) -> UInt32? {
+        var best: UInt32?
+        var bestDistance = radius
+        for id in ids where !removed.contains(id) {
+            guard let position = vertexPosition(id) else { continue }
+            let distance = simd_distance(position, point)
+            if distance <= bestDistance {
+                bestDistance = distance
+                best = id
+            }
+        }
+        return best
     }
 
     /// Apply-symmetry: BAKES the mirror into real geometry for one axis.

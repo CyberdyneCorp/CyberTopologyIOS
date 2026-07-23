@@ -1096,8 +1096,20 @@ final class MeshEditController {
         }
         let buildAll: (Mesh, [SIMD3<Float>], SurfaceSnapper?) throws -> Void = {
             mesh, _, snapper in
+            // Capture what EACH copy creates (a live-id diff around its build)
+            // only when we will weld the seam — the scan is wasted otherwise.
+            // This is the provenance the seam weld needs: after the Target and
+            // plane snaps move a vertex, its position no longer says which copy
+            // authored it (task 4.4b).
+            let capture = symmetry.isActive
+            var created: [[UInt32]] = []
+            created.reserveCapacity(copies.count)
             for copy in copies {
+                let before = capture ? mesh.liveVertexIDs() : []
                 try build(mesh, copy, snapper)
+                if capture {
+                    created.append(Array(mesh.liveVertexIDs().subtracting(before)))
+                }
             }
             // Center-line vertices snap onto every enabled mirror plane
             // (spec: "Center-line vertices SHALL snap to the symmetry
@@ -1112,16 +1124,12 @@ final class MeshEditController {
                 // vertices per corner), which boundary walks, Relax/Move
                 // and export all read as an open rim. Same transaction, so
                 // one undo removes the whole symmetric create.
-                // The authored points are a LOCATOR only: `createFace`
-                // projected each created vertex onto the Target and the
-                // plane snap moved it again, so the seam vertices are NOT
-                // at the coordinates the user drew. Pass the tool pick
-                // radius as the search radius — the weld itself still runs
-                // at the tight tolerance, against the vertex's real
-                // position. Without this the weld silently found nothing on
-                // any curved Target.
+                // PROVENANCE weld (task 4.4b): pair each copy's seam vertex
+                // with its twins by the RING they came from, not by where the
+                // snap left them — so the seam closes even on an asymmetric
+                // Target that snapped the mirrored copy differently.
                 try mesh.weldSeamVertices(
-                    symmetry, near: copies.flatMap { $0 },
+                    symmetry, rings: copies, created: created,
                     searchRadius: context.sceneRadius * Self.vertexPickRadiusFraction
                 )
             }

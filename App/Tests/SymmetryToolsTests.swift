@@ -355,20 +355,18 @@ struct SymmetryToolsTests {
         #expect(mesh.isBoundaryEdge(pick.edge) == false, "the center line is not a crack")
     }
 
-    /// CHARACTERIZATION of the seam weld's KNOWN RESIDUAL (task 4.4b), so
-    /// the limit is pinned by a test instead of living only in a comment.
+    /// PROVENANCE seam weld on an ASYMMETRIC Target (task 4.4b — the fix for
+    /// what this test used to characterize as a best-effort residual).
     ///
-    /// On a Target that is ASYMMETRIC about the mirror plane, the snap
-    /// inside `createFace` moves the mirrored copy of a near-plane corner
-    /// differently from the authored one. Both still snap ONTO the plane,
-    /// but they can land further apart than the weld tolerance, and a
-    /// coincidence-based weld cannot merge them without also swallowing
-    /// unrelated on-plane cage vertices. What this asserts is what actually
-    /// ships: the mirror is still authored, the corners are still on the
-    /// plane, and the pass never welds anything it should not. Whether the
-    /// seam closes is recorded, not required — closing it needs
-    /// provenance-aware welding (4.4b).
-    @Test("Curved-Target seam: both halves land on the plane; weld is best-effort")
+    /// The snap inside `createFace` moves the mirrored copy of a near-plane
+    /// corner differently from the authored one, so the twins land ON the
+    /// plane but further apart than the weld tolerance — and here, symmetric
+    /// about the plane, so no single search point can even tell them apart.
+    /// The coincidence pass could not close this without swallowing unrelated
+    /// on-plane geometry. The provenance weld pairs each copy's seam vertex by
+    /// the RING it came from (captured as a live-id diff), so the seam closes:
+    /// the two twins merge, and nothing else does.
+    @Test("Curved-Target seam welds by provenance: both twins collapse, nothing else")
     func curvedTargetSeamResidual() throws {
         let harness = try Harness()
         try seedTilted(harness)
@@ -378,19 +376,18 @@ struct SymmetryToolsTests {
         let facesBefore = try harness.faceCount()
 
         // A near-plane corner far enough in that the mirrored copy's Target
-        // snap can separate the twins by more than the weld tolerance.
+        // snap separates the twins by more than the weld tolerance.
         try harness.authorQuad(ring(harness, x: (tolerance * 0.6)...2, y: 1...2))
 
         let mesh = try harness.editMesh()
         #expect(mesh.faceCount == facesBefore + 2, "authored quad plus its mirror")
         let seam = try harness.editPositions().filter { abs($0.x) < 1e-6 }
-        // The spec clause that IS unconditional: center-line vertices snap
-        // to the plane. Two corners per copy reach it.
-        #expect(seam.count == 2 || seam.count == 4, "seam vertices: \(seam.count)")
-        // And the pass never OVER-welds: 4 cage corners + 4 authored + 4
-        // mirrored = 12, of which at most the 2 seam twins may merge. It may
-        // leave the crack (4.4b); it may never collapse anything else.
-        #expect((10...12).contains(mesh.vertexCount), "vertices: \(mesh.vertexCount)")
+        // The two seam corners each collapse to ONE shared vertex — the crack
+        // is closed, not merely snapped to the plane.
+        #expect(seam.count == 2, "seam twins welded to one vertex each: \(seam.count)")
+        // And the weld never OVER-welds: 4 cage + 4 authored + 4 mirrored = 12,
+        // minus exactly the 2 seam twin merges = 10. Nothing else collapses.
+        #expect(mesh.vertexCount == 10, "vertices: \(mesh.vertexCount)")
     }
 
     @Test("Symmetry off authors exactly one copy")
