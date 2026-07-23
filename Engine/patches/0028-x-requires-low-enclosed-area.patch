@@ -1,0 +1,277 @@
+diff --git a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+index e4a451d..ba2e964 100644
+--- a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
++++ b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+@@ -86,6 +86,17 @@ struct ShapeParams {
+     // line gate, so an actual straight line is still a Line, not a quad.
+     // Device corpus spans 0.23–0.52; 0.65 catches the loosest with margin.
+     float nearlyClosedFraction = 0.65f;
++    // A self-crossing stroke is an X (delete) only when it encloses little
++    // area — its diagonal path bounds almost nothing. A messy quad (closed,
++    // a few interior crossings from wobble or overlap) fills most of its
++    // bounding box. Device corpus: quads fill 0.59-0.71, X's 0.01-0.16, so a
++    // 0.35 cut separates them with wide margin.
++    float crossMaxFill = 0.35f;
++    // Corner-estimate collapse: a corner whose interior angle is straighter
++    // than this (cosine below it, i.e. nearer 180 degrees) is redundant, so a
++    // four-corner estimate collapses to a triangle. -0.94 is ~160 degrees; a
++    // real quad corner, even a skewed trapezoid's, stays well above it.
++    float triangleCollapseCos = -0.94f;
+     float gridPerpMaxDot = 0.55f;   // consecutive grid segments: |cos| below
+                                     // this counts as perpendicular
+     float gridRailMinDot = 0.80f;   // grid rails: |cos| above this counts as
+@@ -277,6 +288,29 @@ inline int countSelfIntersections(const std::vector<Vec2>& p, int seamWindow = 0
+     return hits;
+ }
+ 
++// Fraction of the stroke's bounding box that its closed path encloses
++// (|shoelace area| / bbox area). A quad's path runs around a filled region
++// (high fill); an X's diagonal path encloses almost nothing (low fill). This
++// separates a messy quad — closed, with a few interior crossings from wobble
++// — from a real X, which self-crosses but bounds no area.
++inline float polygonFillRatio(const std::vector<Vec2>& p) {
++    if (p.size() < 3) {
++        return 0.0f;
++    }
++    float twiceArea = 0.0f;
++    Vec2 lo = p[0];
++    Vec2 hi = p[0];
++    for (std::size_t i = 0; i < p.size(); ++i) {
++        const Vec2 a = p[i];
++        const Vec2 b = p[(i + 1) % p.size()];
++        twiceArea += a.x * b.y - b.x * a.y;
++        lo = {std::fmin(lo.x, a.x), std::fmin(lo.y, a.y)};
++        hi = {std::fmax(hi.x, a.x), std::fmax(hi.y, a.y)};
++    }
++    const float bbox = (hi.x - lo.x) * (hi.y - lo.y);
++    return bbox > 1e-9f ? std::fabs(twiceArea) * 0.5f / bbox : 0.0f;
++}
++
+ // Corner detection over a sliding direction window: direction is measured
+ // between samples `window` apart so a rounded (sloppy) corner still turns
+ // sharply within one window; after a detected corner the scan skips a
+@@ -408,46 +442,113 @@ inline bool seamIsCorner(const std::vector<Vec2>& p, int window, float cornerRad
+     return std::acos(cosA) > cornerRadians;
+ }
+ 
+-// Estimated corners of a closed-ish stroke, returning THREE for a triangle
+-// and FOUR for a quad. Conservative by design: a stroke is a triangle only
+-// when its corners plus the seam count to exactly three; ANY ambiguity falls
+-// back to `quadCorners`, so a quad is never misread as a triangle (the safe
+-// failure is a triangle read as a quad — today's behaviour, not a
+-// regression). Triangle corners are returned in stroke (ring) order so the
+-// shell's CreateTriangle application builds a non-self-intersecting face.
+-inline std::vector<Vec2> polygonCorners(const std::vector<Vec2>& p, Vec2 centroid, int window,
+-                                        float cornerRadians) {
+-    const std::vector<int> detected = cornerIndices(p, window, cornerRadians);
+-    const bool seam = seamIsCorner(p, window, cornerRadians);
+-    const int total = static_cast<int>(detected.size()) + (seam ? 1 : 0);
+-    if (total == 3 && !detected.empty()) {
+-        std::vector<Vec2> corners;
+-        corners.reserve(3);
+-        if (seam) {
+-            corners.push_back(p.front());
++// Robust corner estimate for a closed-ish stroke — FOUR corners for a quad,
++// THREE for a triangle — resilient to rotation, wobble and interior
++// crossings, where the old detected-corner / diagonal-extreme estimate placed
++// corners badly on a rotated hand-drawn square (the face rendered as a
++// skewed triangle even though it was a quad).
++//
++// Farthest-point method (document-scanner style): the two most distant points
++// are one diagonal; the two points farthest from that diagonal, one on each
++// side, are the other. These four track the true corners of a rotated quad.
++// Then a corner whose interior angle is nearly straight is redundant — the
++// shape is a triangle — so it is dropped. `collapseCos` is the cosine above
++// which (i.e. angle straighter than) a corner counts as redundant; a real
++// quad corner, even a skewed one, stays well below it.
++inline std::vector<Vec2> polygonCorners(const std::vector<Vec2>& p, Vec2 centroid,
++                                        float collapseCos) {
++    if (p.size() < 4) {
++        return {};
++    }
++    const auto farthestFrom = [&](Vec2 q) {
++        std::size_t best = 0;
++        float bestD = -1.0f;
++        for (std::size_t i = 0; i < p.size(); ++i) {
++            const float d = dot2(p[i] - q, p[i] - q);
++            if (d > bestD) {
++                bestD = d;
++                best = i;
++            }
+         }
+-        for (const int i : detected) {
+-            corners.push_back(p[static_cast<std::size_t>(i)]);
++        return p[best];
++    };
++    const Vec2 c0 = farthestFrom(centroid);
++    const Vec2 c2 = farthestFrom(c0);
++    const Vec2 dir = c2 - c0;
++    Vec2 cp = c0;
++    Vec2 cn = c0;
++    float bestPos = 0.0f;
++    float bestNeg = 0.0f;
++    for (const Vec2 q : p) {
++        const float side = dir.x * (q.y - c0.y) - dir.y * (q.x - c0.x);
++        if (side > bestPos) {
++            bestPos = side;
++            cp = q;
+         }
+-        // Reject a degenerate ring — coinciding OR near-collinear corners —
+-        // and fall back to the quad estimate. The collinearity guard is what
+-        // stops a FLAT closed stroke (an elongated lasso started at a pointy
+-        // end registers two tips plus the seam = three "corners") from being
+-        // read as a triangle: a real triangle bounds substantial area, a
+-        // sliver does not. Test: area / perimeter^2, scale-free; an
+-        // equilateral triangle is ~0.048, a thin sliver approaches 0.
+-        const Vec2 a = corners[0];
+-        const Vec2 b = corners[1];
+-        const Vec2 c = corners[2];
+-        const float area = 0.5f * std::fabs((b.x - a.x) * (c.y - a.y) -
+-                                            (c.x - a.x) * (b.y - a.y));
+-        const float perimeter = len(b - a) + len(c - b) + len(a - c);
+-        const float fatness = perimeter > 1e-6f ? area / (perimeter * perimeter) : 0.0f;
+-        if (fatness > 0.02f) {
+-            return corners;
++        if (side < bestNeg) {
++            bestNeg = side;
++            cn = q;
++        }
++    }
++    std::vector<Vec2> cand = {c0, c2};
++    if (bestPos > 1e-6f) {
++        cand.push_back(cp);
++    }
++    if (bestNeg < -1e-6f) {
++        cand.push_back(cn);
++    }
++    // Ring order around the centroid so the face never self-intersects.
++    std::stable_sort(cand.begin(), cand.end(), [centroid](Vec2 a, Vec2 b) {
++        return std::atan2(a.y - centroid.y, a.x - centroid.x) <
++               std::atan2(b.y - centroid.y, b.x - centroid.x);
++    });
++    // Dedup near-coincident candidates SCALED to the shape: the farthest-
++    // point search finds a triangle's third vertex twice (as both the
++    // opposite point and the off-diagonal extreme), a hair apart. Merging at
++    // a fraction of the bounding radius folds those into one corner — a
++    // triangle — while a real quad's corners, always far apart, never merge.
++    float radius = 0.0f;
++    for (const Vec2 q : cand) {
++        radius = std::fmax(radius, len(q - centroid));
++    }
++    const float mergeSq = (radius * 0.2f) * (radius * 0.2f);
++    std::vector<Vec2> ring;
++    for (const Vec2 q : cand) {
++        bool dup = false;
++        for (const Vec2 r : ring) {
++            if (dot2(q - r, q - r) < mergeSq) {
++                dup = true;
++                break;
++            }
++        }
++        if (!dup) {
++            ring.push_back(q);
++        }
++    }
++    if (ring.size() < 3) {
++        return {};
++    }
++    // Drop one near-straight (redundant) corner => a triangle. At most one:
++    // a quad has none, a triangle exactly one.
++    if (ring.size() == 4) {
++        for (std::size_t i = 0; i < 4; ++i) {
++            const Vec2 prev = ring[(i + 3) % 4];
++            const Vec2 cur = ring[i];
++            const Vec2 next = ring[(i + 1) % 4];
++            const Vec2 a = prev - cur;
++            const Vec2 b = next - cur;
++            const float la = len(a);
++            const float lb = len(b);
++            if (la < 1e-6f || lb < 1e-6f) {
++                continue;
++            }
++            if (dot2(a, b) / (la * lb) < collapseCos) {
++                ring.erase(ring.begin() + static_cast<std::ptrdiff_t>(i));
++                break;
++            }
+         }
+     }
+-    return quadCorners(p, centroid, window, cornerRadians);
++    return ring;
+ }
+ 
+ // One-stroke grid detection ("up-across-down…", task 3.4): an open square
+@@ -650,15 +751,17 @@ inline bool pointInPolygon(const std::vector<Vec2>& poly, Vec2 p) {
+     const int seamWindow = std::max(2, params.resampleCount / 8);
+     const int interiorCrossings = countSelfIntersections(pts, seamWindow);
+ 
+-    // X BEFORE closed, gated on the INTERIOR crossing count, not on a narrow
+-    // one-crossing / few-corner window. A hand-drawn X wobbles into extra
+-    // corners and sometimes a second crossing; what defines it is that it
+-    // crosses itself in the middle while scribbling faces out to delete them.
+-    // Detecting that first sends every X — open or closed, however messy —
+-    // to DeleteFaces, instead of falling through to Lasso or Scribble (which,
+-    // with hideRegion and dissolveEdge gone, resolve to nothing). An
+-    // overshoot quad has zero interior crossings and is untouched here.
+-    if (interiorCrossings >= 1 && f.straightness < params.straightRatio) {
++    // X BEFORE closed, gated on the INTERIOR crossing count AND on enclosing
++    // little area. A hand-drawn X wobbles into extra corners and sometimes a
++    // second crossing; what defines it is that it crosses itself while
++    // bounding almost no area (its diagonals enclose nothing). A messy quad
++    // also self-crosses — from wobble or overlap near a corner — but its path
++    // runs around a filled region, so the fill ratio tells them apart. This
++    // runs first so an X, open or closed, goes to DeleteFaces; an overshoot
++    // quad (zero interior crossings) and a filled messy quad (high fill) both
++    // fall through to the closed branch and stay quads.
++    if (interiorCrossings >= 1 && f.straightness < params.straightRatio &&
++        polygonFillRatio(pts) < params.crossMaxFill) {
+         result.shape = StrokeShape::Cross;
+         result.confidence = interiorCrossings == 1 ? 0.8f : 0.7f;
+         return result;
+@@ -668,7 +771,7 @@ inline bool pointInPolygon(const std::vector<Vec2>& poly, Vec2 p) {
+         // Corner estimates for the shell's CreateQuad application (task
+         // 3.3), reported in un-aspect-corrected normalized viewport
+         // coordinates so they unproject with the stroke's own space.
+-        result.corners = polygonCorners(pts, rc, window, params.cornerRadians);
++        result.corners = polygonCorners(pts, rc, params.triangleCollapseCos);
+         const float invAspect = params.aspect > 0.0f ? 1.0f / params.aspect : 1.0f;
+         for (Vec2& c : result.corners) {
+             c.x *= invAspect;
+@@ -683,20 +786,23 @@ inline bool pointInPolygon(const std::vector<Vec2>& poly, Vec2 p) {
+         // degenerate case where no ring could be recovered at all.
+         const bool isTriangle = result.corners.size() == 3;
+         const bool boundsRing = result.corners.size() >= 3;
+-        // `interiorCrossings` (seam-tolerant, computed above) is what keeps a
+-        // quad closed with a slight seam overshoot from being demoted to
+-        // Lasso — an interior crossing would already have been caught as an X.
++        // A closed stroke that bounds a ring is a face. Interior crossings no
++        // longer demote it: a low-area self-crossing X was already diverted
++        // above (fill gate), so a closed stroke reaching here that still
++        // crosses itself is a MESSY QUAD — wobble or overlap near a corner —
++        // and stays a quad. Circle only needs its crossings clean.
+         if (!isTriangle && f.radiusDeviation <= params.circleMaxDeviation &&
+             f.corners <= 2 && interiorCrossings == 0) {
+             result.shape = StrokeShape::Circle;
+             result.confidence =
+                 0.9f - 0.5f * (f.radiusDeviation / params.circleMaxDeviation) * 0.2f;
+-        } else if (boundsRing && interiorCrossings == 0) {
++        } else if (boundsRing) {
+             result.shape = StrokeShape::ClosedLoop;
+             // Sharper corner structure reads as more confidently a polygon;
+-            // a smooth (few-corner) closed stroke is still a quad, just less
++            // a smooth or messy closed stroke is still a face, just less
+             // crisply drawn.
+-            result.confidence = f.corners >= 3 && f.corners <= 4 ? 0.85f : 0.7f;
++            result.confidence =
++                interiorCrossings == 0 && f.corners >= 3 && f.corners <= 4 ? 0.85f : 0.7f;
+         } else {
+             result.shape = StrokeShape::Lasso;
+             result.confidence = 0.6f;
+@@ -752,7 +858,7 @@ inline bool pointInPolygon(const std::vector<Vec2>& poly, Vec2 p) {
+         // detection relies on is meaningless and would misread a smooth
+         // adjacent-quad U as a three-corner triangle. Triangles are only
+         // recognized on genuinely closed strokes (the branch above).
+-        result.corners = quadCorners(pts, rc, window, params.cornerRadians);
++        result.corners = polygonCorners(pts, rc, params.triangleCollapseCos);
+         const float invAspect = params.aspect > 0.0f ? 1.0f / params.aspect : 1.0f;
+         for (Vec2& c : result.corners) {
+             c.x *= invAspect;

@@ -53,7 +53,7 @@ struct DeviceStrokeCorpusTests {
     func corpusIsPresentAndIntended() throws {
         let quads = try Self.urls(intending: "createQuad")
         let deletes = try Self.urls(intending: "deleteFaces")
-        #expect(quads.count == 6)
+        #expect(quads.count == 11)
         #expect(deletes.count == 4)
         for url in quads + deletes {
             let fixture = try StrokeFixture(contentsOf: url)
@@ -90,6 +90,10 @@ struct DeviceStrokeCorpusTests {
                 "\(fixture.name): got \(String(describing: record.best?.action))"
             )
             #expect(record.shape == .closedLoop, "\(fixture.name): shape \(record.shape)")
+            // A quad has FOUR corners — a poor corner estimate that dropped
+            // one made the face render as a triangle even though it resolved
+            // to createQuad.
+            #expect(record.quadCorners.count == 4, "\(fixture.name): \(record.quadCorners.count) corners")
         }
     }
 

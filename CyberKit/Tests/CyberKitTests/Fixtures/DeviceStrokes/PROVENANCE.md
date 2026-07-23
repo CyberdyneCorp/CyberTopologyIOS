@@ -49,6 +49,14 @@ crossing count, so any self-crossing gesture over faces reads as the delete.
 |------|--------|
 | `x_delete_a_pencil` .. `x_delete_d_pencil` | X over faces → deleteFaces |
 
+The five `quad_skew_*` strokes are rotated/skewed quads. Some were misread as
+triangles or, when they self-crossed, as an X. Two fixes: an X now requires
+LOW enclosed area (a quad's path fills its bounding box; an X's diagonals
+enclose nothing), and the corner estimate was rebuilt on a farthest-point
+method that places four corners on a rotated quad instead of skewing the face
+into a triangle. `DeviceStrokeCorpusTests` asserts every quad capture has
+exactly four corners, not just that it resolves to `createQuad`.
+
 ## Acceptance
 
 `DeviceStrokeCorpusTests` asserts each resolves to `createQuad` through the
