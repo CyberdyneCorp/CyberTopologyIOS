@@ -189,6 +189,10 @@ final class MeshEditController {
     static let moveRadiusFraction: Float = 0.3
     static let eraseBaseRadiusFraction: Float = 0.08
     static let vertexPickRadiusFraction: Float = 0.12
+    /// Draw Strip release-merge cap (task 4.2a): a rail vertex may weld onto
+    /// existing topology no further than this fraction of the strip's own
+    /// width, so it can never reach across the strip to its opposite rail.
+    static let stripWeldWidthFraction: Float = 0.35
     static let relaxStrength: Float = 0.35
     /// Merge-snap range (task 3.7): how close the DRAGGED vertex must come
     /// to another vertex for the snap target to pre-highlight and the

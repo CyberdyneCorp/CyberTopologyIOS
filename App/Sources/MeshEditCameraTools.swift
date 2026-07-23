@@ -792,9 +792,23 @@ extension MeshEditController {
             object: object, mesh: mesh, currentPayload: payload
         )
         journalOrDiscard(verb: "tool.drawStrip") {
+            // Capture what the strip creates so its rail vertices can weld
+            // onto existing topology beyond the start-edge weld (task 4.2a):
+            // the engine op reports only a face count, and after the Target
+            // snap a rail vertex's position no longer says whether it landed
+            // on a neighbouring cage vertex. A live-id diff is exact.
+            let before = mesh.liveVertexIDs()
             try mesh.drawStrip(
                 path: stations, width: width, viewDirection: ray.direction,
                 weldingOnto: endpoints, snapping: context.snapper
+            )
+            // Rail vertices that landed on the cage the strip was drawn toward
+            // fold onto it (release merge). Capped to the strip's own scale so
+            // a rail never welds across the strip to its opposite rail; the
+            // set exclusion keeps it off the strip's own vertices.
+            let created = mesh.liveVertexIDs().subtracting(before)
+            try mesh.weldNewVerticesOntoExisting(
+                created, mergeRadius: min(pickRadius, width * Self.stripWeldWidthFraction)
             )
             onLiveEdit?()
             return try transaction.command(verb: "tool.drawStrip")

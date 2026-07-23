@@ -139,6 +139,36 @@ extension Mesh {
         return built
     }
 
+    /// Welds a set of freshly-CREATED vertices onto pre-existing topology:
+    /// each created vertex within `mergeRadius` of a vertex NOT in the set
+    /// folds onto it (Draw Strip release merge, task 4.2a). The set exclusion
+    /// is the strip-aware rule — a rail vertex may weld onto the cage it was
+    /// drawn toward, but never onto another vertex of the SAME strip, which
+    /// would collapse a rail or pinch the strip shut. Pass the created set as
+    /// captured by a `liveVertexIDs()` diff around the op that made them, since
+    /// the engine op reports only a face count. Returns the number of merges.
+    @discardableResult
+    public func weldNewVerticesOntoExisting(
+        _ created: Set<UInt32>, mergeRadius: Float
+    ) throws -> Int {
+        guard mergeRadius > 0 else { return 0 }
+        var welded = 0
+        for vertex in created {
+            // A vertex merged in an earlier iteration is dead — its position
+            // query returns nil and it is skipped.
+            guard
+                let position = vertexPosition(vertex),
+                let pick = nearestVertex(
+                    to: position, maxDistance: mergeRadius, excluding: vertex
+                ),
+                !created.contains(pick.vertex)
+            else { continue }
+            try mergeVertices(keep: pick.vertex, remove: vertex)
+            welded += 1
+        }
+        return welded
+    }
+
     /// Grows the single triangle on a BOUNDARY edge into a quad (Build
     /// Quad's triangle-edge drag): splits the edge and drops the new ring
     /// vertex at `point` (snapped when a snapper is given). Returns the new

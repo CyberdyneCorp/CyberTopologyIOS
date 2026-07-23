@@ -614,6 +614,67 @@ extension MeshEditCameraToolTests {
         ]))
         #expect(harness.bundle.journal.depth == 0)
     }
+
+    /// Task 4.2a release merge: a strip drawn across a gap onto a second cage
+    /// welds its far rail onto that cage instead of landing as a free-floating
+    /// duplicate edge. Undo restores the exact bytes.
+    @Test func drawStripWeldsFarRailOntoExistingTopology() throws {
+        let harness = try Harness()
+        let target = try meshFromOBJ("""
+        v -5 -5 0
+        v 5 -5 0
+        v 5 5 0
+        v -5 5 0
+        f 1 2 3 4
+        """)
+        try harness.bundle.addObject(name: "target", role: .target, mesh: target)
+        // Two unit quads with a 1-unit gap in x: A at x∈[0,1], B at x∈[2,3].
+        let cage = try meshFromOBJ("""
+        v 0 0 0
+        v 1 0 0
+        v 1 1 0
+        v 0 1 0
+        v 2 0 0
+        v 3 0 0
+        v 3 1 0
+        v 2 1 0
+        f 1 2 3 4
+        f 5 6 7 8
+        """)
+        try harness.bundle.addObject(name: "cage", role: .editMesh, mesh: cage)
+        harness.sync()
+        let before = try payloadBefore(harness)
+        #expect(try harness.editMesh().vertexCount == 8)
+
+        // Top-down (-z) so the rail lands exactly after the plane snap.
+        harness.coordinator.renderer?.camera = CameraState(
+            focus: SIMD3(1.5, 0.5, 0), distance: 12, azimuth: 0, elevation: 0
+        )
+        harness.selectTool(.drawStrip)
+
+        // Drag from A's right boundary edge (1,0)-(1,1) straight across the
+        // gap: the one station translates the start edge onto (2,0),(2,1) —
+        // B's left vertices.
+        harness.stroke(verb: .pencil, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(1, 0.5, 0)),
+            harness.screenPoint(of: SIMD3(2, 0.5, 0)),
+        ]))
+
+        #expect(harness.bundle.journal.depth == 1)
+        #expect(try committedMeshEditVerb(harness) == "tool.drawStrip")
+        let mesh = try harness.editMesh()
+        // The far rail folded onto B (2 new rail vertices merged onto B's
+        // two), so the count is UNCHANGED and the bridge quad is the only add.
+        #expect(mesh.vertexCount == 8, "vertices: \(mesh.vertexCount)")
+        #expect(mesh.faceCount == 3, "faces: \(mesh.faceCount)")
+        // B's left edge is now INTERIOR — shared by B and the bridge quad.
+        let shared = try #require(mesh.nearestEdge(to: SIMD3(2, 0.5, 0), maxDistance: 0.05))
+        #expect(mesh.edgeFaces(of: shared.edge).count == 2, "the rail welded onto B")
+
+        harness.undo()
+        let object = try #require(harness.editObject)
+        #expect(harness.bundle.payloads[object.payloadFile] == before)
+    }
 }
 
 // MARK: - Session routing invariants
