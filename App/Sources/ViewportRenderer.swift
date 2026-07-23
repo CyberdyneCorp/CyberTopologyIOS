@@ -44,7 +44,7 @@ final class ViewportRenderer: NSObject {
     /// preview) over one set of buffers. Always array-fed (pooled copies) —
     /// hover geometry is transient by nature, so zero-copy never applies.
     let hoverGhostPath: GhostRenderPath
-    /// Subdivision preview surface (task 4.6): the reprojected-linear
+    /// Subdivision preview surface (task 4.6): the Catmull-Clark smooth-
     /// subdivided cage as a shaded surface UNDER the base wireframe. Its
     /// own ghost-pipeline instance so it never fights the Weave-proposal
     /// feed or the hover hint over one set of buffers, and so turning the

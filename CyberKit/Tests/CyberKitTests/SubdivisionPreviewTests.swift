@@ -9,15 +9,15 @@ import simd
 /// preview" — the app-layer half of that scenario lives in
 /// `App/Tests/SubdivisionPreviewViewportTests.swift`).
 ///
-/// **HONEST SCOPE:** the preview is REPROJECTED-LINEAR, not smooth. The
-/// engine ships linear subdivision only; the smoothing in these assertions
-/// comes entirely from projecting the subdivided cage onto the Target, which
-/// is why every smoothing test carries an anti-vacuity control proving the
-/// same vertices stay on the flat cage without a snapper. The
-/// Catmull-Clark/limit-surface pass is task 4.6a and is NOT claimed here.
+/// **SMOOTH (task 4.6a):** the preview is a genuine Catmull-Clark surface
+/// (engine `cyber_retopo_subdivide_smooth`, patch 0031). It smooths the cage
+/// on its own — `smoothSubdivideCubeMatchesCatmullClark` pins the exact
+/// interior mask against the closed-form cube result, and
+/// `openCageBoundaryFollowsTheCreaseRule` pins the boundary rule — and with a
+/// Target it then conforms onto the scan (`reprojectionLiftsThePreview`).
 ///
-/// No mocks: real engine meshes, the real `cyber_retopo_subdivide` op and a
-/// real `SurfaceSnapper` BVH throughout.
+/// No mocks: real engine meshes, the real `cyber_retopo_subdivide_smooth` op
+/// and a real `SurfaceSnapper` BVH throughout.
 @Suite("Subdivision preview (engine)")
 struct SubdivisionPreviewTests {
     // MARK: - Fixtures
@@ -154,13 +154,12 @@ struct SubdivisionPreviewTests {
         #expect(SubdivisionPreviewLevel.allCases.map(\.label) == ["Off", "1", "2"])
     }
 
-    /// The honest-scope flag the UI captions itself from: without a Target
-    /// there is nothing to reproject onto, and linear subdivision alone
-    /// smooths NOTHING.
-    @Test("Smoothing is only available with a Target")
-    func smoothingRequiresATarget() {
+    /// Catmull-Clark smooths on its own, so any non-off level smooths with or
+    /// without a Target; a Target only additionally conforms the surface.
+    @Test("Smoothing is available at any non-off level")
+    func smoothingAvailableAtAnyLevel() {
         #expect(SubdivisionPreviewLevel.off.smoothingIsAvailable(hasTarget: true) == false)
-        #expect(SubdivisionPreviewLevel.two.smoothingIsAvailable(hasTarget: false) == false)
+        #expect(SubdivisionPreviewLevel.two.smoothingIsAvailable(hasTarget: false))
         #expect(SubdivisionPreviewLevel.two.smoothingIsAvailable(hasTarget: true))
     }
 
@@ -187,19 +186,95 @@ struct SubdivisionPreviewTests {
         #expect((zs.max() ?? 0) - (zs.min() ?? 0) > 0.2)
     }
 
-    /// ANTI-VACUITY CONTROL: the same subdivision WITHOUT a snapper leaves
-    /// every vertex on the flat cage — proving the previous test measures
-    /// reprojection and not some accidental smoothing in `subdivideAll`.
-    /// This is also the honest demonstration that the engine's subdivision
-    /// is LINEAR (task 4.6a exists because of exactly this).
-    @Test("Without a Target the preview stays exactly on the flat cage")
-    func withoutATargetTheSubdivisionIsLinear() throws {
+    /// Catmull-Clark smooths WITHOUT a Target too (task 4.6a): a flat cage
+    /// stays planar (no curvature to add out of plane), but the boundary
+    /// crease rule pulls each corner vertex inward — which linear subdivision
+    /// never does. So there is no longer a preview vertex sitting exactly on
+    /// the base corner, and the surface is a real smooth surface, not a
+    /// densified plane.
+    @Test("Without a Target the cage still smooths (planar, corners pulled in)")
+    func withoutATargetTheCageStillSmooths() throws {
         let cage = try grid32()
-        let preview = try #require(try cage.subdivisionPreview(level: .two))
-        #expect(preview.faceCount == cage.faceCount * 16)
+        let basePositions = livePositions(cage)
+        let corner = try #require(basePositions.max { ($0.x + $0.y) < ($1.x + $1.y) })
+        let preview = try #require(try cage.subdivisionPreview(level: .one))
+        #expect(preview.faceCount == cage.faceCount * 4)
+        // Planar: a flat cage has no out-of-plane curvature to smooth.
         for position in livePositions(preview) {
             #expect(abs(position.z) < 1e-5)
         }
+        // But the corner MOVED (crease rule) — linear would leave it in place.
+        #expect(
+            preview.nearestVertex(to: corner, maxDistance: 1e-4) == nil,
+            "the boundary corner was pulled inward (Catmull-Clark, not linear)"
+        )
+    }
+
+    /// The interior Catmull-Clark mask, pinned against its closed-form result:
+    /// one smooth subdivision of the unit cube [-0.5, 0.5]³ moves each
+    /// valence-3 corner to (±5/18, ±5/18, ±5/18). (Q = avg of 3 adjacent face
+    /// centroids = (1/6)³; R = avg of 3 adjacent edge midpoints = (1/3)³;
+    /// V' = (Q + 2R)/3 since n = 3.) 8 corners + 12 edge points + 6 face
+    /// points = 26 vertices, 24 quads.
+    @Test("Catmull-Clark smooths a cube to its exact interior-mask result")
+    func smoothSubdivideCubeMatchesCatmullClark() throws {
+        let cube = try mesh(fromOBJ: """
+        v -0.5 -0.5 -0.5
+        v  0.5 -0.5 -0.5
+        v  0.5  0.5 -0.5
+        v -0.5  0.5 -0.5
+        v -0.5 -0.5  0.5
+        v  0.5 -0.5  0.5
+        v  0.5  0.5  0.5
+        v -0.5  0.5  0.5
+        f 1 4 3 2
+        f 5 6 7 8
+        f 1 2 6 5
+        f 2 3 7 6
+        f 3 4 8 7
+        f 4 1 5 8
+        """)
+        try cube.smoothSubdivide()
+        #expect(cube.vertexCount == 26)
+        #expect(cube.faceCount == 24)
+        let c = Float(5.0 / 18.0)
+        for sx in [-c, c] {
+            for sy in [-c, c] {
+                for sz in [-c, c] {
+                    #expect(
+                        cube.nearestVertex(to: SIMD3(sx, sy, sz), maxDistance: 1e-5) != nil,
+                        "smoothed corner (\(sx), \(sy), \(sz))"
+                    )
+                }
+            }
+        }
+    }
+
+    /// The boundary crease rule (task 4.6a): on an OPEN cage the boundary is a
+    /// cubic B-spline curve independent of the interior — a boundary vertex
+    /// with two boundary neighbours moves to 0.75 P + 0.125 (b0 + b1), and
+    /// boundary edge points stay midpoints. A single-quad cage makes this
+    /// exact: every corner is a boundary vertex with neighbours one unit away
+    /// along each axis, so each corner contracts by 1/8 of the span toward the
+    /// centre.
+    @Test("Open-cage boundary follows the Catmull-Clark crease rule")
+    func openCageBoundaryFollowsTheCreaseRule() throws {
+        let quad = try mesh(fromOBJ: """
+        v 0 0 0
+        v 1 0 0
+        v 1 1 0
+        v 0 1 0
+        f 1 2 3 4
+        """)
+        try quad.smoothSubdivide()
+        // Corner (0,0): neighbours (1,0) and (0,1) → 0.75(0,0)+0.125((1,0)+(0,1)).
+        #expect(quad.nearestVertex(to: SIMD3(0.125, 0.125, 0), maxDistance: 1e-5) != nil)
+        // The opposite corner (1,1) → (0.875, 0.875).
+        #expect(quad.nearestVertex(to: SIMD3(0.875, 0.875, 0), maxDistance: 1e-5) != nil)
+        // A boundary edge point stays the midpoint (e.g. edge (0,0)-(1,0)).
+        #expect(quad.nearestVertex(to: SIMD3(0.5, 0, 0), maxDistance: 1e-5) != nil)
+        // The single face point is the centroid.
+        #expect(quad.nearestVertex(to: SIMD3(0.5, 0.5, 0), maxDistance: 1e-5) != nil)
     }
 
     /// Reprojecting after EVERY level (not once at the end) is what keeps a

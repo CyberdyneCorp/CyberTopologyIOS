@@ -112,7 +112,7 @@ struct GhostStyle: Equatable {
     }
 
     /// Subdivision preview surface (task 4.6, spec: retopology-tools /
-    /// "Subdivision preview"): the reprojected-linear subdivided cage
+    /// "Subdivision preview"): the Catmull-Clark smooth-subdivided cage
     /// rendered as a shaded surface UNDER the base wireframe.
     ///
     /// Deliberately NOT pulsing (`pulsePeriod = 0` pins the alpha): a

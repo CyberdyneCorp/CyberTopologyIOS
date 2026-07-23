@@ -124,6 +124,23 @@ extension Mesh {
         return faces
     }
 
+    /// Smooth subdivide (task 4.6a): one level of Catmull-Clark SMOOTH
+    /// subdivision — same quad topology as `subdivide`, but the original
+    /// vertices and edge points move to their limit-approaching positions, so
+    /// a Target-less cage genuinely smooths instead of merely densifying. With
+    /// a snapper the smoothed result then reprojects onto the Target
+    /// (smooth-then-conform). Boundary vertices follow the crease rule, so
+    /// open cages keep their silhouette.
+    ///
+    /// **Reassigns every element id** — see `AnnotationIDPolicy.rebuilt`.
+    /// Returns the resulting face count.
+    @discardableResult
+    public func smoothSubdivide(reprojectingOnto snapper: SurfaceSnapper? = nil) throws -> Int {
+        var faces = 0
+        try check(cyber_retopo_subdivide_smooth(handle, snapper?.handle, &faces))
+        return faces
+    }
+
     /// Triangulate: fan-triangulates every face with more than three sides.
     /// Vertex ids survive; face ids partially do, and the payload's rebuilt
     /// EDGE ids do not — see `AnnotationIDPolicy.pinsOnly`. Returns the

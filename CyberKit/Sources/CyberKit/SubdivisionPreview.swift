@@ -3,27 +3,20 @@ import Foundation
 // Non-destructive subdivision preview (task 4.6; spec: retopology-tools /
 // "Subdivision preview", scenario "Editing under preview").
 //
-// **HONEST SCOPE — REPROJECTED-LINEAR, NOT SMOOTH.** The spec asks for a
-// "1–2 level SMOOTH-subdivision preview (with reprojection)". The engine has
-// LINEAR subdivision only (`Mesh::linearSubdivide` behind
-// `cyber_retopo_subdivide`, engine patch 0022): it inserts face and edge
-// points at plain centroids/midpoints, so linear subdivision ALONE only adds
-// vertices along the existing facets and changes nothing about the silhouette.
-// There is no Catmull-Clark / OpenSubdiv limit-surface evaluator anywhere in
-// the engine.
+// **SMOOTH (Catmull-Clark), with optional reprojection (task 4.6a).** The
+// engine now has a genuine Catmull-Clark smooth operator (`Mesh::
+// smoothSubdivide` behind `cyber_retopo_subdivide_smooth`, engine patch
+// 0031): the original vertices and edge points move to their
+// limit-approaching positions (interior mask, boundary crease rule), so the
+// cage smooths on its own — a Target-less preview genuinely rounds the form
+// instead of merely densifying it.
 //
-// What this preview therefore is, exactly: **subdivide linearly, then project
-// every resulting vertex onto the Target**. The reprojection is what produces
-// the smooth surface — the cage's flat facets become a dense mesh lying ON the
-// scanned surface, which is the shape a retopologist is actually checking
-// ("does my cage follow the form?"). Without a Target the preview is a denser
-// cage with the SAME silhouette, and it says so rather than pretending
-// otherwise (`SubdivisionPreviewLevel.smoothingIsAvailable`).
-//
-// The genuinely-smooth pass (Catmull-Clark positions, which need
-// `linearSubdivide` to report which output vertex came from which face/edge/
-// vertex, or a new engine operator) is deferred as task 4.6a. It is NOT
-// claimed here and NOT claimed in the traceability mapping.
+// With a Target the smoothed result is then projected onto it
+// (smooth-then-conform): Catmull-Clark rounds the cage toward its limit
+// surface and the reprojection pins that surface onto the scan, which is the
+// shape a retopologist is checking ("does my cage follow the form?"). Either
+// way the preview is a real smooth surface, no longer a reprojected-linear
+// stand-in.
 //
 // NON-DESTRUCTIVENESS is structural, not a convention: `subdivisionPreview`
 // derives its result from a COPY of the base mesh (a document-payload round
@@ -59,12 +52,13 @@ public enum SubdivisionPreviewLevel: Int, CaseIterable, Codable, Sendable {
         }
     }
 
-    /// Whether a preview at this level can actually SMOOTH the cage. True
-    /// only when a Target exists to reproject onto — see the honest-scope
-    /// note above. Callers surface this so the user is never told a
-    /// reprojected-linear preview is a smooth-subdivision surface.
+    /// Whether a preview at this level actually SMOOTHS the cage. Catmull-Clark
+    /// smooths on its own now (engine patch 0031), so this is true for any
+    /// non-off level regardless of a Target; a Target only additionally
+    /// conforms the smoothed surface onto the scan. `hasTarget` is retained for
+    /// source compatibility with callers deciding messaging.
     public func smoothingIsAvailable(hasTarget: Bool) -> Bool {
-        self != .off && hasTarget
+        self != .off
     }
 }
 
@@ -181,7 +175,7 @@ extension Mesh {
         guard level != .off, faceCount > 0 else { return nil }
         let preview = try detachedCopy()
         for _ in 0..<level.rawValue {
-            try preview.subdivide(reprojectingOnto: snapper)
+            try preview.smoothSubdivide(reprojectingOnto: snapper)
         }
         return preview
     }

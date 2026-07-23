@@ -15,9 +15,11 @@ import simd
 /// Metal renderer, real engine meshes, the real journaled command path and
 /// real offscreen frames. No engine mocks.
 ///
-/// **HONEST SCOPE:** the preview is REPROJECTED-LINEAR (see
-/// `CyberKit/Sources/CyberKit/SubdivisionPreview.swift`); genuinely smooth
-/// (Catmull-Clark) subdivision is task 4.6a and is not asserted here.
+/// The preview is a genuine Catmull-Clark smooth surface (task 4.6a; see
+/// `CyberKit/Sources/CyberKit/SubdivisionPreview.swift`), optionally conformed
+/// onto the Target. The CC math itself is pinned in `SubdivisionPreviewTests`;
+/// this suite covers the viewport wiring (non-destructiveness, throttle,
+/// render path).
 @MainActor
 struct SubdivisionPreviewViewportTests {
     // MARK: - Harness

@@ -208,21 +208,19 @@ scenarios:
       - BatchCommandTests/subdivideAndReprojectJournalsOnceAndLandsOnTheTarget
       - BatchCommandTests/subdivideClearsOrphanedPinsAndOneUndoRestoresThem
       - CyberTopologyUITests/testBatchPanelSubdividesTheCageAndOneUndoRestoresIt
-    # Task 4.6: the subdivision preview.
+    # Task 4.6 + 4.6a: the subdivision preview, now genuinely SMOOTH.
     #
-    # HONEST MAPPING — THE SHIPPED PREVIEW IS REPROJECTED-LINEAR, NOT
-    # SMOOTH. The requirement says "1-2 level SMOOTH-subdivision preview
-    # (with reprojection)". The engine has LINEAR subdivision only
-    # (Mesh::linearSubdivide behind cyber_retopo_subdivide); there is no
-    # Catmull-Clark / limit-surface evaluator anywhere in it. What ships and
-    # what these tests assert is: subdivide linearly, then project every
-    # resulting vertex onto the Target — which is what actually produces the
-    # smooth surface a retopologist judges, and which degrades to a merely
-    # DENSER cage when the document has no Target (asserted, and said out
-    # loud in the UI caption). SubdivisionPreviewTests/
-    # withoutATargetTheSubdivisionIsLinear is the deliberate proof of that
-    # limitation, and the genuinely smooth pass is task 4.6a — NOT claimed
-    # by this mapping.
+    # The requirement asks for a "1-2 level SMOOTH-subdivision preview (with
+    # reprojection)". Engine patch 0031 adds a real Catmull-Clark operator
+    # (Mesh::smoothSubdivide behind cyber_retopo_subdivide_smooth): the preview
+    # smooths the cage on its own, then — with a Target — conforms the smoothed
+    # surface onto the scan (smooth-then-conform). The CC math is pinned
+    # exactly: smoothSubdivideCubeMatchesCatmullClark checks the interior mask
+    # against the closed-form cube result (corners -> +/-5/18) and
+    # openCageBoundaryFollowsTheCreaseRule checks the boundary rule;
+    # withoutATargetTheCageStillSmooths proves the cage smooths even with no
+    # Target (a flat cage stays planar but its corners pull in — which linear
+    # never does).
     #
     # The SCENARIO itself ("the smoothed preview updates live while the
     # stored mesh remains the base cage") is fully covered: the app test
@@ -238,7 +236,9 @@ scenarios:
       - SubdivisionPreviewTests/previewNeverMutatesTheBase
       - SubdivisionPreviewTests/previewIsAnIndependentHandle
       - SubdivisionPreviewTests/reprojectionLiftsThePreview
-      - SubdivisionPreviewTests/withoutATargetTheSubdivisionIsLinear
+      - SubdivisionPreviewTests/withoutATargetTheCageStillSmooths
+      - SubdivisionPreviewTests/smoothSubdivideCubeMatchesCatmullClark
+      - SubdivisionPreviewTests/openCageBoundaryFollowsTheCreaseRule
       - SubdivisionPreviewTests/previewGoldens
       - SubdivisionPreviewTests/throttlePolicy
       - SubdivisionPreviewViewportTests/editingUnderPreviewLeavesTheStoredCageUntouched

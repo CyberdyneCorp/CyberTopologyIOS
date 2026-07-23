@@ -1406,18 +1406,16 @@ struct ViewportSettingsView: View {
         .padding()
     }
 
-    /// Honest caption for the preview control (task 4.6). The engine has
-    /// LINEAR subdivision only, so the smoothing comes entirely from
-    /// reprojecting onto the Target — with no Target the preview is just a
-    /// denser cage, and the UI says exactly that rather than implying a
-    /// smooth-subdivision surface the engine cannot produce.
+    /// Caption for the preview control (task 4.6/4.6a). Catmull-Clark smooth
+    /// subdivision rounds the cage on its own; a Target additionally conforms
+    /// the smoothed surface onto the scan (smooth-then-conform).
     private var subdivisionPreviewCaption: String {
         let level = SubdivisionPreviewLevel(clamping: subdivisionPreviewLevel)
         if level == .off {
             return "Preview only — editing always stays on the base cage."
         }
         return hasTarget
-            ? "Subdivided and reprojected onto the Target. Preview only: never saved or exported."
-            : "No Target to reproject onto, so this only densifies the cage without smoothing it."
+            ? "Catmull-Clark smoothed, then conformed onto the Target. Preview only: never saved or exported."
+            : "Catmull-Clark smoothed. Preview only: never saved or exported."
     }
 }
