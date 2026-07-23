@@ -97,6 +97,11 @@ struct DocumentEditorView: View {
     /// is always built WITH its focus — a bool + separate focus state can
     /// present the first sheet before the focus write lands.
     @State private var galleryPresentation: GalleryPresentation?
+    #if DEBUG
+        /// DEBUG stroke recorder sheet (change simplify-gesture-grammar,
+        /// task 1.1).
+        @State private var strokeRecorderPresented = false
+    #endif
 
     struct GalleryPresentation: Identifiable {
         let id = UUID()
@@ -151,6 +156,19 @@ struct DocumentEditorView: View {
             // the same live configuration.
             ActionGalleryView(toolbar: toolbarModel, focus: presentation.focus)
         }
+        #if DEBUG
+            .sheet(isPresented: $strokeRecorderPresented) {
+                // Real-stroke recorder (change simplify-gesture-grammar,
+                // task 1.1): the last captured stroke, its interpretation
+                // and the Target it was drawn on, saved as a corpus fixture.
+                StrokeFixtureExportView(
+                    stroke: inputModel.controller.capture.lastStroke,
+                    recognizedAs: inputModel.lastInterpretation?.summary,
+                    targetName: document.bundle.manifest.objects
+                        .first { $0.role == .target }?.name ?? "none"
+                )
+            }
+        #endif
     }
 
     // MARK: - Components
@@ -223,6 +241,12 @@ struct DocumentEditorView: View {
                     leftHandedToolbar: $leftHandedToolbar,
                     snapHapticsEnabled: $snapHapticsEnabled,
                     strokeDebugHUD: $strokeDebugHUD,
+                    onRecordStroke: {
+                        #if DEBUG
+                            showingViewportSettings = false
+                            strokeRecorderPresented = true
+                        #endif
+                    },
                     subdivisionPreviewLevel: $subdivisionPreviewLevel,
                     hasTarget: document.bundle.manifest.objects.contains {
                         $0.role == .target

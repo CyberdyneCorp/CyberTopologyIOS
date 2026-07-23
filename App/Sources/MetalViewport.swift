@@ -1230,6 +1230,10 @@ struct ViewportSettingsView: View {
     @Binding var leftHandedToolbar: Bool
     @Binding var snapHapticsEnabled: Bool
     @Binding var strokeDebugHUD: Bool
+    /// Opens the DEBUG stroke recorder. A closure rather than a binding
+    /// because the popover cannot reach the capture pipeline — the editor
+    /// owns it, and it presents the sheet.
+    var onRecordStroke: () -> Void = {}
     /// Subdivision preview level (task 4.6): 0 / 1 / 2.
     @Binding var subdivisionPreviewLevel: Int
     /// Whether the document has a Target to reproject the preview onto —
@@ -1363,6 +1367,12 @@ struct ViewportSettingsView: View {
                 // interpretation record over the viewport.
                 Toggle("Stroke recognizer HUD (DEBUG)", isOn: $strokeDebugHUD)
                     .accessibilityIdentifier("stroke-debug-toggle")
+                // Real-stroke recorder (change simplify-gesture-grammar,
+                // task 1.1): the gesture re-tune is blocked on a corpus of
+                // strokes that actually failed on a device, and this is the
+                // only way one gets off the iPad.
+                Button("Record last stroke (DEBUG)…") { onRecordStroke() }
+                    .accessibilityIdentifier("stroke-record-button")
                 Text(
                     """
                     Development aid: renders the EditMesh as ghost geometry \

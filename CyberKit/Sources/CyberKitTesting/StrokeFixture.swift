@@ -53,12 +53,25 @@ public struct StrokeFixture: Codable, Equatable, Sendable {
     public var name: String
     public var samples: [StrokeSample]
     public var expectedOutcome: String
+    /// Where this stroke came from and what the user meant by it: device,
+    /// Target model, and the intent in their words.
+    ///
+    /// Recorded at capture time because it cannot be reconstructed later —
+    /// a committed stroke is 700+ anonymous coordinates, and re-tuning the
+    /// classifier against it needs to know whether a near-miss was the
+    /// user overshooting a seam or stopping short of one. Optional, so the
+    /// fixtures recorded before this field decode unchanged.
+    public var provenance: String?
 
-    public init(name: String, samples: [StrokeSample], expectedOutcome: String) {
+    public init(
+        name: String, samples: [StrokeSample], expectedOutcome: String,
+        provenance: String? = nil
+    ) {
         self.schemaVersion = Self.currentSchemaVersion
         self.name = name
         self.samples = samples
         self.expectedOutcome = expectedOutcome
+        self.provenance = provenance
     }
 
     // MARK: - Persistence

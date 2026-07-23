@@ -88,10 +88,13 @@ final class ViewportStrokeCapture {
     }
 
     /// The last completed stroke as a replayable fixture (task 1.1b format).
-    func fixture(named name: String, expectedOutcome: String) -> StrokeFixture? {
+    func fixture(
+        named name: String, expectedOutcome: String, provenance: String? = nil
+    ) -> StrokeFixture? {
         guard let stroke = lastStroke else { return nil }
         return StrokeFixture(
-            name: name, samples: stroke.samples, expectedOutcome: expectedOutcome
+            name: name, samples: stroke.samples, expectedOutcome: expectedOutcome,
+            provenance: provenance
         )
     }
 
