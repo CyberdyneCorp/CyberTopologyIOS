@@ -53,7 +53,7 @@ struct DeviceStrokeCorpusTests {
     func corpusIsPresentAndIntended() throws {
         let quads = try Self.urls(intending: "createQuad")
         let deletes = try Self.urls(intending: "deleteFaces")
-        #expect(quads.count == 11)
+        #expect(quads.count == 12)
         #expect(deletes.count == 4)
         for url in quads + deletes {
             let fixture = try StrokeFixture(contentsOf: url)
@@ -94,7 +94,30 @@ struct DeviceStrokeCorpusTests {
             // one made the face render as a triangle even though it resolved
             // to createQuad.
             #expect(record.quadCorners.count == 4, "\(fixture.name): \(record.quadCorners.count) corners")
+            // ...and those four must form a SIMPLE ring. Four corners in the
+            // wrong order self-intersect into a bowtie (an hourglass face),
+            // which the corner-count check alone does not catch.
+            #expect(
+                !Self.ringSelfIntersects(record.quadCorners),
+                "\(fixture.name): corners form a self-intersecting (bowtie) ring"
+            )
         }
+    }
+
+    /// True when the 4-corner ring crosses itself (opposite edges intersect)
+    /// — a bowtie rather than a simple quad.
+    private static func ringSelfIntersects(_ p: [SIMD2<Float>]) -> Bool {
+        guard p.count == 4 else { return false }
+        func ccw(_ a: SIMD2<Float>, _ b: SIMD2<Float>, _ c: SIMD2<Float>) -> Bool {
+            (c.y - a.y) * (b.x - a.x) > (b.y - a.y) * (c.x - a.x)
+        }
+        func crosses(_ a: SIMD2<Float>, _ b: SIMD2<Float>, _ c: SIMD2<Float>, _ d: SIMD2<Float>)
+            -> Bool
+        {
+            ccw(a, c, d) != ccw(b, c, d) && ccw(a, b, c) != ccw(a, b, d)
+        }
+        // Edges (0-1) vs (2-3) and (1-2) vs (3-0).
+        return crosses(p[0], p[1], p[2], p[3]) || crosses(p[1], p[2], p[3], p[0])
     }
 
     /// ACCEPTANCE GATE for the X delete gesture: four real X strokes drawn to
