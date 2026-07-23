@@ -94,13 +94,22 @@ struct DeviceStrokeCorpusTests {
             // one made the face render as a triangle even though it resolved
             // to createQuad.
             #expect(record.quadCorners.count == 4, "\(fixture.name): \(record.quadCorners.count) corners")
-            // ...and those four must form a SIMPLE ring. Four corners in the
-            // wrong order self-intersect into a bowtie (an hourglass face),
-            // which the corner-count check alone does not catch.
-            #expect(
-                !Self.ringSelfIntersects(record.quadCorners),
-                "\(fixture.name): corners form a self-intersecting (bowtie) ring"
-            )
+            // ...and those four must form a SIMPLE ring at EVERY viewport
+            // aspect. Four corners in the wrong order self-intersect into a
+            // bowtie (an hourglass face); a thin quad's ordering was fragile
+            // to aspect, so aspect 1 alone would miss it. Corners are ordered
+            // by stroke position now, which is aspect-independent, but the
+            // test pins it across the range the app actually uses.
+            let samples = fixture.samples.map {
+                StrokeInterpreter.Sample(x: $0.x, y: $0.y, time: $0.time)
+            }
+            for aspect: Float in [0.75, 1.0, 1.4] {
+                let r = try StrokeInterpreter.interpret(samples: samples, aspect: aspect)
+                #expect(
+                    !Self.ringSelfIntersects(r.quadCorners),
+                    "\(fixture.name): bowtie ring at aspect \(aspect)"
+                )
+            }
         }
     }
 

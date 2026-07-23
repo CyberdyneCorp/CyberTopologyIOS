@@ -1,5 +1,5 @@
 diff --git a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
-index e4a451d..ba2e964 100644
+index e4a451d..e259568 100644
 --- a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
 +++ b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
 @@ -86,6 +86,17 @@ struct ShapeParams {
@@ -50,7 +50,7 @@ index e4a451d..ba2e964 100644
  // Corner detection over a sliding direction window: direction is measured
  // between samples `window` apart so a rounded (sloppy) corner still turns
  // sharply within one window; after a detected corner the scan skips a
-@@ -408,46 +442,113 @@ inline bool seamIsCorner(const std::vector<Vec2>& p, int window, float cornerRad
+@@ -408,46 +442,118 @@ inline bool seamIsCorner(const std::vector<Vec2>& p, int window, float cornerRad
      return std::acos(cosA) > cornerRadians;
  }
  
@@ -72,28 +72,32 @@ index e4a451d..ba2e964 100644
 -        if (seam) {
 -            corners.push_back(p.front());
 +// Robust corner estimate for a closed-ish stroke — FOUR corners for a quad,
-+// THREE for a triangle — resilient to rotation, wobble and interior
-+// crossings, where the old detected-corner / diagonal-extreme estimate placed
-+// corners badly on a rotated hand-drawn square (the face rendered as a
-+// skewed triangle even though it was a quad).
++// THREE for a triangle — resilient to rotation, wobble and interior crossings.
 +//
-+// Farthest-point method (document-scanner style): the two most distant points
-+// are one diagonal; the two points farthest from that diagonal, one on each
-+// side, are the other. These four track the true corners of a rotated quad.
-+// Then a corner whose interior angle is nearly straight is redundant — the
-+// shape is a triangle — so it is dropped. `collapseCos` is the cosine above
-+// which (i.e. angle straighter than) a corner counts as redundant; a real
-+// quad corner, even a skewed one, stays well below it.
++// Farthest-point method (document-scanner style) locates the four corners: the
++// two most distant points are one diagonal; the two points farthest from that
++// diagonal, one on each side, are the other. But the corners are returned in
++// STROKE ORDER (their position along the drawn polyline), NOT sorted by angle
++// around the centroid. The hand draws a quad by going around its perimeter, so
++// stroke order is the drawn ring and is ALWAYS simple; angle-around-centroid
++// ordering is fragile for a thin quad — two corners subtend nearly the same
++// angle and can swap, turning the face into a self-intersecting bowtie.
++//
++// A corner whose interior angle is nearly straight is redundant — the shape is
++// a triangle — so it is dropped. `collapseCos` is the cosine above which
++// (i.e. angle straighter than) a corner counts as redundant.
 +inline std::vector<Vec2> polygonCorners(const std::vector<Vec2>& p, Vec2 centroid,
 +                                        float collapseCos) {
-+    if (p.size() < 4) {
++    const int n = static_cast<int>(p.size());
++    if (n < 4) {
 +        return {};
 +    }
-+    const auto farthestFrom = [&](Vec2 q) {
-+        std::size_t best = 0;
++    const auto farthestIndexFrom = [&](Vec2 q) {
++        int best = 0;
 +        float bestD = -1.0f;
-+        for (std::size_t i = 0; i < p.size(); ++i) {
-+            const float d = dot2(p[i] - q, p[i] - q);
++        for (int i = 0; i < n; ++i) {
++            const float d = dot2(p[static_cast<std::size_t>(i)] - q,
++                                 p[static_cast<std::size_t>(i)] - q);
 +            if (d > bestD) {
 +                bestD = d;
 +                best = i;
@@ -101,20 +105,22 @@ index e4a451d..ba2e964 100644
          }
 -        for (const int i : detected) {
 -            corners.push_back(p[static_cast<std::size_t>(i)]);
-+        return p[best];
++        return best;
 +    };
-+    const Vec2 c0 = farthestFrom(centroid);
-+    const Vec2 c2 = farthestFrom(c0);
-+    const Vec2 dir = c2 - c0;
-+    Vec2 cp = c0;
-+    Vec2 cn = c0;
-+    float bestPos = 0.0f;
-+    float bestNeg = 0.0f;
-+    for (const Vec2 q : p) {
-+        const float side = dir.x * (q.y - c0.y) - dir.y * (q.x - c0.x);
++    const int i0 = farthestIndexFrom(centroid);
++    const int i2 = farthestIndexFrom(p[static_cast<std::size_t>(i0)]);
++    const Vec2 a0 = p[static_cast<std::size_t>(i0)];
++    const Vec2 dir = p[static_cast<std::size_t>(i2)] - a0;
++    int ip = -1;
++    int in = -1;
++    float bestPos = 1e-6f;
++    float bestNeg = -1e-6f;
++    for (int i = 0; i < n; ++i) {
++        const Vec2 q = p[static_cast<std::size_t>(i)];
++        const float side = dir.x * (q.y - a0.y) - dir.y * (q.x - a0.x);
 +        if (side > bestPos) {
 +            bestPos = side;
-+            cp = q;
++            ip = i;
          }
 -        // Reject a degenerate ring — coinciding OR near-collinear corners —
 -        // and fall back to the quad estimate. The collinearity guard is what
@@ -134,33 +140,32 @@ index e4a451d..ba2e964 100644
 -            return corners;
 +        if (side < bestNeg) {
 +            bestNeg = side;
-+            cn = q;
++            in = i;
 +        }
 +    }
-+    std::vector<Vec2> cand = {c0, c2};
-+    if (bestPos > 1e-6f) {
-+        cand.push_back(cp);
++    // STROKE ORDER: sort the corner indices, so the ring follows the drawn
++    // perimeter and never self-intersects.
++    std::vector<int> idx = {i0, i2};
++    if (ip >= 0) {
++        idx.push_back(ip);
 +    }
-+    if (bestNeg < -1e-6f) {
-+        cand.push_back(cn);
++    if (in >= 0) {
++        idx.push_back(in);
 +    }
-+    // Ring order around the centroid so the face never self-intersects.
-+    std::stable_sort(cand.begin(), cand.end(), [centroid](Vec2 a, Vec2 b) {
-+        return std::atan2(a.y - centroid.y, a.x - centroid.x) <
-+               std::atan2(b.y - centroid.y, b.x - centroid.x);
-+    });
-+    // Dedup near-coincident candidates SCALED to the shape: the farthest-
-+    // point search finds a triangle's third vertex twice (as both the
-+    // opposite point and the off-diagonal extreme), a hair apart. Merging at
-+    // a fraction of the bounding radius folds those into one corner — a
-+    // triangle — while a real quad's corners, always far apart, never merge.
++    std::sort(idx.begin(), idx.end());
++    idx.erase(std::unique(idx.begin(), idx.end()), idx.end());
++    // Dedup near-coincident corners SCALED to the shape (the farthest-point
++    // search finds a triangle's third vertex twice, a hair apart) — a fraction
++    // of the bounding radius folds those into one corner, while a real quad's
++    // corners, always far apart, never merge.
 +    float radius = 0.0f;
-+    for (const Vec2 q : cand) {
-+        radius = std::fmax(radius, len(q - centroid));
++    for (const int i : idx) {
++        radius = std::fmax(radius, len(p[static_cast<std::size_t>(i)] - centroid));
 +    }
 +    const float mergeSq = (radius * 0.2f) * (radius * 0.2f);
 +    std::vector<Vec2> ring;
-+    for (const Vec2 q : cand) {
++    for (const int i : idx) {
++        const Vec2 q = p[static_cast<std::size_t>(i)];
 +        bool dup = false;
 +        for (const Vec2 r : ring) {
 +            if (dot2(q - r, q - r) < mergeSq) {
@@ -170,8 +175,9 @@ index e4a451d..ba2e964 100644
 +        }
 +        if (!dup) {
 +            ring.push_back(q);
-+        }
-+    }
+         }
+     }
+-    return quadCorners(p, centroid, window, cornerRadians);
 +    if (ring.size() < 3) {
 +        return {};
 +    }
@@ -193,14 +199,13 @@ index e4a451d..ba2e964 100644
 +                ring.erase(ring.begin() + static_cast<std::ptrdiff_t>(i));
 +                break;
 +            }
-         }
-     }
--    return quadCorners(p, centroid, window, cornerRadians);
++        }
++    }
 +    return ring;
  }
  
  // One-stroke grid detection ("up-across-down…", task 3.4): an open square
-@@ -650,15 +751,17 @@ inline bool pointInPolygon(const std::vector<Vec2>& poly, Vec2 p) {
+@@ -650,15 +756,17 @@ inline bool pointInPolygon(const std::vector<Vec2>& poly, Vec2 p) {
      const int seamWindow = std::max(2, params.resampleCount / 8);
      const int interiorCrossings = countSelfIntersections(pts, seamWindow);
  
@@ -227,7 +232,7 @@ index e4a451d..ba2e964 100644
          result.shape = StrokeShape::Cross;
          result.confidence = interiorCrossings == 1 ? 0.8f : 0.7f;
          return result;
-@@ -668,7 +771,7 @@ inline bool pointInPolygon(const std::vector<Vec2>& poly, Vec2 p) {
+@@ -668,7 +776,7 @@ inline bool pointInPolygon(const std::vector<Vec2>& poly, Vec2 p) {
          // Corner estimates for the shell's CreateQuad application (task
          // 3.3), reported in un-aspect-corrected normalized viewport
          // coordinates so they unproject with the stroke's own space.
@@ -236,7 +241,7 @@ index e4a451d..ba2e964 100644
          const float invAspect = params.aspect > 0.0f ? 1.0f / params.aspect : 1.0f;
          for (Vec2& c : result.corners) {
              c.x *= invAspect;
-@@ -683,20 +786,23 @@ inline bool pointInPolygon(const std::vector<Vec2>& poly, Vec2 p) {
+@@ -683,20 +791,23 @@ inline bool pointInPolygon(const std::vector<Vec2>& poly, Vec2 p) {
          // degenerate case where no ring could be recovered at all.
          const bool isTriangle = result.corners.size() == 3;
          const bool boundsRing = result.corners.size() >= 3;
@@ -266,7 +271,7 @@ index e4a451d..ba2e964 100644
          } else {
              result.shape = StrokeShape::Lasso;
              result.confidence = 0.6f;
-@@ -752,7 +858,7 @@ inline bool pointInPolygon(const std::vector<Vec2>& poly, Vec2 p) {
+@@ -752,7 +863,7 @@ inline bool pointInPolygon(const std::vector<Vec2>& poly, Vec2 p) {
          // detection relies on is meaningless and would misread a smooth
          // adjacent-quad U as a three-corner triangle. Triangles are only
          // recognized on genuinely closed strokes (the branch above).

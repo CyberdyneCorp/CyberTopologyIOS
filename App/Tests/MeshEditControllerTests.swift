@@ -292,6 +292,48 @@ struct MeshEditControllerTests {
         #expect(try harness.editMesh().faceCount == 6)
     }
 
+    /// REGRESSION (device: quads rendered as a self-intersecting bowtie): a
+    /// TALL-THIN quad drawn over the Target must create a SIMPLE face, not a
+    /// crossed one. The corner estimate orders corners by stroke position (the
+    /// drawn perimeter), which is always simple; angle-around-centroid
+    /// ordering swapped two corners of a thin quad and twisted the face. This
+    /// drives the full app path — recognize, unproject onto the Target, build
+    /// the face — and checks the result's screen projection does not cross.
+    @Test func tallThinQuadCreatesASimpleFaceNotABowtie() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+
+        // A tall, thin quad (world 0.4 wide x 2 tall) on the plane — the
+        // aspect that made corner ordering fragile.
+        let corners: [SIMD3<Float>] = [
+            SIMD3(0, 0, 0), SIMD3(0.4, 0, 0), SIMD3(0.4, 2, 0), SIMD3(0, 2, 0),
+        ]
+        harness.stroke(
+            verb: .pencil,
+            through: harness.densified(through: corners.map { harness.screenPoint(of: $0) } + [harness.screenPoint(of: corners[0])])
+        )
+
+        #expect(harness.bundle.journal.depth == 1, "the thin quad should create a face")
+        let mesh = try harness.editMesh()
+        #expect(mesh.faceCount == 1)
+        #expect(mesh.vertexCount == 4)
+
+        // Project the created ring to screen and assert it does not
+        // self-intersect (bowtie). Vertices are in creation = ring order.
+        let screen = (0..<4).compactMap { mesh.vertexPosition(UInt32($0)) }
+            .map { harness.screenPoint(of: $0) }
+        try #require(screen.count == 4)
+        func ccw(_ a: SIMD2<Double>, _ b: SIMD2<Double>, _ c: SIMD2<Double>) -> Bool {
+            (c.y - a.y) * (b.x - a.x) > (b.y - a.y) * (c.x - a.x)
+        }
+        func crosses(_ a: SIMD2<Double>, _ b: SIMD2<Double>, _ c: SIMD2<Double>, _ d: SIMD2<Double>) -> Bool {
+            ccw(a, c, d) != ccw(b, c, d) && ccw(a, b, c) != ccw(a, b, d)
+        }
+        let bowtie = crosses(screen[0], screen[1], screen[2], screen[3])
+            || crosses(screen[1], screen[2], screen[3], screen[0])
+        #expect(!bowtie, "the created face self-intersects (bowtie): \(screen)")
+    }
+
     /// A straight line over nothing interprets as toggle-visibility (not a
     /// 3.3 verb): the mesh and journal stay untouched.
     @Test func pencilLineDoesNotMutate() throws {
