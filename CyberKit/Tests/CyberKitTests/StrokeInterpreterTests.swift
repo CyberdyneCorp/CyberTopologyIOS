@@ -146,6 +146,37 @@ struct StrokeInterpreterTests {
         #expect(first == second)
     }
 
+    /// REGRESSION: an X whose four ends come close together (the natural way
+    /// a hand draws one) reads as "closed", and the closed branch used to run
+    /// first and drop a self-intersecting stroke to Lasso -> hideRegion — an
+    /// X that HID faces instead of deleting them. The crossing is now detected
+    /// before the closed test, so every X resolves to the delete gesture.
+    @Test("a closed X still resolves to the delete (cross) gesture, never hide")
+    func closedXResolvesToDeleteNotHide() throws {
+        // Two diagonals crossing, ending back near the start so the stroke
+        // is "closed" (endpoints within closedFraction of the path length).
+        let closedX = StrokeGestureCorpus.fixture(
+            name: "closed_x_probe",
+            expectedOutcome: "cross:none",
+            points: StrokeGestureCorpus.path(through: [
+                // A crossing loop with two corners: the tail crosses the
+                // opening segment, and the ends nearly meet (so it reads as
+                // "closed"). One self-intersection, low corner count.
+                .init(0.50, 0.30), .init(0.66, 0.62), .init(0.34, 0.62),
+                .init(0.52, 0.33),
+            ]),
+            type: .pencil
+        )
+        let record = try interpret(closedX)
+        #expect(record.shape == .cross, "closed X shape was \(record.shape)")
+        // No mesh context here, so the cross has no faces to target and best
+        // is none — but crucially NOT hideRegion. Over real faces it deletes.
+        #expect(record.best?.action != .hideRegion)
+        // The open X fixture is unchanged.
+        let openX = try interpret(StrokeGestureCorpus.cross())
+        #expect(openX.shape == .cross)
+    }
+
     // MARK: - Triangle vs quad (change simplify-gesture-grammar, task 2/user set)
 
     /// A closed three-corner stroke resolves to `createTriangle` with three

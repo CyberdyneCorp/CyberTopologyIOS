@@ -1,0 +1,39 @@
+diff --git a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+index 7ca9a87..2cc2aa3 100644
+--- a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
++++ b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+@@ -634,6 +634,21 @@ inline bool pointInPolygon(const std::vector<Vec2>& poly, Vec2 p) {
+         result.features.endpointDistance < params.closedFraction * pathLength;
+ 
+     const ShapeFeatures& f = result.features;
++
++    // X BEFORE closed: a single self-crossing IS the delete gesture,
++    // whichever way the two diagonals were drawn. Drawing an X naturally
++    // brings its four ends close together, so the stroke reads as "closed";
++    // if the closed branch ran first it would fail both Circle and
++    // ClosedLoop (each needs zero self-intersections) and fall to Lasso ->
++    // hideRegion — an X that hid faces instead of deleting them. Detecting
++    // the crossing first sends every X, open or closed, to DeleteFaces.
++    if (f.selfIntersections == 1 && f.corners >= 1 && f.corners <= 3 &&
++        f.straightness < params.straightRatio) {
++        result.shape = StrokeShape::Cross;
++        result.confidence = 0.8f;
++        return result;
++    }
++
+     if (f.closed) {
+         // Corner estimates for the shell's CreateQuad application (task
+         // 3.3), reported in un-aspect-corrected normalized viewport
+@@ -686,12 +701,6 @@ inline bool pointInPolygon(const std::vector<Vec2>& poly, Vec2 p) {
+         }
+     }
+ 
+-    if (f.selfIntersections == 1 && f.corners >= 1 && f.corners <= 3 &&
+-        f.straightness < params.straightRatio) {
+-        result.shape = StrokeShape::Cross;
+-        result.confidence = 0.8f;
+-        return result;
+-    }
+     if (f.selfIntersections >= params.scribbleMinIntersections ||
+         f.corners >= params.scribbleMinCorners) {
+         result.shape = StrokeShape::Scribble;
