@@ -65,7 +65,7 @@ public enum StrokeGestureCorpus {
     public static func scribble(type: StrokeSample.TouchType = .pencil) -> StrokeFixture {
         fixture(
             name: type == .pencil ? "scribble_pencil" : "scribble_finger",
-            expectedOutcome: "scribble:none",
+            expectedOutcome: "cross:none",
             points: path(through: [
                 Point(0.32, 0.52), Point(0.40, 0.36), Point(0.45, 0.60),
                 Point(0.53, 0.37), Point(0.58, 0.61), Point(0.66, 0.40),
@@ -210,7 +210,10 @@ public enum StrokeGestureCorpus {
         )
     }
 
-    /// Zig-zag across the cube's projected top border edge: edge dissolve.
+    /// Non-crossing zig-zag over geometry: a Scribble (delete). It moves
+    /// steadily right without self-crossing, so it stays a Scribble rather
+    /// than reading as an X — over faces it deletes them (dissolveEdge is a
+    /// tool now, not a gesture).
     public static func dissolveScribble(
         type: StrokeSample.TouchType = .pencil
     ) -> StrokeFixture {

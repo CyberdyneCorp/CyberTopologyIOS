@@ -962,38 +962,11 @@ struct MeshEditControllerTests {
         #expect(renderer.overlayPath.taggedIndexCount == 6)
     }
 
-    @Test func scribbleOverEdgeDissolvesItIntoOneQuad() throws {
-        let harness = try Harness()
-        try addPlaneTarget(to: harness)
-        try addTrianglePairEditMesh(to: harness)
-        let object = try #require(harness.editObject)
-        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
-
-        // Zig-zag back and forth across the shared diagonal.
-        harness.stroke(verb: .pencil, through: harness.densified(through: [
-            harness.screenPoint(of: SIMD3(0.9, 1.8, 0)),
-            harness.screenPoint(of: SIMD3(1.35, 1.05, 0)),
-            harness.screenPoint(of: SIMD3(1.5, 1.95, 0)),
-            harness.screenPoint(of: SIMD3(1.95, 1.2, 0)),
-            harness.screenPoint(of: SIMD3(2.1, 2.0, 0)),
-            harness.screenPoint(of: SIMD3(2.55, 1.35, 0)),
-        ], samplesPerSegment: 12))
-
-        #expect(harness.bundle.journal.depth == 1)
-        guard case .meshEdit(let edit) = try #require(harness.committed.first) else {
-            Issue.record("expected a meshEdit command")
-            return
-        }
-        #expect(edit.verb == "pencil.dissolveEdge")
-        let dissolved = try harness.editMesh()
-        #expect(dissolved.faceCount == 1)
-        #expect(try dissolved.stats().quads == 1)
-        #expect(dissolved.vertexCount == 4)
-
-        harness.undo()
-        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
-        #expect(try harness.editMesh().faceCount == 2)
-    }
+    // scribbleOverEdgeDissolvesItIntoOneQuad retired: dissolveEdge is no
+    // longer a stroke gesture (it is a tool). A scribble over geometry now
+    // DELETES the faces it covers — covered at the interpreter level by
+    // StrokeInterpreterTests.scribbleOverGeometryResolvesDelete, and the
+    // end-to-end delete path by xOverAFaceDeletesItAndUndoRestores below.
 
     @Test func xOverAFaceDeletesItAndUndoRestores() throws {
         let harness = try Harness()

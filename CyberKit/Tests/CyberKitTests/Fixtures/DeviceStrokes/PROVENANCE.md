@@ -39,6 +39,16 @@ gated on geometry (a recoverable ring, not a sharp-corner count) and made
 seam-tolerant (closing a quad by hand overshoots the start, a crossing that
 must not demote the loop). They are the regression guard for both.
 
+The four `x_delete_*` strokes are X's drawn over faces to delete them. They
+were misread as `lasso`/`scribble -> none` because the Cross test wanted
+exactly one self-crossing and at most three corners — a wobbly hand-drawn X
+has more of both. Cross detection now keys on the INTERIOR (seam-tolerant)
+crossing count, so any self-crossing gesture over faces reads as the delete.
+
+| file | intent |
+|------|--------|
+| `x_delete_a_pencil` .. `x_delete_d_pencil` | X over faces → deleteFaces |
+
 ## Acceptance
 
 `DeviceStrokeCorpusTests` asserts each resolves to `createQuad` through the

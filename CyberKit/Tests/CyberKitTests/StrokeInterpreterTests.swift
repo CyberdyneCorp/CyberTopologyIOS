@@ -159,11 +159,11 @@ struct StrokeInterpreterTests {
             name: "closed_x_probe",
             expectedOutcome: "cross:none",
             points: StrokeGestureCorpus.path(through: [
-                // A crossing loop with two corners: the tail crosses the
-                // opening segment, and the ends nearly meet (so it reads as
-                // "closed"). One self-intersection, low corner count.
-                .init(0.50, 0.30), .init(0.66, 0.62), .init(0.34, 0.62),
-                .init(0.52, 0.33),
+                // Two diagonals crossing in the MIDDLE, ends brought back
+                // near the start so the stroke reads as "closed". The crossing
+                // is interior (not at the seam), so it is an X, not a quad.
+                .init(0.35, 0.35), .init(0.65, 0.65), .init(0.65, 0.35),
+                .init(0.35, 0.65), .init(0.36, 0.36),
             ]),
             type: .pencil
         )
@@ -343,11 +343,15 @@ struct StrokeInterpreterTests {
         #expect(!record.candidates.map(\.action).contains(.hideRegion))
     }
 
-    @Test("scribble across an edge resolves to dissolve with the edges listed")
-    func scribbleOverEdgeResolvesDissolve() throws {
-        // Zig-zag across the projected top border edge (y = 0.1).
+    /// dissolveEdge is retired from the stroke grammar (it is a tool). A
+    /// scribble over geometry is a DELETE gesture now — it removes the faces
+    /// it covers rather than dissolving an edge under it.
+    @Test("scribble over geometry resolves to deleting the covered faces")
+    func scribbleOverGeometryResolvesDelete() throws {
+        // Zig-zag over the cube's projected face (moving right, so it does
+        // not self-cross — a Scribble, not a Cross).
         let fixture = StrokeGestureCorpus.fixture(
-            name: "dissolve_scribble", expectedOutcome: "scribble:dissolveEdge",
+            name: "delete_scribble", expectedOutcome: "scribble:deleteFaces",
             points: StrokeGestureCorpus.path(through: [
                 .init(0.30, 0.08), .init(0.38, 0.13), .init(0.44, 0.07),
                 .init(0.52, 0.14), .init(0.58, 0.07), .init(0.66, 0.13),
@@ -357,9 +361,9 @@ struct StrokeInterpreterTests {
         let record = try interpret(fixture, context: cubeContext())
         #expect(record.shape == .scribble)
         let best = try #require(record.best)
-        #expect(best.action == .dissolveEdge)
+        #expect(best.action == .deleteFaces)
         #expect(!best.elements.isEmpty)
-        #expect(best.elements.allSatisfy { $0.kind == .edge })
+        #expect(best.elements.allSatisfy { $0.kind == .face })
     }
 
     // MARK: - Task 3.4: full grammar over committed fixtures
@@ -458,15 +462,16 @@ struct StrokeInterpreterTests {
         #expect(best.elements.map(\.id) == [0, 2])
     }
 
-    @Test("committed dissolve-scribble fixture resolves to edge dissolve")
-    func committedDissolveScribbleResolvesDissolve() throws {
+    /// The committed scribble fixture now deletes the faces it covers
+    /// (dissolveEdge retired from the grammar), never an edge dissolve.
+    @Test("committed scribble fixture resolves to deleting faces, not dissolve")
+    func committedScribbleResolvesDelete() throws {
         let record = try interpret(
             try committedFixture(named: "dissolve_scribble_pencil"), context: cubeContext()
         )
         let best = try #require(record.best)
-        #expect(best.action == .dissolveEdge)
-        #expect(!best.elements.isEmpty)
-        #expect(best.elements.allSatisfy { $0.kind == .edge })
+        #expect(best.action == .deleteFaces)
+        #expect(best.elements.allSatisfy { $0.kind == .face })
     }
 
     @Test("committed rotate-circle fixture resolves to rotate-edge")

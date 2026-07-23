@@ -19,13 +19,20 @@ import Testing
 /// re-tune lands.
 @Suite("Device stroke corpus")
 struct DeviceStrokeCorpusTests {
-    /// Captured quad strokes bundled under Fixtures/DeviceStrokes.
+    /// Captured strokes bundled under Fixtures/DeviceStrokes.
     private static var deviceStrokeURLs: [URL] {
         let urls =
             Bundle.module.urls(
                 forResourcesWithExtension: "json", subdirectory: "Fixtures/DeviceStrokes"
             ) ?? []
         return urls.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Captured strokes whose recorded INTENT is `outcome`.
+    private static func urls(intending outcome: String) throws -> [URL] {
+        try deviceStrokeURLs.filter {
+            try StrokeFixture(contentsOf: $0).expectedOutcome == outcome
+        }
     }
 
     /// Replays a fixture through the engine recognizer exactly as the live
@@ -42,19 +49,20 @@ struct DeviceStrokeCorpusTests {
     /// adjacent-quad U's plus two closed smooth quads (the latter were
     /// misread as lasso until the closed path was geometry-gated and made
     /// seam-tolerant).
-    @Test("the device quad captures are present and every one is labelled createQuad")
-    func corpusIsPresentAndIntendedAsQuads() throws {
-        let urls = Self.deviceStrokeURLs
-        #expect(urls.count == 6)
-        for url in urls {
+    @Test("the device captures are present, dense, and carry intent provenance")
+    func corpusIsPresentAndIntended() throws {
+        let quads = try Self.urls(intending: "createQuad")
+        let deletes = try Self.urls(intending: "deleteFaces")
+        #expect(quads.count == 6)
+        #expect(deletes.count == 4)
+        for url in quads + deletes {
             let fixture = try StrokeFixture(contentsOf: url)
-            #expect(fixture.expectedOutcome == "createQuad", "\(fixture.name)")
             #expect(
-                fixture.provenance?.contains("intended: createQuad") == true,
+                fixture.provenance?.contains("intended:") == true,
                 "\(fixture.name) is missing its intent provenance"
             )
-            // Real device strokes are dense (hundreds of samples); a handful
-            // of points would mean a truncated or synthetic capture.
+            // Real device strokes are dense; a handful of points would mean a
+            // truncated or synthetic capture.
             #expect(fixture.samples.count > 100, "\(fixture.name) is suspiciously sparse")
         }
     }
@@ -72,7 +80,7 @@ struct DeviceStrokeCorpusTests {
     /// regression assertion.
     @Test("every device quad stroke resolves to createQuad")
     func deviceQuadStrokesResolveToCreateQuad() throws {
-        let urls = Self.deviceStrokeURLs
+        let urls = try Self.urls(intending: "createQuad")
         try #require(!urls.isEmpty)
         for url in urls {
             let fixture = try StrokeFixture(contentsOf: url)
@@ -82,6 +90,26 @@ struct DeviceStrokeCorpusTests {
                 "\(fixture.name): got \(String(describing: record.best?.action))"
             )
             #expect(record.shape == .closedLoop, "\(fixture.name): shape \(record.shape)")
+        }
+    }
+
+    /// ACCEPTANCE GATE for the X delete gesture: four real X strokes drawn to
+    /// delete faces, all previously misread as lasso/scribble (which now
+    /// resolve to nothing) because the Cross test wanted exactly one crossing
+    /// and at most three corners. Detection now keys on the INTERIOR
+    /// (seam-tolerant) crossing count, so a wobbly hand-drawn X still reads as
+    /// the delete gesture. Context-free here, so the cross has no faces to
+    /// target and best is none — over real faces the cross deletes them; the
+    /// invariant that matters is the SHAPE.
+    @Test("every device X stroke resolves to the cross (delete) gesture")
+    func deviceXStrokesResolveToCross() throws {
+        let urls = try Self.urls(intending: "deleteFaces")
+        try #require(!urls.isEmpty)
+        for url in urls {
+            let fixture = try StrokeFixture(contentsOf: url)
+            let record = try interpret(fixture)
+            #expect(record.shape == .cross, "\(fixture.name): shape \(record.shape)")
+            #expect(record.best?.action != .createQuad, "\(fixture.name) must not create a quad")
         }
     }
 }
