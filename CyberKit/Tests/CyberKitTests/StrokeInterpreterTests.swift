@@ -323,7 +323,7 @@ struct StrokeInterpreterTests {
         #expect(best.elements.first?.kind == .face)
     }
 
-    @Test("closed square on empty surface resolves to create-quad with a lasso alternative")
+    @Test("closed square on empty surface resolves to create-quad only")
     func squareOnEmptySurfaceResolvesCreateQuad() throws {
         // Drawn entirely outside the cube's projected region.
         let fixture = StrokeGestureCorpus.fixture(
@@ -338,7 +338,9 @@ struct StrokeInterpreterTests {
         #expect(record.shape == .closedLoop)
         #expect(record.context == .emptySurface)
         #expect(record.best?.action == .createQuad)
-        #expect(record.candidates.map(\.action).contains(.hideRegion))
+        // hideRegion is retired from the grammar: a closed loop offers no
+        // hide alternative any more.
+        #expect(!record.candidates.map(\.action).contains(.hideRegion))
     }
 
     @Test("scribble across an edge resolves to dissolve with the edges listed")
@@ -493,18 +495,17 @@ struct StrokeInterpreterTests {
         #expect(best.elements.allSatisfy { $0.kind == .face })
     }
 
-    /// Closed lasso STARTING in empty space and crossing the mesh: hide
-    /// the enclosed portion (spec grammar table).
-    @Test("committed lasso from empty space resolves to hiding enclosed faces")
-    func committedHideLassoResolvesHide() throws {
+    /// A large closed stroke that used to be the hide gesture now resolves
+    /// to createQuad — hideRegion is retired from the stroke grammar (it is
+    /// a tool). This fixture stays as the proof that hide is truly gone.
+    @Test("committed hide-lasso fixture now resolves to createQuad, never hide")
+    func committedHideLassoResolvesQuad() throws {
         let record = try interpret(
             try committedFixture(named: "hide_lasso_pencil"), context: cubeContext()
         )
-        #expect(record.shape == .lasso)
-        let best = try #require(record.best)
-        #expect(best.action == .hideRegion)
-        #expect(!best.elements.isEmpty)
-        #expect(best.elements.allSatisfy { $0.kind == .face })
+        #expect(record.shape == .closedLoop)
+        #expect(record.best?.action == .createQuad)
+        #expect(!record.candidates.map(\.action).contains(.hideRegion))
     }
 
     @Test("committed tap fixture resolves to tweak of the vertex under it")

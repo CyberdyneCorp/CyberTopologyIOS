@@ -37,12 +37,15 @@ struct DeviceStrokeCorpusTests {
         return try #require(recognizer.lastInterpretation)
     }
 
-    /// Anti-vacuity: the bundle must actually contain the four captures, or
-    /// the acceptance test below would pass by iterating nothing.
-    @Test("the four device quad captures are present and every one is labelled createQuad")
+    /// Anti-vacuity: the bundle must actually contain the captures, or the
+    /// acceptance test below would pass by iterating nothing. Four open
+    /// adjacent-quad U's plus two closed smooth quads (the latter were
+    /// misread as lasso until the closed path was geometry-gated and made
+    /// seam-tolerant).
+    @Test("the device quad captures are present and every one is labelled createQuad")
     func corpusIsPresentAndIntendedAsQuads() throws {
         let urls = Self.deviceStrokeURLs
-        #expect(urls.count == 4)
+        #expect(urls.count == 6)
         for url in urls {
             let fixture = try StrokeFixture(contentsOf: url)
             #expect(fixture.expectedOutcome == "createQuad", "\(fixture.name)")

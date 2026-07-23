@@ -1,5 +1,5 @@
 {
-  "expectedOutcome" : "lasso:hideRegion",
+  "expectedOutcome" : "closedLoop:createQuad",
   "name" : "lasso_pencil",
   "samples" : [
     {

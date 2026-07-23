@@ -108,7 +108,10 @@ public enum StrokeGestureCorpus {
         )
     }
 
-    /// Irregular closed lasso (kidney-shaped blob).
+    /// Irregular closed blob (kidney-shaped). Lasso is retired from the
+    /// stroke grammar (hideRegion is a tool now); an irregular closed stroke
+    /// that bounds a ring is a quad, so this now verifies that a sloppy
+    /// closed stroke still resolves to createQuad rather than hiding faces.
     public static func lasso(type: StrokeSample.TouchType = .pencil) -> StrokeFixture {
         var points: [Point] = []
         let steps = 110
@@ -119,7 +122,7 @@ public enum StrokeGestureCorpus {
         }
         return fixture(
             name: type == .pencil ? "lasso_pencil" : "lasso_finger",
-            expectedOutcome: "lasso:hideRegion",
+            expectedOutcome: "closedLoop:createQuad",
             points: points,
             type: type
         )
@@ -241,8 +244,10 @@ public enum StrokeGestureCorpus {
         )
     }
 
-    /// Irregular closed lasso STARTING in empty space (right of the cube's
-    /// projected square) and sweeping across it: hide portion.
+    /// Large irregular closed stroke STARTING in empty space and sweeping
+    /// across the mesh — what used to be the hide gesture. With hideRegion
+    /// retired from the grammar it is just a big closed stroke, so it now
+    /// resolves to createQuad (verifying the hide gesture is truly gone).
     public static func hideLasso(type: StrokeSample.TouchType = .pencil) -> StrokeFixture {
         var points: [Point] = []
         let steps = 140
@@ -253,7 +258,7 @@ public enum StrokeGestureCorpus {
         }
         return fixture(
             name: type == .pencil ? "hide_lasso_pencil" : "hide_lasso_finger",
-            expectedOutcome: "lasso:hideRegion",
+            expectedOutcome: "closedLoop:createQuad",
             points: points,
             type: type
         )

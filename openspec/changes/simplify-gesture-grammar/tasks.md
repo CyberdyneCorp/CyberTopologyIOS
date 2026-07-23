@@ -64,12 +64,13 @@ createGrid) leaves the stroke path and stays as an armed tool.
 
 ## 3. Re-tune closed-vs-open
 
-- [ ] 3.1 Seam-tolerant self-intersection counting: crossings between
-      leading and trailing segments do not disqualify a closed stroke.
-      (Drafted in the unlanded patch 0023 — that half was sound.) Deferred:
-      the four device captures have zero self-intersections, so the rescue
-      alone clears them; the overshoot variant that needs this is not yet in
-      the corpus.
+- [x] 3.1 Seam-tolerant self-intersection counting (engine patch 0026):
+      `countSelfIntersections(pts, seamWindow)` ignores crossings between a
+      leading and a trailing segment — closing a hand-drawn quad overshoots
+      the start, and that seam crossing must not demote the loop to Lasso.
+      An interior crossing (an X, a scribble) still counts. Driven by two
+      real device captures (`quad_closed_smooth_a/b`) that were misread as
+      lasso until this landed.
 - [x] 3.2 Nearly-closed rescue: landed as engine patch
       `0023-stroke-nearly-closed-quad-rescue`. An open stroke that bounds a
       recoverable quad ring (no self-crossings, not straight, endpoints

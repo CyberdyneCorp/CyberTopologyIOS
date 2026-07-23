@@ -24,12 +24,20 @@ quad) left open. Every one was **intended** as `createQuad`. Every one is
 only path to `createQuad` is inside its closed-shape branch, and an open U
 never enters it.
 
-| file | side | samples |
-|------|------|---------|
-| `quad_adjacent_top_pencil`    | top    | 285 |
-| `quad_adjacent_right_pencil`  | right  | 299 |
-| `quad_adjacent_bottom_pencil` | bottom | 281 |
-| `quad_adjacent_left_pencil`   | left   | 331 |
+| file | shape | samples |
+|------|-------|---------|
+| `quad_adjacent_top_pencil`    | open U, top    | 285 |
+| `quad_adjacent_right_pencil`  | open U, right  | 299 |
+| `quad_adjacent_bottom_pencil` | open U, bottom | 281 |
+| `quad_adjacent_left_pencil`   | open U, left   | 331 |
+| `quad_closed_smooth_a_pencil` | closed quad, smooth corners | 175 |
+| `quad_closed_smooth_b_pencil` | closed quad, smooth corners | 212 |
+
+The two `quad_closed_smooth_*` strokes are CLOSED quads drawn with rounded
+corners. They were misread as `lasso -> hideRegion` until the closed path was
+gated on geometry (a recoverable ring, not a sharp-corner count) and made
+seam-tolerant (closing a quad by hand overshoots the start, a crossing that
+must not demote the loop). They are the regression guard for both.
 
 ## Acceptance
 

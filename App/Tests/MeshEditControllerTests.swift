@@ -1106,44 +1106,33 @@ struct MeshEditControllerTests {
         #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
     }
 
-    @Test func lassoFromEmptySpaceHidesEnclosedFacesAndUndoShows() throws {
+    /// hideRegion is retired from the stroke grammar (it is a tool now). A
+    /// closed stroke that used to hide the faces it enclosed now creates a
+    /// quad and hides NOTHING — this is the app-level proof the gesture is
+    /// gone.
+    @Test func closedStrokeOverFacesCreatesQuadAndHidesNothing() throws {
         let harness = try Harness()
         try addPlaneTarget(to: harness)
         try addStripsEditMesh(to: harness)
-        let object = try #require(harness.editObject)
-        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
-        let renderer = try #require(harness.coordinator.renderer)
-        let edgesBefore = renderer.overlayPath.edgeIndexCount
 
-        // Flat elliptical lasso around strip B (y = 1.2...2.2) STARTING in
-        // empty space right of the mesh, crossing it.
+        // The same flat closed stroke that used to be a hide-lasso, over
+        // strip B.
         let center = harness.screenPoint(of: SIMD3(1.5, 1.7, 0))
-        var lasso: [SIMD2<Double>] = []
+        var loop: [SIMD2<Double>] = []
         for i in 0...140 {
             let angle = 2.0 * Double.pi * Double(i) / 140
-            lasso.append(SIMD2(
+            loop.append(SIMD2(
                 center.x + 0.20 * cos(angle), center.y + 0.06 * sin(angle)
             ))
         }
-        harness.stroke(verb: .pencil, through: lasso)
+        harness.stroke(verb: .pencil, through: loop)
 
-        #expect(harness.bundle.journal.depth == 1)
-        guard case .annotationEdit(let edit) = try #require(harness.committed.first) else {
-            Issue.record("expected an annotationEdit command")
-            return
+        // Whatever it committed, it must NOT be a hide: no annotationEdit,
+        // nothing hidden.
+        if case .annotationEdit = harness.committed.first {
+            Issue.record("a closed stroke must not hide faces any more")
         }
-        #expect(edit.verb == "pencil.hideRegion")
-        // Exactly strip B's three faces are hidden; topology and payload
-        // bytes untouched; the overlay dropped the hidden wireframe.
-        let hidden = try #require(annotations(of: harness))
-        #expect(hidden.hiddenFaces.count == 3)
-        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
-        #expect(try harness.editMesh().faceCount == 6)
-        #expect(renderer.overlayPath.edgeIndexCount < edgesBefore)
-
-        harness.undo()
-        #expect(annotations(of: harness) == nil)
-        #expect(renderer.overlayPath.edgeIndexCount == edgesBefore)
+        #expect(annotations(of: harness)?.hiddenFaces.isEmpty ?? true)
     }
 
     @Test func verticalLinesInEmptySpaceInvertAndShowAllVisibility() throws {

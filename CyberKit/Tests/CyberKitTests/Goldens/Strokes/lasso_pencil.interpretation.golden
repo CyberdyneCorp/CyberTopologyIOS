@@ -1,1 +1,1 @@
-shape=lasso conf=0.60 context=emptySurface; hideRegion:0.36
+shape=closedLoop conf=0.70 context=emptySurface; createQuad:0.70
