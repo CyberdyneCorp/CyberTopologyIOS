@@ -59,31 +59,26 @@ struct DeviceStrokeCorpusTests {
     /// ACCEPTANCE GATE for the classifier re-tune (task 3.3): every real quad
     /// stroke must resolve to `createQuad` through the engine recognizer.
     ///
-    /// Today they do not — an open U-shaped stroke never enters the
-    /// classifier's closed-shape branch, the only path to `createQuad`, and
-    /// falls through to `unknown / none`. Each assertion is therefore wrapped
-    /// in `withKnownIssue`: the failure is EXPECTED, so the suite stays green
-    /// while the bug is documented. When the re-tune makes a stroke resolve
-    /// correctly, its `withKnownIssue` sees no failure and reports it as
-    /// unexpectedly passing — that is the signal to drop the wrapper and turn
-    /// this into a plain regression assertion. Per-fixture wrapping (not one
-    /// wrapper around the loop) is what makes that signal fire the moment a
-    /// SINGLE stroke starts working.
-    @Test("every device quad stroke should resolve to createQuad (known-failing until the re-tune)")
+    /// These were `unknown / none` until the nearly-closed quad rescue
+    /// (engine patch 0023): an open U-shaped stroke never entered the
+    /// classifier's closed-shape branch, the only path to `createQuad`. The
+    /// rescue, placed last so it only upgrades would-be-Unknown strokes,
+    /// classifies an open stroke that bounds a recoverable quad ring as a
+    /// ClosedLoop. This test was the failing-by-design gate (per-fixture
+    /// `withKnownIssue`) that the rescue turned green; it is now a plain
+    /// regression assertion.
+    @Test("every device quad stroke resolves to createQuad")
     func deviceQuadStrokesResolveToCreateQuad() throws {
         let urls = Self.deviceStrokeURLs
         try #require(!urls.isEmpty)
         for url in urls {
             let fixture = try StrokeFixture(contentsOf: url)
-            withKnownIssue(
-                "open U-shaped quad strokes classify as unknown until simplify-gesture-grammar task 3 lands (\(fixture.name))"
-            ) {
-                let record = try interpret(fixture)
-                #expect(
-                    record.best?.action == .createQuad,
-                    "\(fixture.name): got \(String(describing: record.best?.action))"
-                )
-            }
+            let record = try interpret(fixture)
+            #expect(
+                record.best?.action == .createQuad,
+                "\(fixture.name): got \(String(describing: record.best?.action))"
+            )
+            #expect(record.shape == .closedLoop, "\(fixture.name): shape \(record.shape)")
         }
     }
 }

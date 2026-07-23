@@ -46,16 +46,24 @@ against synthesized strokes has already failed twice.
 
 - [ ] 3.1 Seam-tolerant self-intersection counting: crossings between
       leading and trailing segments do not disqualify a closed stroke.
-      (Drafted in the unlanded patch 0023 — that half was sound.)
-- [ ] 3.2 Nearly-closed rescue: an open stroke with quad-like corner
-      structure classifies as a closed loop. With scribble and grid out of
-      the grammar (task 2), the ordering conflict that broke this is gone
-      and the threshold can be generous.
-- [ ] 3.3 Drive both from the task-1.1 corpus, not synthesized strokes.
-      Acceptance: every committed real quad stroke resolves to `createQuad`,
-      and the X fixture still resolves to `deleteFaces`.
-- [ ] 3.4 Run the FULL suite before claiming no regressions — the CyberKit
-      recognizer suite alone missed an app-level break last time.
+      (Drafted in the unlanded patch 0023 — that half was sound.) Deferred:
+      the four device captures have zero self-intersections, so the rescue
+      alone clears them; the overshoot variant that needs this is not yet in
+      the corpus.
+- [x] 3.2 Nearly-closed rescue: landed as engine patch
+      `0023-stroke-nearly-closed-quad-rescue`. An open stroke that bounds a
+      recoverable quad ring (no self-crossings, not straight, endpoints
+      within `nearlyClosedFraction`=0.65 of the perimeter) classifies as a
+      ClosedLoop. Placed LAST in `classifyShape`, so it only ever upgrades a
+      would-be Unknown and cannot steal a grid/scribble/cross — which is why
+      it works WITHOUT the task-2 grammar cut and breaks no synthetic
+      fixture. Gated on geometry, not a corner-count threshold: two of the
+      four device strokes are drawn smoothly and register < 2 sharp corners.
+- [x] 3.3 Driven by the task-1.1 device corpus. `DeviceStrokeCorpusTests`
+      now asserts (plainly, no longer `withKnownIssue`) that all four real
+      quad strokes resolve to `createQuad`. The X fixture still resolves to
+      `deleteFaces` (the rescue does not touch self-intersecting strokes).
+- [x] 3.4 Full suite green: 560 app + 268 CyberKit, zero regressions.
 
 ## 4. Weld created faces onto existing topology
 
