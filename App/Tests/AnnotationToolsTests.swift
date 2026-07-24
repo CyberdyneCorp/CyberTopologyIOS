@@ -64,12 +64,18 @@ struct AnnotationToolsTests {
 
         /// Drives a stroke through the real capture pipeline. `duration`
         /// spreads the samples in time — a long dwell is what makes the
-        /// Pin Flip tool read a HOLD rather than a tap.
-        func stroke(through points: [SIMD2<Double>], duration: Double = 0.02) {
+        /// Pin Flip tool read a HOLD rather than a tap. `verb` is the capture
+        /// verb the touch layer stamps on the stroke: `.pencil` drives the
+        /// armed tool / authoring grammar, the brush verbs (`.relax`, `.move`,
+        /// …) drive their live brush directly.
+        func stroke(
+            verb: InputArbiter.Verb = .pencil,
+            through points: [SIMD2<Double>], duration: Double = 0.02
+        ) {
             let capture = coordinator.inputModel.controller.capture
             guard let first = points.first else { return }
             capture.begin(
-                source: .finger, verb: .pencil,
+                source: .finger, verb: verb,
                 sample: .init(time: 0, x: first.x, y: first.y, pressure: 0.5, type: .finger)
             )
             let step = points.count > 1 ? duration / Double(points.count - 1) : duration
@@ -275,15 +281,21 @@ struct AnnotationToolsTests {
                 .map(Self.key)
         )
 
-        // Scrub Relax across the whole cage with the loop pinned.
+        // Scrub Relax across the whole cage with the loop pinned. The stroke
+        // must carry the `.relax` capture verb: `.pencil` would drive the
+        // authoring grammar (a horizontal sweep reads as Insert Loop) rather
+        // than the relax brush, so selecting the verb is not enough — the
+        // touch layer stamps the verb on the stroke itself.
         harness.coordinator.inputModel.selectVerb(.relax)
         let sweep = (0...24).map { step -> SIMD2<Double> in
             let t = Float(step) / 24
             return harness.screenPoint(of: SIMD3(t * 3, 1.5, 0))
         }
-        harness.stroke(through: sweep, duration: 0.5)
+        harness.stroke(verb: .relax, through: sweep, duration: 0.5)
 
         let after = try harness.editMesh()
+        // Relax moves vertices, it never adds them: the cage stays 16-strong.
+        #expect(after.vertexCount == before.vertexCount)
         let allAfter = Set(
             (0..<UInt32(after.vertexCount)).compactMap { after.vertexPosition($0) }
                 .map(Self.key)
