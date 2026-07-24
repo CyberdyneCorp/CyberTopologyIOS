@@ -234,16 +234,24 @@ struct TopoDocumentUndoTests {
     }
 }
 
+/// Anchors `Bundle(for:)` to the test target, so mesh fixtures bundled into
+/// it (project.yml) load on a PHYSICAL DEVICE too. The old lookup derived an
+/// absolute path from `#filePath`, which only resolves on the simulator's
+/// shared Mac filesystem — on device it threw "no such file" (task 9.6).
+private final class FixtureBundleAnchor {}
+
+/// URL of a mesh fixture bundled into the test target.
+private func meshFixtureURL(_ name: String, extension ext: String) throws -> URL {
+    try #require(
+        Bundle(for: FixtureBundleAnchor.self).url(forResource: name, withExtension: ext),
+        "bundled fixture \(name).\(ext) missing from the test target"
+    )
+}
+
 @MainActor
 struct TopoDocumentIOTests {
     /// Colored-cube fixture shared with the CyberKit test suite.
-    private var fixtureURL: URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()  // Tests
-            .deletingLastPathComponent()  // App
-            .deletingLastPathComponent()  // repo root
-            .appendingPathComponent("CyberKit/Tests/CyberKitTests/Fixtures/cube_colored.obj")
-    }
+    private func fixtureURL() throws -> URL { try meshFixtureURL("cube_colored", extension: "obj") }
 
     private func openDocument(named name: String) async throws -> TopoDocument {
         let directory = FileManager.default.temporaryDirectory
@@ -258,7 +266,7 @@ struct TopoDocumentIOTests {
 
     @Test func importIsJournaledAndUndoable() async throws {
         let document = try await openDocument(named: "Import")
-        try document.importMesh(at: fixtureURL, role: .target)
+        try document.importMesh(at: fixtureURL(), role: .target)
 
         let object = try #require(document.bundle.manifest.objects.first)
         #expect(object.role == .target)
@@ -274,6 +282,7 @@ struct TopoDocumentIOTests {
 
     @Test func exportWritesToUserVisibleExportFolder() async throws {
         let document = try await openDocument(named: "Export Probe")
+        let fixtureURL = try fixtureURL()
         try document.importMesh(at: fixtureURL, role: .editMesh)
         try document.importMesh(at: fixtureURL, role: .target)  // must not export
 
@@ -306,13 +315,7 @@ struct TopoDocumentIOTests {
 
 @MainActor
 struct DocumentEditorViewTests {
-    private var fixtureURL: URL {
-        URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("CyberKit/Tests/CyberKitTests/Fixtures/cube_colored.obj")
-    }
+    private func fixtureURL() throws -> URL { try meshFixtureURL("cube_colored", extension: "obj") }
 
     private func openDocument() async throws -> TopoDocument {
         let directory = FileManager.default.temporaryDirectory
@@ -327,6 +330,7 @@ struct DocumentEditorViewTests {
 
     @Test func rendersWithImportedObjects() async throws {
         let document = try await openDocument()
+        let fixtureURL = try fixtureURL()
         try document.importMesh(at: fixtureURL, role: .target)
         try document.importMesh(at: fixtureURL, role: .editMesh)
 
@@ -343,7 +347,7 @@ struct DocumentEditorViewTests {
         // an FBX lands as a journaled object with counts, exactly like OBJ.
         let document = try await openDocument()
         let editor = DocumentEditorView(document: document, journal: RecoveryJournal(), onClose: {})
-        let fbxURL = fixtureURL.deletingPathExtension().appendingPathExtension("fbx")
+        let fbxURL = try meshFixtureURL("cube_colored", extension: "fbx")
 
         editor.handleImport(.success(fbxURL), role: .target)
         let object = try #require(document.bundle.manifest.objects.first)
@@ -364,7 +368,7 @@ struct DocumentEditorViewTests {
         let document = try await openDocument()
         let editor = DocumentEditorView(document: document, journal: RecoveryJournal(), onClose: {})
 
-        editor.handleImport(.success(fixtureURL), role: .editMesh)
+        editor.handleImport(.success(try fixtureURL()), role: .editMesh)
         #expect(document.bundle.manifest.objects.count == 1)
 
         struct ProbeError: Error {}
@@ -380,7 +384,7 @@ struct DocumentEditorViewTests {
 
     @Test func exportNowWritesFiles() async throws {
         let document = try await openDocument()
-        try document.importMesh(at: fixtureURL, role: .editMesh)
+        try document.importMesh(at: fixtureURL(), role: .editMesh)
         let editor = DocumentEditorView(document: document, journal: RecoveryJournal(), onClose: {})
 
         editor.exportNow()

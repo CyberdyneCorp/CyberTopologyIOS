@@ -84,27 +84,30 @@ struct MetalViewportTests {
         #expect(doubleTap.numberOfTouchesRequired == 1)
 
         let pinch = try #require(coordinator.pinchRecognizer)
-        // 4 camera recognizers + the arbiter's touch observer (task 3.1)
-        // + the hover-preview recognizer (task 3.6) + the INTERNAL
-        // recognizer UIKit installs alongside the `UIPencilInteraction`
-        // for squeeze delivery (task 3.7 — not ours, not touch-driven).
-        let installed = view.gestureRecognizers ?? []
-        #expect(installed.count == 7)
         let observer = try #require(coordinator.observerRecognizer)
-        #expect(installed.contains { $0 === observer })
         let hover = try #require(coordinator.hoverRecognizer)
-        #expect(installed.contains { $0 === hover })
         let pencil = try #require(coordinator.pencilInteraction)
-        #expect(view.interactions.contains { $0 === pencil })
-        // Exactly one installed recognizer is not ours: the pencil
-        // interaction's internal one.
+        let installed = view.gestureRecognizers ?? []
+
+        // Our six recognizers are ALL installed: 4 camera recognizers + the
+        // arbiter's touch observer (task 3.1) + the hover-preview recognizer
+        // (task 3.6). Asserted as a set, not a raw total.
         let ours: [UIGestureRecognizer] = [
             orbit, pinch, twoFingerPan, doubleTap, observer, hover,
         ]
+        for recognizer in ours {
+            #expect(installed.contains { $0 === recognizer })
+        }
+        #expect(view.interactions.contains { $0 === pencil })
+
+        // The rest are UIKit's own, added alongside the `UIPencilInteraction`
+        // for squeeze/hover delivery (task 3.7 — not ours, not touch-driven).
+        // UIKit installs at least one; a real Pencil-capable DEVICE installs
+        // MORE than the simulator, so this is a floor, not a fixed count.
         let foreign = installed.filter { candidate in
             !ours.contains { $0 === candidate }
         }
-        #expect(foreign.count == 1)
+        #expect(foreign.count >= 1)
         // Every TOUCH recognizer of ours is delegated so the arbiter can
         // gate its touches; the hover recognizer consumes hover events —
         // not touches — and the pencil interaction's internal recognizer

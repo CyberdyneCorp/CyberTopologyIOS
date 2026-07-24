@@ -94,6 +94,13 @@ targets:
     platform: iOS
     sources:
       - App/Tests
+      # Mesh fixtures the integration tests import, bundled into the test
+      # target so they load on a physical device too (a #filePath / absolute
+      # Mac path only resolves on the simulator's shared filesystem).
+      - path: CyberKit/Tests/CyberKitTests/Fixtures/cube_colored.obj
+        buildPhase: resources
+      - path: CyberKit/Tests/CyberKitTests/Fixtures/cube_colored.fbx
+        buildPhase: resources
     dependencies:
       - target: CyberTopology
     settings:
