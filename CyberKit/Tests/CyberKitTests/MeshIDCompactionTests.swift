@@ -125,20 +125,69 @@ struct MeshIDCompactionTests {
         #expect(carried.pinnedVertices.count == 1)
     }
 
-    /// HONEST SCOPE (tasks.md 4.5b): the payload stores no edges at all —
-    /// the loader rebuilds every edge id from face-construction order — so
-    /// loop tags cannot be mapped and are cleared rather than left pointing
-    /// at whatever now holds their old id. Pins and hidden faces DO have
-    /// exact maps and must survive.
-    @Test func loopTagsAreClearedWhenIdsCompact() throws {
+    /// Task 4.5b: loop tags now SURVIVE a non-identity round trip. The
+    /// payload stores no edges, but the loader rebuilds every edge id from
+    /// face-construction order and the compaction replays that numbering (via
+    /// `faceVertices`), so a tag remaps to the same physical edge instead of
+    /// being cleared. Ground truth: the remapped id, in the ACTUAL reloaded
+    /// mesh, is the edge at the tag's original midpoint.
+    @Test func loopTagsSurviveANonIdentityRoundTrip() throws {
         let mesh = try strip()
-        let annotations = MeshAnnotations(
-            taggedEdges: [2], tagColorIndices: [0], hiddenFaces: [1], pinnedVertices: [7]
-        )
-        try mesh.mergeVertices(keep: 1, remove: 0)
-        let carried = try #require(annotations.reconciled(through: mesh.payloadIDCompaction()))
-        #expect(carried.taggedEdges.isEmpty)
-        #expect(!carried.pinnedVertices.isEmpty)
+        // Tag the bottom edge of the first quad (midpoint (0.5, 0, 0)).
+        let tagged = try #require(mesh.nearestEdge(to: SIMD3(0.5, 0, 0), maxDistance: 0.01))
+        let ends = try #require(mesh.edgeEndpoints(of: tagged.edge))
+        let taggedMid =
+            (try #require(mesh.vertexPosition(ends.0))
+                + (try #require(mesh.vertexPosition(ends.1)))) * 0.5
+        let annotations = MeshAnnotations(taggedEdges: [tagged.edge], tagColorIndices: [2])
+
+        // Retire the MIDDLE face — a non-identity compaction that renumbers
+        // every rebuilt edge id.
+        try mesh.deleteFaces([1])
+        let compaction = mesh.payloadIDCompaction()
+        #expect(!compaction.isIdentity)
+        #expect(!compaction.edges.isEmpty)
+
+        let carried = try #require(annotations.reconciled(through: compaction))
+        // The tag survived (it used to be cleared) and kept its colour.
+        #expect(carried.taggedEdges.count == 1)
+        #expect(carried.tagColorIndices == [2])
+
+        // GROUND TRUTH: the remapped edge, in the real reloaded mesh, sits at
+        // the original tag's midpoint — the exact same physical edge.
+        let reloaded = try Mesh(payloadData: try mesh.payloadData())
+        let newEnds = try #require(reloaded.edgeEndpoints(of: carried.taggedEdges[0]))
+        let newMid =
+            (try #require(reloaded.vertexPosition(newEnds.0))
+                + (try #require(reloaded.vertexPosition(newEnds.1)))) * 0.5
+        #expect(simd_distance(newMid, taggedMid) < 1e-5)
+    }
+
+    /// The full edge map is validated against the REAL round trip, edge by
+    /// edge (like `theMapPredictsTheRealRoundTripAfterADelete` for vertices):
+    /// every live old edge maps to the reloaded edge with the same endpoints,
+    /// and every live edge is covered.
+    @Test func theEdgeMapPredictsTheRealRoundTrip() throws {
+        let mesh = try strip()
+        try mesh.deleteFaces([1])
+        let compaction = mesh.payloadIDCompaction()
+        let reloaded = try Mesh(payloadData: try mesh.payloadData())
+
+        func midpoint(_ m: Mesh, _ edge: UInt32) throws -> SIMD3<Float> {
+            let e = try #require(m.edgeEndpoints(of: edge))
+            return (try #require(m.vertexPosition(e.0))
+                + (try #require(m.vertexPosition(e.1)))) * 0.5
+        }
+        var checked = 0
+        for oldEdge in 0..<UInt32(mesh.edgeCount + 64) {
+            guard mesh.edgeEndpoints(of: oldEdge) != nil else { continue }
+            let newEdge = try #require(
+                compaction.edges[oldEdge], "live edge \(oldEdge) is mapped"
+            )
+            #expect(try simd_distance(midpoint(mesh, oldEdge), midpoint(reloaded, newEdge)) < 1e-5)
+            checked += 1
+        }
+        #expect(checked == mesh.edgeCount, "every live edge was covered")
     }
 
     // MARK: - Face compaction (REGRESSION: the vertex-only identity scan)

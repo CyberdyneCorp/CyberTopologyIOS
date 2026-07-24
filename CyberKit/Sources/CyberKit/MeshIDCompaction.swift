@@ -73,21 +73,30 @@ public struct PayloadIDCompaction: Equatable, Sendable {
     public let vertices: [UInt32: UInt32]
     /// Exact old→new face id map, with the same empty-means-drop contract.
     public let faces: [UInt32: UInt32]
+    /// Exact old→new EDGE id map (task 4.5b). The payload stores no edges, so
+    /// the loader rebuilds every edge id from face-construction order; this
+    /// map replays that numbering, so loop tags survive a non-identity round
+    /// trip instead of being cleared. Same empty-means-drop contract: a tag on
+    /// an edge missing from the map (retired, or beyond the liveness scan) is
+    /// dropped rather than reattached to the wrong edge.
+    public let edges: [UInt32: UInt32]
 
     public static let identity = PayloadIDCompaction(
-        isIdentity: true, vertices: [:], faces: [:]
+        isIdentity: true, vertices: [:], faces: [:], edges: [:]
     )
     /// Ids move in a way this layer cannot describe: drop everything.
     public static let indeterminate = PayloadIDCompaction(
-        isIdentity: false, vertices: [:], faces: [:]
+        isIdentity: false, vertices: [:], faces: [:], edges: [:]
     )
 
     public init(
-        isIdentity: Bool, vertices: [UInt32: UInt32], faces: [UInt32: UInt32] = [:]
+        isIdentity: Bool, vertices: [UInt32: UInt32], faces: [UInt32: UInt32] = [:],
+        edges: [UInt32: UInt32] = [:]
     ) {
         self.isIdentity = isIdentity
         self.vertices = vertices
         self.faces = faces
+        self.edges = edges
     }
 }
 
@@ -139,11 +148,71 @@ extension Mesh {
             faceMap[face] = UInt32(index)
         }
 
-        return (sawVertexHole || sawFaceHole)
-            ? PayloadIDCompaction(
-                isIdentity: false, vertices: vertexMap, faces: faceMap
-            )
-            : .identity
+        guard sawVertexHole || sawFaceHole else { return .identity }
+
+        // EDGES (task 4.5b): the OBJ writer stores no edges, so the loader
+        // rebuilds every edge id by walking the face stream in emission order
+        // and assigning a new id the first time each undirected vertex pair
+        // appears. Replay that here in NEW (compacted) vertex ids to get the
+        // rebuilt id for every pair, then map each OLD engine edge id through
+        // its endpoints. This is what lets loop tags survive the round trip.
+        let edgeMap = rebuiltEdgeMap(liveFaces: live, vertexMap: vertexMap)
+
+        return PayloadIDCompaction(
+            isIdentity: false, vertices: vertexMap, faces: faceMap, edges: edgeMap
+        )
+    }
+
+    /// old→new edge id map for a non-identity compaction. The new id of an
+    /// undirected vertex pair is the order it is first seen while walking
+    /// `liveFaces` (emission order) over each face's `faceVertices` ring — the
+    /// exact numbering the OBJ loader produces. Every live OLD edge is then
+    /// mapped by looking up its endpoints (compacted) in that table; an edge
+    /// not reached (fragmented past the scan window) is simply absent, so its
+    /// tag drops rather than reattaching wrongly.
+    private func rebuiltEdgeMap(
+        liveFaces: [UInt32], vertexMap: [UInt32: UInt32]
+    ) -> [UInt32: UInt32] {
+        var newIDByPair: [UInt64: UInt32] = [:]
+        var nextEdge: UInt32 = 0
+        for face in liveFaces {
+            let ring = faceVertices(face)
+            guard ring.count >= 2 else { continue }
+            for i in ring.indices {
+                guard let a = vertexMap[ring[i]],
+                    let b = vertexMap[ring[(i + 1) % ring.count]]
+                else { continue }
+                let key = Self.undirectedEdgeKey(a, b)
+                if newIDByPair[key] == nil {
+                    newIDByPair[key] = nextEdge
+                    nextEdge += 1
+                }
+            }
+        }
+        let liveEdges = edgeCount
+        guard liveEdges > 0 else { return [:] }
+        var edgeMap: [UInt32: UInt32] = [:]
+        edgeMap.reserveCapacity(liveEdges)
+        var found = 0
+        var id: UInt32 = 0
+        let limit = liveEdges + Self.compactionProbeHeadroom
+        while found < liveEdges, Int(id) < limit {
+            if let ends = edgeEndpoints(of: id) {
+                found += 1
+                if let a = vertexMap[ends.0], let b = vertexMap[ends.1],
+                    let newID = newIDByPair[Self.undirectedEdgeKey(a, b)] {
+                    edgeMap[id] = newID
+                }
+            }
+            id += 1
+        }
+        return edgeMap
+    }
+
+    /// Order-independent key for an undirected edge between two vertex ids.
+    private static func undirectedEdgeKey(_ a: UInt32, _ b: UInt32) -> UInt64 {
+        let lo = min(a, b), hi = max(a, b)
+        return UInt64(lo) << 32 | UInt64(hi)
     }
 }
 
@@ -151,12 +220,13 @@ extension MeshAnnotations {
     /// These annotations carried across a payload round trip.
     ///
     /// * identity compaction — returned unchanged.
-    /// * otherwise — pins are remapped through the exact vertex map and
-    ///   hidden faces through the exact face map (entries on retired
-    ///   elements are dropped, which is correct: the vertex the user froze
-    ///   / the face they hid no longer exists), and LOOP TAGS are cleared,
-    ///   because the payload stores no edges and the loader rebuilds every
-    ///   edge id from face-construction order — no map is derivable (4.5b).
+    /// * otherwise — pins are remapped through the exact vertex map, hidden
+    ///   faces through the exact face map, and LOOP TAGS through the exact
+    ///   edge map the compaction rebuilt from face-construction order (task
+    ///   4.5b). Entries on retired elements are dropped, which is correct: the
+    ///   vertex the user froze / the face they hid / the edge they tagged no
+    ///   longer exists. A tag's colour, riding in the parallel
+    ///   `tagColorIndices`, drops with it.
     ///
     /// Returns nil when nothing survives, so callers can journal "no
     /// annotations" rather than an empty record.
@@ -164,7 +234,17 @@ extension MeshAnnotations {
         guard !compaction.isIdentity else { return self }
         let pins = pinnedVertices.compactMap { compaction.vertices[$0] }
         let hidden = hiddenFaces.compactMap { compaction.faces[$0] }
-        guard !pins.isEmpty || !hidden.isEmpty else { return nil }
-        return MeshAnnotations(hiddenFaces: hidden, pinnedVertices: pins)
+        var tags: [UInt32] = []
+        var colors: [UInt8] = []
+        for (edge, color) in zip(taggedEdges, tagColorIndices) {
+            guard let mapped = compaction.edges[edge] else { continue }
+            tags.append(mapped)
+            colors.append(color)
+        }
+        guard !pins.isEmpty || !hidden.isEmpty || !tags.isEmpty else { return nil }
+        return MeshAnnotations(
+            taggedEdges: tags, tagColorIndices: colors,
+            hiddenFaces: hidden, pinnedVertices: pins
+        )
     }
 }

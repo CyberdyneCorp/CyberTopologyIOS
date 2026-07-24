@@ -29,8 +29,15 @@ import Foundation
 // does not match the handle's. It retires nothing, so `payloadIDCompaction()`
 // legitimately reports `.identity` on the vertex and face spaces it CAN
 // describe, and would pass tags through untouched. The edge answer therefore
-// has to come from here, and it is the same conservative one as everywhere
-// else in this file: clear, never remap.
+// has to come from here: triangulate clears tags.
+//
+// This is DISTINCT from the ordinary compaction path. When an edit RETIRES a
+// vertex or face (delete, merge, dissolve), `payloadIDCompaction()` reports a
+// non-identity compaction and now rebuilds the exact old→new EDGE map by
+// replaying the loader's face-construction numbering (task 4.5b), so loop tags
+// survive there. Triangulate is the case that map cannot see: it reshuffles
+// the face stream while retiring nothing, so the compaction reads `.identity`
+// and only this policy knows the edges renumbered — hence clear here.
 //
 // The document layer pairs the geometry edit with the annotation edit this
 // policy demands, in ONE compound journal entry (`DocumentCommand.compound`)
