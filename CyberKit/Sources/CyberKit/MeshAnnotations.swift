@@ -1,5 +1,12 @@
 import CyberRemesherC
 import Foundation
+import simd
+
+/// A topological element kind, for the uniform `nearestElement` lookup that
+/// resolves an element's symmetric counterpart (task 4.4a).
+public enum MeshElementKind: Equatable, Sendable {
+    case vertex, edge, face
+}
 
 /// Per-object annotation state of the gesture grammar's non-topological
 /// verbs (task 3.4; spec: pencil-interaction / "Contextual gesture
@@ -293,6 +300,53 @@ extension Mesh {
         guard count > 0 else { return [] }
         return [UInt32](unsafeUninitializedCapacity: count) { buffer, written in
             written = cyber_mesh_face_vertices(handle, face, buffer.baseAddress, count)
+        }
+    }
+
+    /// Centroid of a face's ring (mean of its live vertex positions), or nil
+    /// for a dead face. The representative position that identifies a face
+    /// under symmetry (task 4.4a mirrored element edits).
+    public func faceCentroid(_ face: UInt32) -> SIMD3<Float>? {
+        var sum = SIMD3<Float>.zero
+        var count = 0
+        for vertex in faceVertices(face) {
+            guard let position = vertexPosition(vertex) else { continue }
+            sum += position
+            count += 1
+        }
+        return count > 0 ? sum / Float(count) : nil
+    }
+
+    /// The live face whose centroid is nearest `point`, within `maxDistance`
+    /// (the face counterpart of `nearestVertex` / `nearestEdge`). Linear over
+    /// live faces — used a handful of times per symmetric edit to resolve a
+    /// face's mirror counterpart, not on any hot path.
+    public func nearestFace(
+        to point: SIMD3<Float>, maxDistance: Float
+    ) -> (face: UInt32, distance: Float)? {
+        var best: (face: UInt32, distance: Float)?
+        for face in liveFaceIDs() {
+            guard let centroid = faceCentroid(face) else { continue }
+            let distance = simd_distance(centroid, point)
+            guard distance <= maxDistance else { continue }
+            if best == nil || distance < best!.distance {
+                best = (face, distance)
+            }
+        }
+        return best
+    }
+
+    /// The live element of `kind` nearest `point` within `maxDistance`, by the
+    /// element's representative position (vertex position, edge midpoint, face
+    /// centroid). The single lookup mirrored element edits use to resolve an
+    /// element's symmetric counterpart (task 4.4a).
+    public func nearestElement(
+        kind: MeshElementKind, to point: SIMD3<Float>, maxDistance: Float
+    ) -> UInt32? {
+        switch kind {
+        case .vertex: return nearestVertex(to: point, maxDistance: maxDistance)?.vertex
+        case .edge: return nearestEdge(to: point, maxDistance: maxDistance)?.edge
+        case .face: return nearestFace(to: point, maxDistance: maxDistance)?.face
         }
     }
 

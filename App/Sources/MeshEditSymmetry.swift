@@ -32,6 +32,34 @@ enum SymmetryTolerances {
 }
 
 extension MeshEditController {
+    /// Element ids to ALSO edit so an element-addressed operation is symmetric
+    /// (task 4.4a mirrored element edits): for every active symmetry replica,
+    /// the counterpart of each representative `positions` entry — the nearest
+    /// live element of `kind` to the transformed position. Elements the
+    /// transform leaves in place (on the mirror plane / radial axis) are
+    /// skipped, since the primary edit already covered them. Replicas are
+    /// spatially disjoint, so this stays correct even when the primary edit has
+    /// renumbered ids on its own side.
+    func mirrorCounterparts(
+        of positions: [SIMD3<Float>], kind: MeshElementKind, mesh: Mesh, context: Context
+    ) -> [UInt32] {
+        let symmetry = context.effectiveSymmetry
+        guard symmetry.isActive, !positions.isEmpty else { return [] }
+        let tolerance = context.sceneRadius * Self.vertexPickRadiusFraction
+        let seamTolerance = context.sceneRadius * SymmetryTolerances.weldFraction
+        var result: [UInt32] = []
+        for replica in symmetry.replicas {
+            for position in positions {
+                let target = replica.transform.apply(position)
+                guard simd_distance(target, position) > seamTolerance else { continue }
+                if let id = mesh.nearestElement(kind: kind, to: target, maxDistance: tolerance) {
+                    result.append(id)
+                }
+            }
+        }
+        return result
+    }
+
     /// Apply-symmetry: BAKES the mirror into real geometry across every
     /// enabled axis, as ONE journaled command (spec: "Apply-symmetry SHALL
     /// bake the mirror"). Returns whether anything journaled — baking a

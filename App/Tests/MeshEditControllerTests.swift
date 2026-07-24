@@ -1052,6 +1052,121 @@ struct MeshEditControllerTests {
         )
     }
 
+    /// Task 4.4a(2) mirrored element edits: with X mirror symmetry on, an
+    /// X-delete drawn over ONE face also deletes its mirror counterpart —
+    /// resolved by centroid — in the SAME journal entry, and one undo restores
+    /// both.
+    @Test func symmetricXDeleteRemovesTheMirrorFaceToo() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        // Two stacked quads on each side, mirror-symmetric across x = 0.
+        let cage = try meshFromOBJ("""
+        v 1 0 0
+        v 2 0 0
+        v 2 1 0
+        v 1 1 0
+        v 2 2 0
+        v 1 2 0
+        v -1 0 0
+        v -2 0 0
+        v -2 1 0
+        v -1 1 0
+        v -2 2 0
+        v -1 2 0
+        f 1 2 3 4
+        f 4 3 5 6
+        f 7 8 9 10
+        f 10 9 11 12
+        """)
+        try harness.bundle.addObject(name: "cage", role: .editMesh, mesh: cage)
+        harness.sync()
+        var settings = SymmetrySettings()
+        settings.isEnabled = true
+        settings = settings.settingMirror(.x, enabled: true)
+        harness.perform(.setSymmetry(from: harness.bundle.manifest.symmetry, to: settings))
+        let object = try #require(harness.editObject)
+        let before = try #require(harness.bundle.payloads[object.payloadFile])
+        #expect(try harness.editMesh().faceCount == 4)
+
+        // X-delete over the RIGHT-BOTTOM quad only (its centroid is 1.5, 0.5).
+        harness.stroke(verb: .pencil, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(1.2, 0.2, 0)),
+            harness.screenPoint(of: SIMD3(1.8, 0.8, 0)),
+            harness.screenPoint(of: SIMD3(1.8, 0.2, 0)),
+            harness.screenPoint(of: SIMD3(1.2, 0.8, 0)),
+        ], samplesPerSegment: 16))
+
+        guard case .meshEdit(let edit) = try #require(harness.committed.last) else {
+            Issue.record("expected a meshEdit command")
+            return
+        }
+        #expect(edit.verb == "pencil.deleteFaces")
+        // The drawn face AND its mirror are both gone (4 → 2), in ONE entry.
+        #expect(try harness.editMesh().faceCount == 2, "the mirror face deleted too")
+        // The survivors are the two TOP quads, one on each side.
+        let mesh = try harness.editMesh()
+        #expect(mesh.nearestFace(to: SIMD3(1.5, 1.5, 0), maxDistance: 0.1) != nil)
+        #expect(mesh.nearestFace(to: SIMD3(-1.5, 1.5, 0), maxDistance: 0.1) != nil)
+        // The deleted region and its mirror are empty.
+        #expect(mesh.nearestFace(to: SIMD3(1.5, 0.5, 0), maxDistance: 0.1) == nil)
+        #expect(mesh.nearestFace(to: SIMD3(-1.5, 0.5, 0), maxDistance: 0.1) == nil)
+
+        harness.undo()
+        #expect(harness.bundle.payloads[object.payloadFile] == before)
+        #expect(try harness.editMesh().faceCount == 4)
+    }
+
+    /// Task 4.4a(2): with X symmetry on, a line drawn across the ring on ONE
+    /// side inserts the loop on BOTH sides — the mirror crossed-edge is
+    /// resolved by midpoint — in the same journal entry.
+    @Test func symmetricInsertLoopSplitsBothSides() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        // A grid symmetric about x = 0: cols at x = -4,-2,0,2,4; rows y = 0,2,4.
+        var obj = ""
+        for row in 0...2 {
+            for col in 0...4 { obj += "v \(col * 2 - 4) \(row * 2) 0\n" }
+        }
+        for row in 0..<2 {
+            for col in 0..<4 {
+                let a = row * 5 + col + 1
+                obj += "f \(a) \(a + 1) \(a + 6) \(a + 5)\n"
+            }
+        }
+        try harness.bundle.addObject(name: "cage", role: .editMesh, mesh: try meshFromOBJ(obj))
+        harness.sync()
+        var settings = SymmetrySettings()
+        settings.isEnabled = true
+        settings = settings.settingMirror(.x, enabled: true)
+        harness.perform(.setSymmetry(from: harness.bundle.manifest.symmetry, to: settings))
+        let object = try #require(harness.editObject)
+        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
+        #expect(try harness.editMesh().faceCount == 8)
+
+        // Vertical line across the RIGHT column (x in [2,4]), crossing its
+        // horizontal edges at x = 3.
+        harness.stroke(verb: .pencil, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(3, -1, 0)),
+            harness.screenPoint(of: SIMD3(3, 5, 0)),
+        ]))
+
+        guard case .meshEdit(let edit) = try #require(harness.committed.last) else {
+            Issue.record("expected a meshEdit command")
+            return
+        }
+        #expect(edit.verb == "pencil.insertLoop")
+        let mesh = try harness.editMesh()
+        // A loop was inserted on EACH side: new vertices sit at x = 3 AND the
+        // mirror x = -3.
+        #expect(mesh.faceCount > 8, "loops inserted: \(mesh.faceCount)")
+        #expect(mesh.nearestVertex(to: SIMD3(3, 2, 0), maxDistance: 1e-3) != nil, "right loop")
+        #expect(mesh.nearestVertex(to: SIMD3(-3, 2, 0), maxDistance: 1e-3) != nil, "mirror loop")
+
+        harness.undo()
+        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
+        #expect(try harness.editMesh().faceCount == 8)
+    }
+
     // vertexToVertexLineMergesThem retired: mergeVertices is a tool now, not
     // a stroke gesture — a line between two vertices no longer merges them.
     // circleOverEdgeRotatesTheDiagonal retired: rotateEdge is a tool now — a

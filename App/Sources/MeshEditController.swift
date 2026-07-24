@@ -740,7 +740,29 @@ final class MeshEditController {
                 verb: "pencil.insertLoop", context: context,
                 autoRelaxAround: autoRelaxPoints(of: best.elements, mesh: context.editMesh)
             ) { mesh in
+                // Capture the crossed edge's midpoint BEFORE the insert
+                // renumbers it, so the symmetric sides can be resolved by
+                // position afterwards.
+                let midpoint = mesh.edgeEndpoints(of: seed).flatMap {
+                    ends -> SIMD3<Float>? in
+                    guard let a = mesh.vertexPosition(ends.0),
+                        let b = mesh.vertexPosition(ends.1)
+                    else { return nil }
+                    return (a + b) * 0.5
+                }
                 try mesh.insertLoop(acrossEdge: seed)
+                // Symmetric insert (task 4.4a): insert the same loop across
+                // each mirror / rotational counterpart edge. The primary
+                // insert only renumbered its OWN side, so the disjoint mirror
+                // regions are still resolvable by position; best-effort per
+                // side (a side whose counterpart is not a valid ring edge is
+                // skipped rather than failing the whole stroke).
+                guard let midpoint else { return }
+                for edge in self.mirrorCounterparts(
+                    of: [midpoint], kind: .edge, mesh: mesh, context: context
+                ) {
+                    try? mesh.insertLoop(acrossEdge: edge)
+                }
             }
         case .dissolveEdge:
             let edges = elementIDs(of: best, kind: .edge)
@@ -762,7 +784,17 @@ final class MeshEditController {
                 verb: "pencil.deleteFaces", context: context,
                 autoRelaxAround: autoRelaxPoints(of: best.elements, mesh: context.editMesh)
             ) { mesh in
-                try mesh.deleteFaces(faces)
+                // Symmetric delete (task 4.4a): also delete the mirror /
+                // rotational counterpart faces, resolved by centroid. Batched
+                // into ONE delete, so there is no id renumbering between sides.
+                let centroids = faces.compactMap { mesh.faceCentroid($0) }
+                var all = Set(faces)
+                for id in self.mirrorCounterparts(
+                    of: centroids, kind: .face, mesh: mesh, context: context
+                ) {
+                    all.insert(id)
+                }
+                try mesh.deleteFaces(Array(all))
             }
         case .mergeVertices:
             // The stroke's start vertex snaps onto its end vertex.
