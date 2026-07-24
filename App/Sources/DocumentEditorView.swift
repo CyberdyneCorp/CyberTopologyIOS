@@ -321,6 +321,12 @@ struct DocumentEditorView: View {
                     }
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("object-row-\(object.name)")
+                    // `.contain` keeps the per-row child identifiers (the
+                    // delete button) queryable, but leaves the row group with
+                    // no label of its own — so VoiceOver reads nothing and UI
+                    // tests can't see the live counts. Give the row an explicit
+                    // label that mirrors the visible name · counts · role.
+                    .accessibilityLabel(Self.objectRowLabel(for: object))
                 }
             }
             // No container identifier: it would combine the rows into one
@@ -329,6 +335,16 @@ struct DocumentEditorView: View {
             .padding(12)
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
         }
+    }
+
+    /// Accessibility label for an object row: the visible name, live
+    /// vertex/face counts and role, in one string. Mirrors the row's Text
+    /// content so VoiceOver announces the whole row and UI tests can read the
+    /// counts off `.label` even though the row uses `.contain`.
+    private static func objectRowLabel(for object: DocumentManifest.Object) -> String {
+        let role = object.role == .target ? "Target" : "EditMesh"
+        guard let counts = object.counts else { return "\(object.name), \(role)" }
+        return "\(object.name), \(counts.vertices) v · \(counts.faces) f, \(role)"
     }
 
     /// Metal viewport. The undo/redo tap overlay lives INSIDE MetalViewport's
