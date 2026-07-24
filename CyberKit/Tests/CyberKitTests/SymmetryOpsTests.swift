@@ -189,6 +189,59 @@ struct SymmetryOpsTests {
         #expect(mesh.isBoundaryEdge(seam.edge) == false, "the halves now share the seam")
     }
 
+    /// Radial BAKE (task 4.4a): live radial replication leaves each sector's
+    /// boundary as a duplicate coincident vertex pair — a crack. `rotationalWeld`
+    /// collapses them so the fan becomes one manifold cage, using only the
+    /// coincidence (no geometry moves), so it can never distort a quad.
+    @Test("rotationalWeld closes coincident sector seams into one manifold edge")
+    func rotationalWeldClosesTheSectorSeam() throws {
+        // Two sectors of a fan about the Y axis, sharing the on-axis edge
+        // (0,0,0)-(0,1,0) via SEPARATE coincident vertices — exactly what
+        // un-welded radial replication produces (quad B is quad A rotated 90°).
+        let mesh = try self.mesh(fromOBJ: """
+        v 0 0 0
+        v 1 0 0
+        v 1 1 0
+        v 0 1 0
+        v 0 0 0
+        v 0 0 -1
+        v 0 1 -1
+        v 0 1 0
+        f 1 2 3 4
+        f 5 6 7 8
+        """)
+        #expect(mesh.vertexCount == 8)
+        let seamMid = SIMD3<Float>(0, 0.5, 0)
+        let crack = try #require(mesh.nearestEdge(to: seamMid, maxDistance: 0.01))
+        #expect(mesh.isBoundaryEdge(crack.edge) == true, "unwelded: the seam is a crack")
+
+        let welded = try mesh.rotationalWeld(sectorCount: 4, tolerance: 0.01)
+
+        #expect(welded == 2, "one merge per on-seam vertex")
+        #expect(mesh.vertexCount == 6, "the duplicate pair collapsed")
+        #expect(mesh.faceCount == 2, "no face was destroyed")
+        let seam = try #require(mesh.nearestEdge(to: seamMid, maxDistance: 0.01))
+        #expect(mesh.isBoundaryEdge(seam.edge) == false, "the sectors now share the seam")
+    }
+
+    /// SAFETY: the weld only touches coincident vertices, so a cage with no
+    /// duplicates (nothing radial to close) is left exactly as it is — a fine
+    /// cage is never collapsed. Also a no-op below two sectors.
+    @Test("rotationalWeld leaves a seamless cage untouched, and no-ops below 2 sectors")
+    func rotationalWeldLeavesASeamlessCageUntouched() throws {
+        let mesh = try self.mesh(fromOBJ: """
+        v 0 0 0
+        v 1 0 0
+        v 1 1 0
+        v 0 1 0
+        f 1 2 3 4
+        """)
+        #expect(try mesh.rotationalWeld(sectorCount: 6, tolerance: 0.01) == 0)
+        #expect(mesh.vertexCount == 4)
+        #expect(mesh.faceCount == 1)
+        #expect(try mesh.rotationalWeld(sectorCount: 1, tolerance: 0.01) == 0)
+    }
+
     /// The pass never touches geometry away from the plane.
     @Test("Seam welding leaves off-plane geometry alone")
     func seamWeldingIgnoresOffPlaneGeometry() throws {

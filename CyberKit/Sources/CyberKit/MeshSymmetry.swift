@@ -596,10 +596,8 @@ extension Mesh {
 
     /// Apply-symmetry across every enabled mirror axis, in axis order (an
     /// X+Y bake mirrors the quadrant into all four). Returns the total
-    /// number of faces added.
-    ///
-    /// Radial symmetry is NOT baked here: welding the sector seams is
-    /// tolerance-sensitive and has no engine support (task 4.4a).
+    /// number of faces added. Radial seams are closed separately by
+    /// `rotationalWeld` (task 4.4a).
     @discardableResult
     public func applySymmetry(
         _ settings: SymmetrySettings, snapping snapper: SurfaceSnapper? = nil
@@ -607,6 +605,46 @@ extension Mesh {
         try settings.mirrorAxes.reduce(0) { total, axis in
             total + (try applySymmetry(settings, axis: axis, snapping: snapper))
         }
+    }
+
+    /// Radial BAKE (task 4.4a): welds the coincident sector-boundary vertices
+    /// that live radial replication leaves between adjacent sectors, so a
+    /// radially-authored cage becomes MANIFOLD across its seams instead of a
+    /// fan of cracked wedges. Every vertex with another live vertex within
+    /// `tolerance` collapses onto the lower-id one — radial replication is the
+    /// only thing that puts two vertices at (near-)identical positions in a
+    /// clean cage, so this closes exactly the sector seams (and the shared
+    /// centre vertex on the axis) and nothing else.
+    ///
+    /// SAFE BY CONSTRUCTION: it only merges vertices ALREADY coincident within
+    /// the tight, scene-scaled `tolerance`, so no vertex visibly moves — it
+    /// cannot distort a quad or open a crack, the failure this bake was
+    /// deferred for. On a radially-ASYMMETRIC Target, sectors snap to the
+    /// surface independently and a seam pair can drift apart by the Target's
+    /// asymmetry; a pair further apart than `tolerance` is left UNWELDED (a
+    /// residual crack) rather than pulled together, which would distort the
+    /// surface. The tolerance is far smaller than any real edge, so a merely
+    /// fine cage is never collapsed.
+    ///
+    /// A no-op below two sectors. Returns the number of merges performed.
+    @discardableResult
+    public func rotationalWeld(sectorCount: Int, tolerance: Float) throws -> Int {
+        guard sectorCount > 1, tolerance > 0 else { return 0 }
+        var welded = 0
+        var removed = Set<UInt32>()
+        for vertex in liveVertexIDs().sorted() where !removed.contains(vertex) {
+            guard let position = vertexPosition(vertex) else { continue }
+            while
+                let pick = nearestVertex(
+                    to: position, maxDistance: tolerance, excluding: vertex
+                ), !removed.contains(pick.vertex)
+            {
+                try mergeVertices(keep: vertex, remove: pick.vertex)
+                removed.insert(pick.vertex)
+                welded += 1
+            }
+        }
+        return welded
     }
 
     /// Re-symmetrize: mirrors the working half onto the other half about

@@ -549,6 +549,63 @@ struct SymmetryToolsTests {
         #expect(try harness.faceCount() > facesBefore)
     }
 
+    /// Task 4.4a RADIAL BAKE: a radial-only document now bakes — apply-
+    /// symmetry welds the coincident sector-boundary seams that live radial
+    /// replication left, as ONE journaled entry, and one undo restores the
+    /// cracked fan. (The old behaviour refused radial-only outright.)
+    @Test("Apply-symmetry bakes a radial-only cage by welding its sector seams")
+    func radialBakeWeldsSectorSeamsInOneEntry() throws {
+        let harness = try Harness()
+        let target = try meshFromOBJ("""
+        v -10 -10 0
+        v 10 -10 0
+        v 10 10 0
+        v -10 10 0
+        f 1 2 3 4
+        """)
+        try harness.bundle.addObject(name: "target", role: .target, mesh: target)
+        // Two fan sectors about Y sharing the on-axis edge (0,0,0)-(0,1,0) via
+        // SEPARATE coincident vertices — un-welded radial replication.
+        let cage = try meshFromOBJ("""
+        v 0 0 0
+        v 1 0 0
+        v 1 1 0
+        v 0 1 0
+        v 0 0 0
+        v 0 0 -1
+        v 0 1 -1
+        v 0 1 0
+        f 1 2 3 4
+        f 5 6 7 8
+        """)
+        try harness.bundle.addObject(name: "cage", role: .editMesh, mesh: cage)
+        harness.sync()
+
+        var settings = SymmetrySettings()
+        settings.isEnabled = true
+        settings = settings.settingRadialCount(4)
+        settings.radialAxis = .y
+        harness.setSymmetry(settings)
+        let object = try #require(harness.editObject)
+        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
+        #expect(try harness.editMesh().vertexCount == 8)
+        let depthBefore = harness.bundle.journal.depth
+
+        #expect(harness.coordinator.meshEditor.applySymmetryNow())
+
+        // ONE journaled bake; the coincident seam pair collapsed to a shared,
+        // interior edge.
+        #expect(harness.bundle.journal.depth == depthBefore + 1)
+        let mesh = try harness.editMesh()
+        #expect(mesh.vertexCount == 6, "sector seam welded")
+        let seam = try #require(mesh.nearestEdge(to: SIMD3(0, 0.5, 0), maxDistance: 0.01))
+        #expect(mesh.edgeFaces(of: seam.edge).count == 2, "the sectors now share the seam")
+
+        harness.undo()
+        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
+        #expect(try harness.editMesh().vertexCount == 8)
+    }
+
     /// REGRESSION: the `.resymmetrize` toolbar command used to fall back to
     /// `.x` when no mirror axis was enabled (`mirrorAxes.first ?? .x`), so
     /// a radial-only document snapped its whole negative-X half onto the
@@ -686,21 +743,33 @@ struct SymmetryToolsTests {
         }
     }
 
-    @Test("The rim disappears when symmetry is off or purely radial")
-    func rimIsAbsentWithoutAMirrorPlane() {
+    @Test("The rim disappears when symmetry is off entirely")
+    func rimIsAbsentWhenSymmetryIsOff() {
         #expect(
             SymmetryRimGeometry.rims(
                 for: SymmetrySettings(mirrorAxes: [.x]), center: .zero, radius: 1
             ).isEmpty,
             "symmetry disabled"
         )
-        #expect(
-            SymmetryRimGeometry.rims(
-                for: SymmetrySettings(radialCount: 8, isEnabled: true),
-                center: .zero, radius: 1
-            ).isEmpty,
-            "radial-only symmetry has no plane to draw"
+    }
+
+    /// Task 4.4a: a purely radial setup draws a fan of sector-boundary spokes
+    /// (one line-list group, one segment per sector) instead of a plane.
+    @Test("Radial symmetry draws a spoke per sector boundary")
+    func radialSymmetryDrawsSectorSpokes() throws {
+        let rims = SymmetryRimGeometry.rims(
+            for: SymmetrySettings(radialCount: 8, radialAxis: .y, isEnabled: true),
+            center: .zero, radius: 2
         )
+        #expect(rims.count == 1, "no mirror plane, just the radial spokes")
+        let spokes = try #require(rims.first)
+        // 8 spokes x 2 endpoints x 3 floats.
+        #expect(spokes.segments.count == 8 * 2 * 3)
+        #expect(spokes.color == SymmetryRimGeometry.color)
+        // Spokes lie in the plane perpendicular to Y (all at the hub's y = 0).
+        for index in stride(from: 1, to: spokes.segments.count, by: 3) {
+            #expect(abs(spokes.segments[index]) < 1e-5, "spokes are in the y = 0 plane")
+        }
     }
 
     @Test("The overlay render state carries rims alongside annotations")

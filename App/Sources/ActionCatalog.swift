@@ -416,12 +416,12 @@ extension EditorAction {
                 title: "Apply symmetry",
                 symbol: "square.on.square.dashed",
                 gesture: "Command — tap to run",
-                notes: "Bakes the mirror into real geometry: every face on "
-                    + "the authored half gains a real mirrored twin, welded "
-                    + "along the symmetry plane so the seam stays "
-                    + "manifold. Runs once per enabled mirror axis. Radial "
-                    + "symmetry is NOT baked — its sector seams need "
-                    + "welding the engine does not do yet.",
+                notes: "Bakes symmetry into real geometry: every face on the "
+                    + "authored half gains a real mirrored twin, welded along "
+                    + "the symmetry plane so the seam stays manifold (once per "
+                    + "enabled mirror axis). With radial symmetry on it also "
+                    + "welds the sector-boundary seams, so the rotated fan "
+                    + "becomes one manifold cage.",
                 demoFrames: [
                     "square.righthalf.filled", "square.on.square.dashed",
                     "square.split.2x1.fill", "square.fill",

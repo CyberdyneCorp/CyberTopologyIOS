@@ -127,9 +127,11 @@ scenarios:
     # single undo removing all of them, because the replication happens
     # inside the stroke's one journaled command.
     #
-    # HONEST SCOPE: this covers live radial AUTHORING, which is what the
-    # scenario asks for. Radial BAKE (welding the sector seams into real
-    # geometry) has no engine support and is deferred as task 4.4a.
+    # This covers live radial AUTHORING and, since task 4.4a, radial BAKE:
+    # apply-symmetry welds the coincident sector-boundary seams that live
+    # replication leaves, so the rotated fan becomes one manifold cage
+    # (Mesh.rotationalWeld — app-side, coincidence-only, so it cannot distort
+    # a quad). The viewport draws sector-boundary spokes for a radial setup.
     Radial symmetry editing:
       - SymmetryToolsTests/eightFoldRadialAuthoringSnapsEveryCopy
       - SymmetryToolsTests/undoingAMirroredAuthoringOpRemovesBothSides
@@ -140,6 +142,11 @@ scenarios:
       # assertions the position-only test above cannot make.
       - SymmetryToolsTests/centerLineVerticesWeldIntoSharedSeamVertices
       - SymmetryOpsTests/seamVerticesWeldIntoOneSharedVertex
+      # Radial bake (task 4.4a): weld the sector seams, end to end.
+      - SymmetryOpsTests/rotationalWeldClosesTheSectorSeam
+      - SymmetryOpsTests/rotationalWeldLeavesASeamlessCageUntouched
+      - SymmetryToolsTests/radialBakeWeldsSectorSeamsInOneEntry
+      - SymmetryToolsTests/radialSymmetryDrawsSectorSpokes
       - SymmetryOpsTests/radialReplicasSpanTheTurn
       - SymmetryOpsTests/replicaCounts
       - SymmetryOpsTests/centerLineVerticesSnapToThePlane

@@ -40,7 +40,17 @@ extension MeshEditController {
     @discardableResult
     func applySymmetryNow() -> Bool {
         withSymmetryTarget(verb: "symmetry.apply") { mesh, settings, snapper in
-            try mesh.applySymmetry(settings, snapping: snapper)
+            if !settings.mirrorAxes.isEmpty {
+                try mesh.applySymmetry(settings, snapping: snapper)
+            }
+            // RADIAL bake (task 4.4a): live radial authoring already placed the
+            // rotated copies as real geometry — baking closes the coincident
+            // sector-boundary seams so the fan becomes one manifold cage.
+            if settings.radialCount > 1 {
+                try mesh.rotationalWeld(
+                    sectorCount: settings.radialCount, tolerance: settings.weldTolerance
+                )
+            }
         }
     }
 
@@ -49,7 +59,9 @@ extension MeshEditController {
     static let symmetryDisabledStatus =
         "Symmetry is off — enable it (and a mirror axis) to bake"
     static let noMirrorAxisStatus =
-        "No mirror axis enabled — radial-only symmetry has no plane to bake (task 4.4a)"
+        "No mirror axis enabled — re-symmetrize needs a mirror plane"
+    static let nothingToBakeStatus =
+        "Symmetry is on but empty — enable a mirror axis or 2+ radial sectors to bake"
 
     /// The mirror axis a bake would use, or nil when the current symmetry
     /// state cannot drive one.
@@ -181,8 +193,13 @@ extension MeshEditController {
             onCameraToolStatus?(Self.symmetryDisabledStatus)
             return false
         }
-        guard !context.effectiveSymmetry.mirrorAxes.isEmpty else {
-            onCameraToolStatus?(Self.noMirrorAxisStatus)
+        // A bake needs SOMETHING to replicate: a mirror axis to bake, or 2+
+        // radial sectors to weld. Radial-only now bakes (task 4.4a) — it welds
+        // the sector seams — so the old mirror-axis-only gate is relaxed.
+        guard !context.effectiveSymmetry.mirrorAxes.isEmpty
+            || context.effectiveSymmetry.radialCount > 1
+        else {
+            onCameraToolStatus?(Self.nothingToBakeStatus)
             return false
         }
         let settings = context.effectiveSymmetry.weldScaled(sceneRadius: context.sceneRadius)
@@ -254,20 +271,48 @@ enum SymmetryRimGeometry {
     /// than the model so the plane visibly cuts through it.
     static let extentFactor: Float = 1.15
 
-    /// Line-list groups for every enabled mirror plane, in axis order.
-    /// Empty when symmetry is off or no mirror axis is enabled (a purely
-    /// radial setup has no plane to draw).
+    /// Line-list groups for the active symmetry: one square-plus-cross per
+    /// enabled mirror plane (axis order), then — when radial symmetry is on —
+    /// a fan of sector-boundary spokes (task 4.4a). Empty when symmetry is off
+    /// or nothing is configured.
     static func rims(
         for settings: SymmetrySettings, center: SIMD3<Float>, radius: Float
     ) -> [AnnotationRenderState.TagGroup] {
         guard settings.isEnabled else { return [] }
         let extent = max(radius, SceneBounds.minimumRadius) * extentFactor
-        return settings.mirrorAxes.map { axis in
+        var groups = settings.mirrorAxes.map { axis in
             AnnotationRenderState.TagGroup(
                 color: color,
                 segments: segments(axis: axis, settings: settings, center: center, extent: extent)
             )
         }
+        if settings.radialCount > 1 {
+            groups.append(AnnotationRenderState.TagGroup(
+                color: color,
+                segments: radialSpokes(settings: settings, center: center, extent: extent)
+            ))
+        }
+        return groups
+    }
+
+    /// One spoke per sector boundary, radiating from the radial axis in the
+    /// plane perpendicular to it, anchored on the axis at the scene's axial
+    /// level — a fan that reads as the sector count when viewed down the axis.
+    private static func radialSpokes(
+        settings: SymmetrySettings, center: SIMD3<Float>, extent: Float
+    ) -> [Float] {
+        let axis: SIMD3<Float> = settings.radialAxis.normal
+        let (u, v) = basis(for: settings.radialAxis)
+        let axialOffset: Float = dot(center - settings.origin, axis)
+        let hub: SIMD3<Float> = settings.origin + axis * axialOffset
+        var floats: [Float] = []
+        for sector in 0..<settings.radialCount {
+            let angle = 2 * Float.pi * Float(sector) / Float(settings.radialCount)
+            let direction: SIMD3<Float> = u * cos(angle) + v * sin(angle)
+            append(hub, to: &floats)
+            append(hub + direction * extent, to: &floats)
+        }
+        return floats
     }
 
     /// One plane's outline + cross, as x,y,z triples in line-list order.
