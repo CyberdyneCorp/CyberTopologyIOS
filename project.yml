@@ -96,10 +96,18 @@ targets:
       - App/Tests
       # Mesh fixtures the integration tests import, bundled into the test
       # target so they load on a physical device too (a #filePath / absolute
-      # Mac path only resolves on the simulator's shared filesystem).
+      # Mac path only resolves on the simulator's shared filesystem). This
+      # target is APP-HOSTED, so its tests run on the iPad — unlike the
+      # tool-hosted CyberKitTests, which are simulator-only.
       - path: CyberKit/Tests/CyberKitTests/Fixtures/cube_colored.obj
         buildPhase: resources
       - path: CyberKit/Tests/CyberKitTests/Fixtures/cube_colored.fbx
+        buildPhase: resources
+      # Real scanned Targets (bunny / armadillo) for the on-device real-target
+      # integration tests. See App/TestFixtures/PROVENANCE.md.
+      - path: App/TestFixtures/stanford-bunny.obj
+        buildPhase: resources
+      - path: App/TestFixtures/armadillo.obj
         buildPhase: resources
     dependencies:
       - target: CyberTopology
