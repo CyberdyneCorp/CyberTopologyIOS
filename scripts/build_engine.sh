@@ -16,130 +16,23 @@
 # the submodule checkout; `--force` rebuilds, `--sim-only` skips the device
 # slice (what CI uses). Requires CMake >= 3.24, Ninja, Xcode 26.
 #
-# Every Engine/patches/*.patch is applied to the submodule in lexical
-# (numbered) order before building:
-#   0001  iOS build fixes (metal_backend.mm typo + std::system() unavailable
-#         on iOS). TODO(upstream): PR both one-liners and drop the patch.
-#   0002  capi render-data accessors (triangulated indices, per-vertex
-#         normals/colors, zero-copy pointer views) for the Metal viewport.
-#         TODO(upstream): PR to CyberRemesherAndUV and drop the patch.
-#   0003  capi unique face-edge indices (wireframe topology without fan
-#         diagonals) for the EditMesh overlay pipeline (task 2.3).
-#         TODO(upstream): fold into the 0002 PR and drop the patch.
-#   0004  capi spatial queries (task 3.2 prereq, phase-3 recon "0005"):
-#         CyberSnapper (SurfaceSnapper wrapper: snap-to-surface/vertex +
-#         BVH raycast) and EditMesh nearest-vertex/edge element queries
-#         (new retopo/picking.hpp). Read-only; render cache untouched.
-#         TODO(upstream): PR to CyberRemesherAndUV and drop the patch.
-#   0005  engine two-stage stroke interpreter (task 3.2, design D5):
-#         retopo/stroke_interpreter.hpp (shape classifier + mesh-context
-#         resolver producing interpretation records with ranked
-#         alternatives) + capi cyber_stroke_interpret surface.
-#         TODO(upstream): PR to CyberRemesherAndUV and drop the patch.
-#   0006  capi mesh-editing ops (task 3.3): mutating cyber_retopo_* entry
-#         points (create-face with Target snapping, tweak, geodesic move,
-#         relax, pressure-scaled erase, delete-faces) wrapping the engine's
-#         retopo operators, each invalidating the render cache per the 0002
-#         LIFETIME contract; plus quad-corner estimates on the stroke
-#         interpretation record for applying CreateQuad.
-#         TODO(upstream): PR to CyberRemesherAndUV and drop the patch.
-#   0007  capi mesh-edit exception-path cache invalidation (task 3.3 review
-#         fix): runMeshEdit also drops the render cache when an engine op
-#         throws mid-mutation (partial mutation must never serve the stale
-#         pre-mutation cache). TODO(upstream): fold into the 0006 PR.
-#   0008  stroke quad-corner dedup (task 3.3 review fix): the inscribed-quad
-#         fallback in quadCorners excludes already-picked samples from the
-#         per-diagonal argmax, so one sharp extreme sample (teardrop tip)
-#         can no longer fill two ring slots and produce a degenerate quad
-#         create-face rejects. TODO(upstream): fold into the 0006 PR.
-#   0009  engine quad-loop topology (task 3.4): retopo/loops.hpp (quad-ring
-#         and edge-loop walks) + capi cyber_mesh_edge_loop/quad_ring
-#         queries and cyber_retopo_insert_loop — the FULL-ring loop insert
-#         (the pre-existing actions.hpp insertLoop splits exactly one
-#         quad). TODO(upstream): PR to CyberRemesherAndUV and drop.
-#   0010  capi dissolve/merge/rotate (task 3.4): retopo/dissolve.hpp
-#         (dissolveEdge, rotateEdgeAny incl. quad-pair rotation) + the
-#         cyber_retopo_dissolve_edges/merge_vertices/rotate_edge ops.
-#         TODO(upstream): PR to CyberRemesherAndUV and drop.
-#   0011  stroke interpreter grammar v2 (task 3.4): grid-stroke shape with
-#         lattice estimate (CYBER_SHAPE_GRID/CYBER_ACTION_CREATE_GRID +
-#         grid_size accessor), whole-ring/whole-loop elements for the
-#         insert-vs-tag disambiguation, X-over-region face collection,
-#         lasso start-in-empty-space rule, visibility line restricted to
-#         empty space. TODO(upstream): fold into the 0005 PR.
-#   0012  overlay render state (task 3.4): per-handle hidden-face set and
-#         tagged-edge list filtering/augmenting the render cache (partial
-#         visibility + loop-tag pass) plus cyber_mesh_live_faces; stable
-#         ids and topology untouched. TODO(upstream): PR and drop.
-#   0013  capi welded grid creation (task 3.4): cyber_retopo_create_grid
-#         building one connected block of quads over a shared lattice
-#         (repeated create_face would produce disconnected cells).
-#         TODO(upstream): fold into the 0010 PR.
-#   0014  capi nearest-vertex-excluding (task 3.7, spec "Snap feedback"):
-#         cyber_mesh_nearest_vertex_excluding — the merge-snap detection
-#         query for a vertex being DRAGGED (Tweak/Move), which sits at the
-#         query point and would always win the unfiltered nearest query.
-#         Read-only; render cache untouched. TODO(upstream): fold into the
-#         0004 PR and drop the patch.
-#   0016  capi build ops (task 4.1): cyber_retopo_build_face (mixed
-#         existing/new-vertex ring with neighbor-consistent winding — the
-#         Build Quad/Build Triangle drag-from-edge and drag-from-corner
-#         creations) + cyber_retopo_grow_boundary_edge (triangle-edge drag
-#         -> quad) + the cyber_mesh_edge_faces adjacency query the tools
-#         dispatch on. TODO(upstream): PR to CyberRemesherAndUV and drop.
-#   0017  capi path distribute + surface cut (task 4.1): new engine header
-#         retopo/paths.hpp (deterministic Dijkstra shortest vertex path) +
-#         build_tools.hpp surfaceCutSegment (segment-slab-restricted knife
-#         cut with auto-triangulated n-gons); capi
-#         cyber_mesh_shortest_vertex_path / cyber_retopo_distribute_path /
-#         cyber_retopo_surface_cut. TODO(upstream): PR and drop.
-#   0018  capi boundary loop (task 4.2): new engine header
-#         retopo/boundary.hpp (deterministic boundary-chain walk over
-#         one-face edges, both directions, closed detection, non-manifold
-#         pinch stops) + capi cyber_mesh_boundary_loop — Extend Boundary's
-#         boundary auto-select. Read-only; render cache untouched.
-#         TODO(upstream): PR to CyberRemesherAndUV and drop.
-#   0019  capi placement ops (task 4.2, camera-as-manipulator tools):
-#         build_tools.hpp additions (extendBoundaryRings with closed
-#         chains, winding correction and outer-chain reporting;
-#         drawStripPath with per-station side frames from
-#         cross(view, tangent); patchClone flip/reverse-winding) + capi
-#         cyber_retopo_patch_clone / extend_boundary_grid /
-#         extend_boundary_fan / draw_strip / transform_vertices (with the
-#         re-snap report). TODO(upstream): PR and drop.
-#   0020  capi loop metrics (task 4.3, Loop Info inspector):
-#         retopo/loop_metrics.hpp (measureEdgeLoop — one edgeLoopFrom walk
-#         plus one pass over its edges, so the whole query is O(loop) as
-#         the spec demands) + capi CyberLoopMetrics /
-#         cyber_mesh_loop_metrics reporting edge/vertex counts, closedness,
-#         summed length, open-chain endpoints, boundary-edge count and the
-#         Target snapping state (scale-free tolerance = 2% of the loop's
-#         mean edge length). Read-only; render cache untouched.
-#         TODO(upstream): PR to CyberRemesherAndUV and drop the patch.
-#   0021  capi symmetry ops (task 4.4): retopo/symmetry.hpp gains
-#         `resymmetrize` (mirrors the working half onto the other IN PLACE
-#         — adds/removes nothing, so topology correspondence is preserved,
-#         and off-side vertices with no counterpart within the match
-#         tolerance are reported rather than destroyed); capi
-#         CyberSymmetry / cyber_retopo_snap_symmetry_plane (center-line
-#         weld) / cyber_retopo_apply_symmetry (bakes the mirror, existing
-#         header function) / cyber_retopo_resymmetrize with its report.
-#         One plane per call — multi-axis is the shell applying them per
-#         enabled axis; RADIAL symmetry is deliberately absent (see 4.4a).
-#         TODO(upstream): PR to CyberRemesherAndUV and drop the patch.
-#   0022  capi EditMesh batch commands (task 4.5): cyber_retopo_snap_all
-#         (project every unpinned vertex onto the Target, reporting count +
-#         max displacement), cyber_retopo_subdivide (retopo/commands.hpp
-#         subdivideAll = Mesh::linearSubdivide, with optional whole-mesh
-#         Target reprojection — that is "subdivide+reproject"; the engine
-#         has LINEAR subdivision only) and cyber_retopo_triangulate. No new
-#         entry point for relax-all: cyber_retopo_relax with radius <= 0
-#         already relaxes the whole mesh honoring the same PinSet. The
-#         header documents ELEMENT-ID STABILITY per op — subdivide rebuilds
-#         the mesh and reassigns EVERY id, triangulate preserves vertex and
-#         edge ids while adding face ids — and each op prunes exactly the
-#         handle overlay state its id churn invalidates.
-#         TODO(upstream): PR to CyberRemesherAndUV and drop the patch.
+# The submodule is pinned at the CyberRemesherAndUV v0.2.4 RELEASE, which now
+# ships the manual-retopology C API NATIVELY. That layer grew out of the one
+# this app first prototyped as a large local patch stack (commit 87a0bd8,
+# carried upstream into the 0.1.0-0.2.4 release line), so only the app's own
+# not-yet-upstreamed additions remain as patches, applied in numbered order
+# before building:
+#   0001  cybertopology stroke grammar: the device-tuned curated stroke
+#         interpreter in retopo/stroke_interpreter.hpp - nearly-closed quad
+#         rescue, create-triangle, X-before-closed delete detection, and the
+#         four-gesture grammar cut (quad, triangle, delete, insert-loop). App
+#         authoring policy; kept as a patch by design.
+#   0002  cybertopology capi + engine additions: cyber_mesh_face_vertices (a
+#         face's ring, for face-only Auto Relax + mirrored element edits),
+#         cyber_retopo_subdivide_smooth / Mesh::smoothSubdivide (Catmull-Clark
+#         smooth subdivision for the preview), plus the CreateTriangle action
+#         wiring the stroke grammar needs. capi + core mesh op + commands.
+#         TODO(upstream): PR face_vertices and smoothSubdivide.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -1,8 +1,22 @@
 diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
-index 209eac6..3360d33 100644
+index 50b1876..f92db7d 100644
 --- a/capi/include/cyber_capi.h
 +++ b/capi/include/cyber_capi.h
-@@ -828,6 +828,16 @@ CyberStatus cyber_retopo_snap_all(CyberMesh* mesh, const CyberSnapper* snapper,
+@@ -280,6 +280,13 @@ const float* cyber_mesh_colors_ptr(const CyberMesh* mesh, size_t* out_count);
+ size_t cyber_mesh_live_faces(const CyberMesh* mesh, uint32_t* out_faces,
+                              size_t max_faces);
+ 
++/* Stable vertex ids around one face, in ring order. copy_positions
++ * convention: returns the face's vertex COUNT (its valence) and fills at
++ * most max_verts entries of out_verts (which may be NULL when max_verts is
++ * 0, for size queries). Returns 0 for a dead or out-of-range face id. */
++size_t cyber_mesh_face_vertices(const CyberMesh* mesh, uint32_t face,
++                                uint32_t* out_verts, size_t max_verts);
++
+ /* Replaces the hidden-face set (faces may be NULL when face_count is 0 —
+  * show all). Hidden faces are dropped from the triangle, edge, and normal
+  * streams; vertices used exclusively by hidden faces are dropped from the
+@@ -862,6 +869,16 @@ CyberStatus cyber_retopo_snap_all(CyberMesh* mesh, const CyberSnapper* snapper,
  CyberStatus cyber_retopo_subdivide(CyberMesh* mesh, const CyberSnapper* snapper,
                                     size_t* out_faces);
  
@@ -19,11 +33,45 @@ index 209eac6..3360d33 100644
  /* Fan-triangulates every face with more than three sides. Writes the
   * resulting face count to *out_faces (may be NULL). See the ELEMENT-ID
   * STABILITY note above: vertex/edge ids survive, face ids partially. */
+@@ -911,7 +928,9 @@ typedef enum CyberStrokeAction {
+     CYBER_ACTION_TWEAK_VERTEX,
+     CYBER_ACTION_HIDE_REGION,
+     CYBER_ACTION_TOGGLE_VISIBILITY,
+-    CYBER_ACTION_CREATE_GRID
++    CYBER_ACTION_CREATE_GRID,
++    /* Appended (not inserted) so existing action values keep their numbers. */
++    CYBER_ACTION_CREATE_TRIANGLE
+ } CyberStrokeAction;
+ 
+ /* Kind of a referenced mesh element. */
 diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
-index eb376fa..93dff10 100644
+index db7b8a9..e7ae0c0 100644
 --- a/capi/src/capi.cpp
 +++ b/capi/src/capi.cpp
-@@ -2169,6 +2169,35 @@ CyberStatus cyber_retopo_subdivide(CyberMesh* mesh, const CyberSnapper* snapper,
+@@ -849,6 +849,22 @@ size_t cyber_mesh_live_faces(const CyberMesh* mesh, uint32_t* out_faces,
+     return total;
+ }
+ 
++size_t cyber_mesh_face_vertices(const CyberMesh* mesh, uint32_t face,
++                                uint32_t* out_verts, size_t max_verts) {
++    if (mesh == nullptr || !mesh->mesh.isAlive(cyber::FaceId{face})) {
++        return 0;
++    }
++    const std::vector<cyber::VertexId> verts =
++        mesh->mesh.faceVertices(cyber::FaceId{face});
++    if (out_verts != nullptr) {
++        const size_t count = std::min(verts.size(), max_verts);
++        for (size_t i = 0; i < count; ++i) {
++            out_verts[i] = verts[i].value;
++        }
++    }
++    return verts.size();
++}
++
+ CyberStatus cyber_mesh_set_hidden_faces(CyberMesh* mesh, const uint32_t* faces,
+                                         size_t face_count) {
+     if (mesh == nullptr || (faces == nullptr && face_count > 0)) {
+@@ -2253,6 +2269,35 @@ CyberStatus cyber_retopo_subdivide(CyberMesh* mesh, const CyberSnapper* snapper,
      });
  }
  
@@ -59,6 +107,15 @@ index eb376fa..93dff10 100644
  CyberStatus cyber_retopo_triangulate(CyberMesh* mesh, size_t* out_faces) {
      return runMeshEdit(mesh, "cyber_retopo_triangulate", [&] {
          if (mesh->mesh.faceCount() == 0) {
+@@ -2328,6 +2373,8 @@ CyberStrokeAction toCAction(cyber::retopo::InterpretedAction action) {
+     switch (action) {
+         case InterpretedAction::CreateQuad:
+             return CYBER_ACTION_CREATE_QUAD;
++        case InterpretedAction::CreateTriangle:
++            return CYBER_ACTION_CREATE_TRIANGLE;
+         case InterpretedAction::InsertLoop:
+             return CYBER_ACTION_INSERT_LOOP;
+         case InterpretedAction::TagLoop:
 diff --git a/src/core/include/cyber/core/mesh.hpp b/src/core/include/cyber/core/mesh.hpp
 index 93606e7..9bf56c1 100644
 --- a/src/core/include/cyber/core/mesh.hpp
@@ -79,10 +136,10 @@ index 93606e7..9bf56c1 100644
      // ---- adjacency queries --------------------------------------------
      [[nodiscard]] std::size_t vertexCount() const { return m_aliveVertices; }
 diff --git a/src/core/src/mesh_ops.cpp b/src/core/src/mesh_ops.cpp
-index 8b34e05..f43543a 100644
+index eb4f0c7..c682fb5 100644
 --- a/src/core/src/mesh_ops.cpp
 +++ b/src/core/src/mesh_ops.cpp
-@@ -531,4 +531,164 @@ Mesh Mesh::linearSubdivide() const {
+@@ -530,4 +530,164 @@ Mesh Mesh::linearSubdivide() const {
      return out;
  }
  
@@ -248,12 +305,12 @@ index 8b34e05..f43543a 100644
 +
  }  // namespace cyber
 diff --git a/src/retopo/include/cyber/retopo/commands.hpp b/src/retopo/include/cyber/retopo/commands.hpp
-index 01d351b..0bedac4 100644
+index b0fde62..60c61f4 100644
 --- a/src/retopo/include/cyber/retopo/commands.hpp
 +++ b/src/retopo/include/cyber/retopo/commands.hpp
-@@ -44,6 +44,13 @@ inline void subdivideAll(Mesh& mesh) {
-     mesh = mesh.linearSubdivide();
- }
+@@ -42,6 +42,13 @@ inline void relaxAll(Mesh& mesh, const PinSet* pins = nullptr, int iterations =
+ // quads, replacing the mesh in place.
+ inline void subdivideAll(Mesh& mesh) { mesh = mesh.linearSubdivide(); }
  
 +// Whole-mesh smooth subdivide-all: Catmull-Clark SMOOTH subdivision (same
 +// topology as subdivideAll, limit-approaching positions), replacing the mesh

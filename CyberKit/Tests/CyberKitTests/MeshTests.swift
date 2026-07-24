@@ -90,10 +90,17 @@ struct MeshTests {
         #expect(parameters.edgeScale > 0)
 
         let c = parameters.cParams
-        var expected = CyberRemeshParamsMirror()
+        let expected = CyberRemeshParamsMirror()
         #expect(Int(c.targetQuads) == expected.targetQuads)
-        expected = CyberRemeshParamsMirror()
-        #expect(c.quadMethod == Int32(expected.quadMethod))
+        // v0.2.4 defaults quadMethod to QuadCover (3), which shells out to an
+        // external CLI unavailable on iOS. `RemeshParameters` deliberately
+        // does NOT expose QuadCover and clamps the unknown raw value to
+        // fieldAligned (the engine itself also falls back to field-aligned at
+        // remesh time when the solver is absent), so the round-tripped method
+        // is the clamped one, not the raw engine default.
+        #expect(expected.quadMethod == 3, "v0.2.4 engine default is CYBER_QUAD_QUADCOVER")
+        #expect(parameters.quadMethod == .fieldAligned)
+        #expect(c.quadMethod == RemeshParameters.QuadMethod.fieldAligned.rawValue)
     }
 }
 
