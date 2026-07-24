@@ -25,11 +25,29 @@ struct BatchOpsTests {
     }
 
     /// The committed 3x2 quad grid strip (4x3 vertices) at z = 0.
+    /// Inlined (byte-for-byte Fixtures/grid32.obj) to be device-safe: the
+    /// app-hosted test target cannot read the SPM test bundle's Fixtures.
     private func grid32() throws -> Mesh {
-        let url = try #require(Bundle.module.url(
-            forResource: "grid32", withExtension: "obj", subdirectory: "Fixtures"
-        ))
-        return try Mesh.loadOBJ(at: url)
+        try mesh(fromOBJ: """
+        v -0.375 -0.25 0
+        v -0.125 -0.25 0
+        v  0.125 -0.25 0
+        v  0.375 -0.25 0
+        v -0.375  0.00 0
+        v -0.125  0.00 0
+        v  0.125  0.00 0
+        v  0.375  0.00 0
+        v -0.375  0.25 0
+        v -0.125  0.25 0
+        v  0.125  0.25 0
+        v  0.375  0.25 0
+        f 1 2 6 5
+        f 2 3 7 6
+        f 3 4 8 7
+        f 5 6 10 9
+        f 6 7 11 10
+        f 7 8 12 11
+        """)
     }
 
     /// A DOMED Target above the grid: subdivide+reproject has to lift the
@@ -55,11 +73,13 @@ struct BatchOpsTests {
         return try SurfaceSnapper(target: try mesh(fromOBJ: obj))
     }
 
+    #if targetEnvironment(simulator)
     private var goldensDirectory: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("Goldens", isDirectory: true)
             .appendingPathComponent("MeshEdits", isDirectory: true)
     }
+    #endif
 
     /// Positions of every live vertex. A mesh loaded from OBJ (and one
     /// rebuilt by subdivide) numbers its vertices contiguously from 0.
@@ -191,10 +211,12 @@ struct BatchOpsTests {
     func subdivideDeterminism() throws {
         let cage = try grid32()
         try cage.subdivide()
+        #if targetEnvironment(simulator)
         try GoldenFile.compare(
             try cage.payloadData(),
             golden: goldensDirectory.appendingPathComponent("subdivide_grid32.payload.golden")
         )
+        #endif
         // Same input, same bytes — twice in one process.
         let again = try grid32()
         try again.subdivide()
@@ -230,10 +252,12 @@ struct BatchOpsTests {
     func triangulateDeterminism() throws {
         let cage = try grid32()
         try cage.triangulate()
+        #if targetEnvironment(simulator)
         try GoldenFile.compare(
             try cage.payloadData(),
             golden: goldensDirectory.appendingPathComponent("triangulate_grid32.payload.golden")
         )
+        #endif
     }
 
     /// REGRESSION (major finding, task 4.5b): triangulate preserves edge ids

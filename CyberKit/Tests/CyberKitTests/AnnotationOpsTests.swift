@@ -24,12 +24,32 @@ struct AnnotationOpsTests {
         return try Mesh.loadOBJ(at: url)
     }
 
-    /// The committed 3x2 quad grid strip (4 columns x 3 rows of vertices).
+    /// The 3x2 quad grid strip (4 columns x 3 rows of vertices). Inlined
+    /// rather than loaded from `Bundle.module` so this suite is device-safe:
+    /// it is also compiled into the app-hosted CyberTopologyTests target,
+    /// which has no access to the SPM test bundle's Fixtures. Byte-for-byte
+    /// the same mesh as Fixtures/grid32.obj.
     private func grid32() throws -> Mesh {
-        let url = try #require(Bundle.module.url(
-            forResource: "grid32", withExtension: "obj", subdirectory: "Fixtures"
-        ))
-        return try Mesh.loadOBJ(at: url)
+        try mesh(fromOBJ: """
+        v -0.375 -0.25 0
+        v -0.125 -0.25 0
+        v  0.125 -0.25 0
+        v  0.375 -0.25 0
+        v -0.375  0.00 0
+        v -0.125  0.00 0
+        v  0.125  0.00 0
+        v  0.375  0.00 0
+        v -0.375  0.25 0
+        v -0.125  0.25 0
+        v  0.125  0.25 0
+        v  0.375  0.25 0
+        f 1 2 6 5
+        f 2 3 7 6
+        f 3 4 8 7
+        f 5 6 10 9
+        f 6 7 11 10
+        f 7 8 12 11
+        """)
     }
 
     private func positions(of mesh: Mesh, _ ids: [UInt32]) -> [UInt32: SIMD3<Float>] {

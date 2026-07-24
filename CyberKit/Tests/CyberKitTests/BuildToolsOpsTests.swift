@@ -47,11 +47,29 @@ struct BuildToolsOpsTests {
 
     /// The committed 3x2 quad grid strip (columns at x in {-0.375, -0.125,
     /// 0.125, 0.375}, rows at y in {-0.25, 0, 0.25}; ids row-major 0-11).
+    /// Inlined (byte-for-byte Fixtures/grid32.obj) to be device-safe: the
+    /// app-hosted test target cannot read the SPM test bundle's Fixtures.
     private func grid32() throws -> Mesh {
-        let url = try #require(Bundle.module.url(
-            forResource: "grid32", withExtension: "obj", subdirectory: "Fixtures"
-        ))
-        return try Mesh.loadOBJ(at: url)
+        try mesh(fromOBJ: """
+        v -0.375 -0.25 0
+        v -0.125 -0.25 0
+        v  0.125 -0.25 0
+        v  0.375 -0.25 0
+        v -0.375  0.00 0
+        v -0.125  0.00 0
+        v  0.125  0.00 0
+        v  0.375  0.00 0
+        v -0.375  0.25 0
+        v -0.125  0.25 0
+        v  0.125  0.25 0
+        v  0.375  0.25 0
+        f 1 2 6 5
+        f 2 3 7 6
+        f 3 4 8 7
+        f 5 6 10 9
+        f 6 7 11 10
+        f 7 8 12 11
+        """)
     }
 
     /// Flat plane target at z = 0.25 for snap assertions.
@@ -65,11 +83,13 @@ struct BuildToolsOpsTests {
         """))
     }
 
+    #if targetEnvironment(simulator)
     private var goldensDirectory: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("Goldens", isDirectory: true)
             .appendingPathComponent("MeshEdits", isDirectory: true)
     }
+    #endif
 
     private func edge(
         of mesh: Mesh, near point: SIMD3<Float>, radius: Float = 0.01
@@ -111,9 +131,11 @@ struct BuildToolsOpsTests {
         // Welded: the shared edge 0-1 now borders BOTH faces.
         let shared = try edge(of: quad, near: SIMD3(0.5, 0, 0))
         #expect(quad.edgeFaces(of: shared).count == 2)
+        #if targetEnvironment(simulator)
         let golden = goldensDirectory
             .appendingPathComponent("build_face_tent.payload.golden")
         try GoldenFile.compare(try quad.payloadData(), golden: golden)
+        #endif
     }
 
     @Test("buildFace winds the welded face opposite its neighbor (coherent normals)")
@@ -273,9 +295,11 @@ struct BuildToolsOpsTests {
         #expect(tri.vertexCount == 4)
         #expect(try tri.stats().quads == 1)
         #expect(tri.vertexPosition(vertex) == SIMD3(0.5, -1, 0))
+        #if targetEnvironment(simulator)
         let golden = goldensDirectory
             .appendingPathComponent("grow_boundary_edge.payload.golden")
         try GoldenFile.compare(try tri.payloadData(), golden: golden)
+        #endif
     }
 
     @Test("growBoundaryEdge rejects interior edges and non-triangle faces")
@@ -355,9 +379,11 @@ struct BuildToolsOpsTests {
         let d23 = simd_distance(p2, p3)
         #expect(abs(d01 - d12) < 1e-4)
         #expect(abs(d12 - d23) < 1e-4)
+        #if targetEnvironment(simulator)
         let golden = goldensDirectory
             .appendingPathComponent("distribute_path.payload.golden")
         try GoldenFile.compare(try strip.payloadData(), golden: golden)
+        #endif
     }
 
     @Test("distributePath snaps moved vertices onto the Target")
@@ -407,9 +433,11 @@ struct BuildToolsOpsTests {
         #expect(grid.faceCount == 8)
         // All-quad result here: the cut lands vertex-to-vertex on each face.
         #expect(try grid.stats().quads == 8)
+        #if targetEnvironment(simulator)
         let golden = goldensDirectory
             .appendingPathComponent("surface_cut_grid32.payload.golden")
         try GoldenFile.compare(try grid.payloadData(), golden: golden)
+        #endif
     }
 
     @Test("surfaceCut is restricted to the segment's extent")

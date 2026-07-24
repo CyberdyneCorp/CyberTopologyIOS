@@ -179,9 +179,11 @@ struct MeshEditingTests {
             at: [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 1, 0), SIMD3(0, 1, 0)],
             snapping: snapper
         )
+        #if targetEnvironment(simulator)
         let golden = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("Goldens/MeshEdits/quad_create.payload.golden")
         try GoldenFile.compare(try editMesh.payloadData(), golden: golden)
+        #endif
     }
 
     // MARK: - Tweak

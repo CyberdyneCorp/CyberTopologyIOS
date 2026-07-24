@@ -94,6 +94,25 @@ targets:
     platform: iOS
     sources:
       - App/Tests
+      # Engine-op regression suites SHARED from CyberKitTests so they run on
+      # DEVICE too — CyberKitTests is tool-hosted (simulator-only), so these
+      # Phase 4 engine ops were previously verified only on the simulator.
+      # Both use plain `import CyberKit` public API with inline OBJ fixtures
+      # (no #filePath goldens, no Bundle.module), so they compile and run in
+      # the app-hosted target unchanged. They still run in CyberKitTests on the
+      # simulator; here they add the missing on-device coverage.
+      - path: CyberKit/Tests/CyberKitTests/MeshIDCompactionTests.swift
+      - path: CyberKit/Tests/CyberKitTests/SymmetryOpsTests.swift
+      - path: CyberKit/Tests/CyberKitTests/AnnotationOpsTests.swift
+      # Golden-bearing engine-op suites: the #filePath byte-goldens are guarded
+      # behind #if targetEnvironment(simulator), so on device these run their
+      # structural assertions (Catmull-Clark math, winding, determinism,
+      # pin-honoring) while the golden comparisons stay simulator-only.
+      - path: CyberKit/Tests/CyberKitTests/BuildToolsOpsTests.swift
+      - path: CyberKit/Tests/CyberKitTests/PlacementOpsTests.swift
+      - path: CyberKit/Tests/CyberKitTests/BatchOpsTests.swift
+      - path: CyberKit/Tests/CyberKitTests/SubdivisionPreviewTests.swift
+      - path: CyberKit/Tests/CyberKitTests/MeshEditingTests.swift
       # Mesh fixtures the integration tests import, bundled into the test
       # target so they load on a physical device too (a #filePath / absolute
       # Mac path only resolves on the simulator's shared filesystem). This

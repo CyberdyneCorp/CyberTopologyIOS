@@ -36,11 +36,29 @@ struct PlacementOpsTests {
     }
 
     /// The committed 3x2 quad grid strip (ids row-major 0-11).
+    /// Inlined (byte-for-byte Fixtures/grid32.obj) to be device-safe: the
+    /// app-hosted test target cannot read the SPM test bundle's Fixtures.
     private func grid32() throws -> Mesh {
-        let url = try #require(Bundle.module.url(
-            forResource: "grid32", withExtension: "obj", subdirectory: "Fixtures"
-        ))
-        return try Mesh.loadOBJ(at: url)
+        try mesh(fromOBJ: """
+        v -0.375 -0.25 0
+        v -0.125 -0.25 0
+        v  0.125 -0.25 0
+        v  0.375 -0.25 0
+        v -0.375  0.00 0
+        v -0.125  0.00 0
+        v  0.125  0.00 0
+        v  0.375  0.00 0
+        v -0.375  0.25 0
+        v -0.125  0.25 0
+        v  0.125  0.25 0
+        v  0.375  0.25 0
+        f 1 2 6 5
+        f 2 3 7 6
+        f 3 4 8 7
+        f 5 6 10 9
+        f 6 7 11 10
+        f 7 8 12 11
+        """)
     }
 
     /// Flat plane target at z = 0.25 for snap assertions.
@@ -54,11 +72,13 @@ struct PlacementOpsTests {
         """))
     }
 
+    #if targetEnvironment(simulator)
     private var goldensDirectory: URL {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("Goldens", isDirectory: true)
             .appendingPathComponent("MeshEdits", isDirectory: true)
     }
+    #endif
 
     private func edge(
         of mesh: Mesh, near point: SIMD3<Float>, radius: Float = 0.01
@@ -132,9 +152,11 @@ struct PlacementOpsTests {
         #expect(grid.vertexCount == 18)
         // Clone landed at the offset.
         #expect(grid.nearestVertex(to: SIMD3(-0.375, 0.75, 0), maxDistance: 1e-3) != nil)
+        #if targetEnvironment(simulator)
         let golden = goldensDirectory
             .appendingPathComponent("patch_clone_grid32.payload.golden")
         try GoldenFile.compare(try grid.payloadData(), golden: golden)
+        #endif
     }
 
     @Test("patchClone snaps cloned vertices onto the Target")
@@ -200,9 +222,11 @@ struct PlacementOpsTests {
         for base in stride(from: 0, to: normals.count, by: 3) {
             #expect(normals[base + 2] > 0.9)
         }
+        #if targetEnvironment(simulator)
         let golden = goldensDirectory
             .appendingPathComponent("extend_boundary_ring.payload.golden")
         try GoldenFile.compare(try quad.payloadData(), golden: golden)
+        #endif
     }
 
     @Test("extendBoundary wraps closed chains and snaps onto the Target")
