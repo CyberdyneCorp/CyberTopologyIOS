@@ -107,7 +107,7 @@ struct AnnotationToolsTests {
 
     /// Flat Target at z = 0 plus a 3x3-quad grid EditMesh on it: enough
     /// interior loops for both the pin-loop hold and the Loop Info chip.
-    fileprivate func seedGrid(_ harness: Harness) throws {
+    fileprivate func seedGrid(_ harness: Harness, perturbInterior: Bool = false) throws {
         let target = try meshFromOBJ("""
         v -5 -5 0
         v 5 -5 0
@@ -118,7 +118,20 @@ struct AnnotationToolsTests {
         try harness.bundle.addObject(name: "target", role: .target, mesh: target)
         var obj = ""
         for row in 0...3 {
-            for col in 0...3 { obj += "v \(col) \(row) 0\n" }
+            for col in 0...3 {
+                var x = Float(col)
+                var y = Float(row)
+                // Nudge the col-2 interior vertices off the regular lattice so
+                // Relax has real smoothing work (a perfectly regular grid is
+                // already relaxed, so a boundary-preserving Relax is a no-op).
+                // Only col 2 — the pin test pins the col-1 loop, which must stay
+                // straight for the loop-hold detection to fire.
+                if perturbInterior && col == 2 && (row == 1 || row == 2) {
+                    x -= 0.3
+                    y += row == 1 ? -0.25 : 0.3
+                }
+                obj += "v \(x) \(y) 0\n"
+            }
         }
         for row in 0..<3 {
             for col in 0..<3 {
@@ -257,7 +270,10 @@ struct AnnotationToolsTests {
     @Test("Relax over a pinned loop leaves the pinned vertices where they were")
     func relaxThroughTheControllerHonoursPins() throws {
         let harness = try Harness()
-        try seedGrid(harness)
+        // Perturb the interior so Relax genuinely moves unpinned vertices — a
+        // regular grid is already relaxed, so boundary-preserving Relax leaves
+        // it untouched (the anti-vacuity check below would then be vacuous).
+        try seedGrid(harness, perturbInterior: true)
         // Pin the loop through an interior edge via the real tool.
         harness.coordinator.inputModel.selectTool(.pinFlip)
         let (edge, screen) = try interiorEdgeMidpoint(harness)

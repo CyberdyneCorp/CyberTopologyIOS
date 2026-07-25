@@ -118,6 +118,8 @@ targets:
       - path: CyberKit/Tests/CyberKitTests/WeaveSolverTests.swift
       # Context-aware create-face: public-API + inline mesh, runs on device too.
       - path: CyberKit/Tests/CyberKitTests/ContextAwareCreateFaceTests.swift
+      # Relax boundary preservation: public-API + inline mesh, runs on device too.
+      - path: CyberKit/Tests/CyberKitTests/RelaxBoundaryTests.swift
       # Mesh fixtures the integration tests import, bundled into the test
       # target so they load on a physical device too (a #filePath / absolute
       # Mac path only resolves on the simulator's shared filesystem). This

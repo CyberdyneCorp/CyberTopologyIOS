@@ -47,6 +47,12 @@
 #         endpoints to the vertices; plus a duplicate-face guard in
 #         cyber_retopo_build_face that rejects a ring already bounding a live
 #         face. stroke_interpreter.hpp + capi. TODO(upstream): PR both.
+#   0005  cybertopology relax boundary preservation: Relax smooths a boundary
+#         vertex only ALONG the boundary (toward the midpoint of its two boundary
+#         neighbours) instead of toward the interior one-ring centroid, so a
+#         patch's silhouette is preserved and its quads even out instead of the
+#         patch collapsing into a star. relax.hpp + neighbors.hpp.
+#         TODO(upstream): PR the boundary-aware relax.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

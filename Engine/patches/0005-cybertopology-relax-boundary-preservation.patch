@@ -1,0 +1,67 @@
+diff --git a/src/retopo/include/cyber/retopo/neighbors.hpp b/src/retopo/include/cyber/retopo/neighbors.hpp
+index 94a97e5..cd399e2 100644
+--- a/src/retopo/include/cyber/retopo/neighbors.hpp
++++ b/src/retopo/include/cyber/retopo/neighbors.hpp
+@@ -30,6 +30,33 @@ namespace cyber::retopo {
+     return normalized(n);
+ }
+ 
++// Whether `v` lies on a mesh boundary (some incident edge borders a single
++// face). Relax must move a boundary vertex only ALONG the boundary, never toward
++// the interior, or the silhouette collapses (change fix-relax-boundary).
++[[nodiscard]] inline bool isBoundaryVertex(const Mesh& mesh, VertexId v) {
++    for (const EdgeId e : mesh.vertexEdges(v)) {
++        if (mesh.edgeFaceCount(e) < 2) {
++            return true;
++        }
++    }
++    return false;
++}
++
++// The neighbours of `v` reached by a BOUNDARY edge (an edge bordering a single
++// face) — for a manifold boundary vertex, its two neighbours along the boundary
++// loop. Smoothing a boundary vertex toward the midpoint of these keeps it on the
++// boundary curve while evening its spacing.
++[[nodiscard]] inline std::vector<VertexId> boundaryNeighbors(const Mesh& mesh, VertexId v) {
++    std::vector<VertexId> out;
++    for (const EdgeId e : mesh.vertexEdges(v)) {
++        if (mesh.edgeFaceCount(e) < 2) {
++            const auto [a, b] = mesh.edgeVertices(e);
++            out.push_back(a == v ? b : a);
++        }
++    }
++    return out;
++}
++
+ // Centroid of the one-ring neighbours; returns `v`'s own position if isolated.
+ [[nodiscard]] inline Vec3 neighborCentroid(const Mesh& mesh, VertexId v) {
+     const std::vector<VertexId> ring = oneRing(mesh, v);
+diff --git a/src/retopo/include/cyber/retopo/relax.hpp b/src/retopo/include/cyber/retopo/relax.hpp
+index b84db4e..9f70b08 100644
+--- a/src/retopo/include/cyber/retopo/relax.hpp
++++ b/src/retopo/include/cyber/retopo/relax.hpp
+@@ -63,7 +63,23 @@ inline void relax(Mesh& mesh, const RelaxParams& params, const PinSet* pins = nu
+                 lengthSquared(pos - params.brushCenter) > radiusSquared) {
+                 continue;
+             }
+-            const Vec3 centroid = neighborCentroid(mesh, v);
++            // Boundary vertices smooth ONLY along the boundary curve (toward the
++            // midpoint of their two boundary neighbours), so the patch silhouette
++            // is preserved and its edge vertices merely even out — interior
++            // vertices smooth toward their full one-ring centroid for uniform
++            // quads. Relaxing a boundary vertex toward the interior centroid
++            // instead pulls it inward and collapses the patch into a star
++            // (change fix-relax-boundary).
++            Vec3 centroid;
++            if (isBoundaryVertex(mesh, v)) {
++                const std::vector<VertexId> bn = boundaryNeighbors(mesh, v);
++                if (bn.size() != 2) {
++                    continue;  // corner / non-manifold boundary: leave it fixed
++                }
++                centroid = (mesh.position(bn[0]) + mesh.position(bn[1])) * 0.5f;
++            } else {
++                centroid = neighborCentroid(mesh, v);
++            }
+             Vec3 delta = centroid - pos;
+             const Vec3 n = vertexNormal(mesh, v);
+             delta = delta - n * dot(delta, n);  // keep the move tangential
