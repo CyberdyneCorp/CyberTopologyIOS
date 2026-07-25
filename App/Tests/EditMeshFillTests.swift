@@ -137,6 +137,23 @@ struct EditMeshFillTests {
         #expect(lift < 0.01 * 10)
     }
 
+    /// REGRESSION (device: translucent face shading lingered after deleting
+    /// every face / reimporting the Target — a wireframe-less ghost fill):
+    /// `clearOverlay`, the teardown run when the EditMesh goes away, must
+    /// release the fill too, not only the wireframe. The two are loaded as a
+    /// pair, so they must be cleared as a pair.
+    @Test func clearingTheOverlayAlsoClearsTheFill() throws {
+        let renderer = try renderer()
+        renderer.overlaySettings.fillOpacity = 0.4
+        renderer.loadOverlay(mesh: try cage())
+        #expect(renderer.hasOverlay)
+        #expect(renderer.hasEditMeshFill)
+
+        renderer.clearOverlay()
+        #expect(!renderer.hasOverlay, "the wireframe is gone")
+        #expect(!renderer.hasEditMeshFill, "and so is its fill — no ghost faces linger")
+    }
+
     /// The fill has its OWN buffer pool, so adding it must not change the
     /// overlay's per-frame upload accounting (which
     /// `MeshEditControllerTests` asserts to an exact count).

@@ -540,6 +540,11 @@ final class ViewportRenderer: NSObject {
 
     func clearOverlay() {
         overlayPath.clear()
+        // The fill is a SEPARATE path loaded from the same mesh on the same
+        // call as the wireframe (see loadOverlay) — it must be torn down here
+        // too, or the translucent faces linger after the EditMesh is deleted
+        // or the Target is reimported (a wireframe-less ghost fill).
+        clearEditMeshFill()
         overlayCreationTime = nil
         invalidate()
     }
