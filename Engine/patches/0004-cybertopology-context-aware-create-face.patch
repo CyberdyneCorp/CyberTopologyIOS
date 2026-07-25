@@ -40,10 +40,10 @@ index 3f59eda..2765f57 100644
          // vertices this call created (existing topology stays untouched).
          std::vector<cyber::VertexId> ring;
 diff --git a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
-index c1b4780..72e2e7e 100644
+index c1b4780..260dcaa 100644
 --- a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
 +++ b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
-@@ -1140,6 +1140,192 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
+@@ -1140,6 +1140,197 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
      return refs;
  }
  
@@ -112,10 +112,15 @@ index c1b4780..72e2e7e 100644
 +    if (proj == nullptr) {
 +        return false;
 +    }
-+    // Only OPEN strokes that made no face otherwise (a closed loop already
-+    // creates; grids/scribbles/crosses claimed their shapes above).
++    // Open adjacent-fill strokes: Line / Unknown, and ALSO ClosedLoop — an L
++    // whose two arms bring its endpoints within the nearly-closed fraction is
++    // rescued as a ClosedLoop (and would misread as a 3-corner triangle), but if
++    // its endpoints snap to two DISTINCT vertices it is really an open fill. The
++    // A != B gate below excludes genuine closed loops (whose start ~ end snap to
++    // the same vertex). Grids/scribbles/crosses/circles keep their shapes.
 +    const StrokeShape s = out.shape.shape;
-+    if (s != StrokeShape::Line && s != StrokeShape::Unknown) {
++    if (s != StrokeShape::Line && s != StrokeShape::Unknown &&
++        s != StrokeShape::ClosedLoop) {
 +        return false;
 +    }
 +    const std::vector<Vec2>& stroke = out.shape.resampled;
@@ -236,7 +241,7 @@ index c1b4780..72e2e7e 100644
  }  // namespace interp_detail
  
  // Resolves the stroke against the EditMesh. `mesh`/`viewProj` may be null:
-@@ -1192,6 +1378,12 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
+@@ -1192,6 +1383,12 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
          out.context = UnderStroke::EmptySurface;
      }
  

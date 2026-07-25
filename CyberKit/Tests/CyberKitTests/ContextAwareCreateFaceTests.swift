@@ -125,6 +125,21 @@ struct ContextAwareCreateFaceTests {
         """)
     }
 
+    @Test("A nearly-closed acute L between two vertices is still a quad")
+    func acuteNearlyClosedLMakesQuad() throws {
+        // A sharp L whose arms are long relative to the endpoint gap, so its
+        // endpoint/path ratio (~0.56) drops under the recognizer's 0.65
+        // nearly-closed threshold and stage 1 RESCUES it as a ClosedLoop (which
+        // used to misread as a 3-corner triangle — the reported quad_adjacent
+        // regression). Endpoints v7, v5; bend pushed out to (2.25, 2.25) world.
+        let m = try gridEmptyTopRight()
+        let outerBend = SIMD2(0.98, 0.0)  // far up-right of v8: long arms → ratio ~0.57
+        let result = try interpret([screen(1, 2), outerBend, screen(2, 1)], m)
+        #expect(result.best?.action == .createQuad,
+            "an acute L between two verts should be a quad, got \(String(describing: result.best?.action))")
+        #expect(result.quadCorners.count == 4)
+    }
+
     @Test("Edge-walking finds the shared corner even off the regular lattice")
     func edgeWalkFindsSharedCorner() throws {
         let m = try gridOffsetCorner()
