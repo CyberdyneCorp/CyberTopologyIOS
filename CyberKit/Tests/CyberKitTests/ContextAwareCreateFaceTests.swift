@@ -140,6 +140,40 @@ struct ContextAwareCreateFaceTests {
         #expect(result.quadCorners.count == 4)
     }
 
+    /// A single quad (verts 0,1,2,3 at (0,0),(1,0),(1,1),(0,1)).
+    private func singleQuad() throws -> Mesh {
+        try mesh(fromOBJ: """
+        v 0 0 0
+        v 1 0 0
+        v 1 1 0
+        v 0 1 0
+        f 1 2 3 4
+        """)
+    }
+
+    @Test("A three-sided (U-shaped) stroke uses its two corners as the quad")
+    func uShapeThreeSidedFillMakesQuad() throws {
+        // Extend right off the quad's right edge (v1→v2): draw right, up, left —
+        // A(v1) → (2,0) → (2,1) → B(v2). Two real corners; the four quad corners
+        // ARE the endpoints + the two bends (the reported quad_adjacent 24 case,
+        // where a single-bend guess folded the quad).
+        let m = try singleQuad()
+        let result = try interpret(
+            [screen(1, 0), screen(2, 0), screen(2, 1), screen(1, 1)], m
+        )
+        #expect(result.best?.action == .createQuad,
+            "a U-shaped 3-sided fill should be a quad, got \(String(describing: result.best?.action))")
+        #expect(result.quadCorners.count == 4)
+        // The four corners are the new cell to the right: v1, (2,0), (2,1), v2 —
+        // NOT a folded/estimated shape.
+        for expected in [screen(1, 0), screen(2, 0), screen(2, 1), screen(1, 1)] {
+            let hit = result.quadCorners.contains { c in
+                abs(Double(c.x) - expected.x) < 0.03 && abs(Double(c.y) - expected.y) < 0.03
+            }
+            #expect(hit, "a corner should be at \(expected); got \(result.quadCorners)")
+        }
+    }
+
     @Test("Edge-walking finds the shared corner even off the regular lattice")
     func edgeWalkFindsSharedCorner() throws {
         let m = try gridOffsetCorner()

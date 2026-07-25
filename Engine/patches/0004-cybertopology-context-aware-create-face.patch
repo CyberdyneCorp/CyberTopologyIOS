@@ -40,10 +40,10 @@ index 3f59eda..2765f57 100644
          // vertices this call created (existing topology stays untouched).
          std::vector<cyber::VertexId> ring;
 diff --git a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
-index c1b4780..260dcaa 100644
+index c1b4780..4855a40 100644
 --- a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
 +++ b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
-@@ -1140,6 +1140,197 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
+@@ -1140,6 +1140,207 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
      return refs;
  }
  
@@ -142,37 +142,10 @@ index c1b4780..260dcaa 100644
 +    if (chordLen2 < 1e-8f) {
 +        return false;
 +    }
-+    // Dominant bend C: the stroke sample of maximum perpendicular distance from
-+    // the A-B chord (robust for an L).
-+    Vec2 C = stroke[stroke.size() / 2];
-+    float bestPerp = -1.0f;
-+    for (const Vec2 p : stroke) {
-+        const float t = std::clamp(dot2(p - A, chord) / chordLen2, 0.0f, 1.0f);
-+        const float perp = len(p - (A + chord * t));
-+        if (perp > bestPerp) {
-+            bestPerp = perp;
-+            C = p;
-+        }
-+    }
-+    // Near-straight (no real bend) is an edge/loop gesture, not a face.
-+    if (bestPerp < 0.12f * std::sqrt(chordLen2)) {
-+        return false;
-+    }
-+    // Classify by the interior angle at C.
-+    const Vec2 ca = A - C;
-+    const Vec2 cb = B - C;
-+    const float la = len(ca);
-+    const float lb = len(cb);
-+    if (la < 1e-6f || lb < 1e-6f) {
-+        return false;
-+    }
-+    const float cosC = dot2(ca, cb) / (la * lb);
-+    // Snap the INFERRED corners (the bend and the completed 4th corner) to a
-+    // nearby existing vertex so the face conforms to the existing grid rather
-+    // than inventing a skewed corner — this is what keeps hand-filled quads
-+    // uniform for animation/sculpting. More generous than the endpoint radius
-+    // because the completion is only an estimate. A and B already sit on
-+    // vertices, so they are left alone.
++    // Snap an inferred corner to a nearby existing vertex so the face conforms
++    // to the existing grid (uniform quads for animation/sculpting) rather than
++    // inventing a skewed corner. More generous than the endpoint pick radius
++    // because a completion is only an estimate. A and B already sit on vertices.
 +    const float inferRadius = contextParams.vertexRadius * 1.6f;
 +    const auto snapInferred = [&](Vec2 corner) -> Vec2 {
 +        if (const std::optional<VertexId> v = proj->nearestVertex(corner, inferRadius)) {
@@ -180,27 +153,64 @@ index c1b4780..260dcaa 100644
 +        }
 +        return corner;
 +    };
++
 +    std::vector<Vec2> ring;
 +    InterpretedAction action;
-+    if (cosC > -0.5f) {  // sharp ~60-120 degrees: two sides of a rectangle -> quad
-+        const Vec2 Cs = snapInferred(C);
-+        // Prefer the edge-walked shared corner (guaranteed on the existing grid
-+        // -> uniform); fall back to the snapped parallelogram estimate when the
-+        // endpoints share no such neighbour (filling into empty space).
-+        Vec2 D;
-+        if (const std::optional<VertexId> shared =
-+                sharedCornerOppositeBend(proj, *a, *b, A, B, Cs)) {
-+            D = proj->screen(*shared);
-+        } else {
-+            D = snapInferred(A + B - Cs);
-+        }
-+        ring = {A, Cs, B, D};
++    // Count the stroke's REAL corners (windowed turn). Two corners = a U / three-
++    // sided fill whose four quad corners ARE the endpoints plus the two bends, in
++    // stroke order — no inference. (The single dominant-bend guess below fails on
++    // a U: it picks the midpoint of the far side and folds the quad.)
++    const int window = std::max(2, shapeParams.resampleCount / 16);
++    const std::vector<int> corners = cornerIndices(stroke, window, shapeParams.cornerRadians);
++    if (corners.size() >= 2) {
++        const Vec2 C1 = snapInferred(stroke[static_cast<std::size_t>(corners.front())]);
++        const Vec2 C2 = snapInferred(stroke[static_cast<std::size_t>(corners.back())]);
++        ring = {A, C1, C2, B};
 +        action = InterpretedAction::CreateQuad;
-+    } else if (cosC > -0.94f) {  // gentle ~120-160 degrees: two sides of a triangle
-+        ring = {A, snapInferred(C), B};
-+        action = InterpretedAction::CreateTriangle;
 +    } else {
-+        return false;  // near-straight (>160 degrees): no face
++        // Single bend (L): the stroke sample of maximum perpendicular distance
++        // from the A-B chord, classified by its interior angle.
++        Vec2 C = stroke[stroke.size() / 2];
++        float bestPerp = -1.0f;
++        for (const Vec2 p : stroke) {
++            const float t = std::clamp(dot2(p - A, chord) / chordLen2, 0.0f, 1.0f);
++            const float perp = len(p - (A + chord * t));
++            if (perp > bestPerp) {
++                bestPerp = perp;
++                C = p;
++            }
++        }
++        if (bestPerp < 0.12f * std::sqrt(chordLen2)) {
++            return false;  // near-straight: an edge/loop gesture, not a face
++        }
++        const Vec2 ca = A - C;
++        const Vec2 cb = B - C;
++        const float la = len(ca);
++        const float lb = len(cb);
++        if (la < 1e-6f || lb < 1e-6f) {
++            return false;
++        }
++        const float cosC = dot2(ca, cb) / (la * lb);
++        if (cosC > -0.5f) {  // sharp ~60-120 degrees: two sides of a rectangle -> quad
++            const Vec2 Cs = snapInferred(C);
++            // Prefer the edge-walked shared corner (guaranteed on the existing
++            // grid -> uniform); fall back to the snapped parallelogram estimate
++            // when the endpoints share no such neighbour (filling empty space).
++            Vec2 D;
++            if (const std::optional<VertexId> shared =
++                    sharedCornerOppositeBend(proj, *a, *b, A, B, Cs)) {
++                D = proj->screen(*shared);
++            } else {
++                D = snapInferred(A + B - Cs);
++            }
++            ring = {A, Cs, B, D};
++            action = InterpretedAction::CreateQuad;
++        } else if (cosC > -0.94f) {  // gentle ~120-160 degrees: two sides of a triangle
++            ring = {A, snapInferred(C), B};
++            action = InterpretedAction::CreateTriangle;
++        } else {
++            return false;  // near-straight (>160 degrees): no face
++        }
 +    }
 +    // Reject a self-intersecting (bow-tie / dart) ring: a snapped corner that
 +    // still folds the quad would build a malformed face — better to create
@@ -241,7 +251,7 @@ index c1b4780..260dcaa 100644
  }  // namespace interp_detail
  
  // Resolves the stroke against the EditMesh. `mesh`/`viewProj` may be null:
-@@ -1192,6 +1383,12 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
+@@ -1192,6 +1393,12 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
          out.context = UnderStroke::EmptySurface;
      }
  
