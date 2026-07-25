@@ -1,0 +1,162 @@
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index 3f59eda..2765f57 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -1709,6 +1709,36 @@ CyberStatus cyber_retopo_build_face(CyberMesh* mesh, size_t count,
+                 }
+             }
+         }
++        // No stacking a face on an existing one (change add-context-aware-create-
++        // face): when every ring slot reuses an existing vertex, reject if a live
++        // face already bounds exactly that vertex set (order-independent). A ring
++        // with any new vertex cannot duplicate an existing face.
++        bool allExisting = true;
++        for (size_t i = 0; i < count; ++i) {
++            if (vertex_ids[i] == CYBER_BUILD_NEW_VERTEX) {
++                allExisting = false;
++                break;
++            }
++        }
++        if (allExisting) {
++            std::unordered_set<std::uint32_t> want(vertex_ids, vertex_ids + count);
++            for (const cyber::FaceId f :
++                 mesh->mesh.vertexFaces(cyber::VertexId{vertex_ids[0]})) {
++                const std::vector<cyber::VertexId> fv = mesh->mesh.faceVertices(f);
++                if (fv.size() != count) {
++                    continue;
++                }
++                std::unordered_set<std::uint32_t> have;
++                for (const cyber::VertexId v : fv) {
++                    have.insert(v.value);
++                }
++                if (have == want) {
++                    setError(
++                        "cyber_retopo_build_face: a face with these vertices already exists");
++                    return CYBER_ERR_INVALID_ARG;
++                }
++            }
++        }
+         // Materialize the ring; on an addFace rejection remove exactly the
+         // vertices this call created (existing topology stays untouched).
+         std::vector<cyber::VertexId> ring;
+diff --git a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+index c1b4780..410dd50 100644
+--- a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
++++ b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+@@ -1140,6 +1140,103 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
+     return refs;
+ }
+ 
++// Context-aware open-stroke face creation (change add-context-aware-create-face).
++// An OPEN stroke whose two endpoints snap to existing vertices A, B is a hand
++// filling a face against adjacent topology. It is read by the sharpness of its
++// dominant bend C: a sharp (~90 degrees) corner traces two sides of a rectangle
++// -> QUAD [A, C, B, A+B-C] (the 4th corner completes the parallelogram, welding
++// to a vertex there if one exists); a gentle bend traces two sides of a triangle
++// -> TRIANGLE [A, C, B]; near-straight stays an edge/loop gesture -> no face.
++// Never creates over an existing face. On success it sets out.shape.corners to
++// the ring (un-aspect-corrected, like the closed path) and adds the create
++// candidate first. Returns whether it fired.
++inline bool tryOpenStrokeCreateFace(StrokeInterpretation& out, const ScreenProjection* proj,
++                                    const ShapeParams& shapeParams,
++                                    const ContextParams& contextParams) {
++    if (proj == nullptr) {
++        return false;
++    }
++    // Only OPEN strokes that made no face otherwise (a closed loop already
++    // creates; grids/scribbles/crosses claimed their shapes above).
++    const StrokeShape s = out.shape.shape;
++    if (s != StrokeShape::Line && s != StrokeShape::Unknown) {
++        return false;
++    }
++    const std::vector<Vec2>& stroke = out.shape.resampled;
++    if (stroke.size() < 3) {
++        return false;
++    }
++    // Both endpoints must snap to distinct existing vertices.
++    const std::optional<VertexId> a =
++        proj->nearestVertex(stroke.front(), contextParams.vertexRadius);
++    const std::optional<VertexId> b =
++        proj->nearestVertex(stroke.back(), contextParams.vertexRadius);
++    if (!a || !b || *a == *b) {
++        return false;
++    }
++    const Vec2 A = proj->screen(*a);
++    const Vec2 B = proj->screen(*b);
++    const Vec2 chord = B - A;
++    const float chordLen2 = length2(chord);
++    if (chordLen2 < 1e-8f) {
++        return false;
++    }
++    // Dominant bend C: the stroke sample of maximum perpendicular distance from
++    // the A-B chord (robust for an L).
++    Vec2 C = stroke[stroke.size() / 2];
++    float bestPerp = -1.0f;
++    for (const Vec2 p : stroke) {
++        const float t = std::clamp(dot2(p - A, chord) / chordLen2, 0.0f, 1.0f);
++        const float perp = len(p - (A + chord * t));
++        if (perp > bestPerp) {
++            bestPerp = perp;
++            C = p;
++        }
++    }
++    // Near-straight (no real bend) is an edge/loop gesture, not a face.
++    if (bestPerp < 0.12f * std::sqrt(chordLen2)) {
++        return false;
++    }
++    // Classify by the interior angle at C.
++    const Vec2 ca = A - C;
++    const Vec2 cb = B - C;
++    const float la = len(ca);
++    const float lb = len(cb);
++    if (la < 1e-6f || lb < 1e-6f) {
++        return false;
++    }
++    const float cosC = dot2(ca, cb) / (la * lb);
++    std::vector<Vec2> ring;
++    InterpretedAction action;
++    if (cosC > -0.5f) {  // sharp ~60-120 degrees: two sides of a rectangle -> quad
++        ring = {A, C, B, A + B - C};
++        action = InterpretedAction::CreateQuad;
++    } else if (cosC > -0.94f) {  // gentle ~120-160 degrees: two sides of a triangle
++        ring = {A, C, B};
++        action = InterpretedAction::CreateTriangle;
++    } else {
++        return false;  // near-straight (>160 degrees): no face
++    }
++    // Never create a face over an existing one.
++    Vec2 centroid{0.0f, 0.0f};
++    for (const Vec2 p : ring) {
++        centroid = centroid + p;
++    }
++    centroid = centroid * (1.0f / static_cast<float>(ring.size()));
++    if (proj->faceContaining(centroid)) {
++        return false;
++    }
++    // Report corners un-aspect-corrected (matching the closed-stroke path).
++    const float invAspect = shapeParams.aspect > 0.0f ? 1.0f / shapeParams.aspect : 1.0f;
++    for (Vec2& c : ring) {
++        c.x *= invAspect;
++    }
++    out.shape.corners = ring;
++    addCandidate(out, action, 0.85f,
++                 {{ElementRef::Kind::Vertex, a->value}, {ElementRef::Kind::Vertex, b->value}});
++    return true;
++}
++
+ }  // namespace interp_detail
+ 
+ // Resolves the stroke against the EditMesh. `mesh`/`viewProj` may be null:
+@@ -1192,6 +1289,12 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
+         out.context = UnderStroke::EmptySurface;
+     }
+ 
++    // Context-aware open-stroke face creation (change add-context-aware-create-
++    // face): an open stroke between two vertices makes a welded quad/triangle.
++    // If it fires, its create candidate leads; the switch below still runs so a
++    // Line keeps its insert-loop alternative.
++    tryOpenStrokeCreateFace(out, proj, shapeParams, contextParams);
++
+     const float shapeConf = out.shape.confidence;
+     switch (out.shape.shape) {
+         case StrokeShape::HoldPoint: {

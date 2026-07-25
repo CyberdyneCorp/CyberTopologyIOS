@@ -41,6 +41,12 @@
 #         C API (guides ride the mesh handle; cyber_remesh reads + honours
 #         them, forcing the field-aligned path). Phase 5 (add-weave-guide-
 #         field-steering). TODO(upstream): PR the cross-field constraint input.
+#   0004  cybertopology context-aware create-face: interpretStroke recognizes an
+#         OPEN stroke between two existing vertices as a welded quad (sharp bend
+#         -> [A,C,B,A+B-C]) or triangle (gentle bend -> [A,C,B]), snapping the
+#         endpoints to the vertices; plus a duplicate-face guard in
+#         cyber_retopo_build_face that rejects a ring already bounding a live
+#         face. stroke_interpreter.hpp + capi. TODO(upstream): PR both.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
