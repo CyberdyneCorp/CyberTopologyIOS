@@ -45,4 +45,5 @@
 ## 6. Validation
 
 - [x] 6.1 `openspec validate add-guide-stroke-authoring --strict`.
-- [x] 6.2 Full suite green on simulator (743). Device run pending an unlocked iPad.
+- [x] 6.2 Full suite green on simulator (743); the 8 guide tests (capture + Metal
+      line render) also green on the iPad, including the amber-line render on device.
