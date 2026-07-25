@@ -45,4 +45,4 @@
 ## 6. Validation
 
 - [x] 6.1 `openspec validate add-context-aware-create-face --strict`.
-- [x] 6.2 Full suite green on simulator (748 app-hosted, 302 tool-hosted). Device run pending.
+- [x] 6.2 Full suite green on simulator (748 app-hosted, 302 tool-hosted). The 5 context-aware tests also pass on the iPad.
