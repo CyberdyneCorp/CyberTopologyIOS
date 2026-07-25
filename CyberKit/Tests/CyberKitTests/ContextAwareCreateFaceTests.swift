@@ -77,7 +77,7 @@ struct ContextAwareCreateFaceTests {
         )
     }
 
-    @Test("An L-shaped stroke between two vertices makes a quad")
+    @Test("An L-shaped stroke between two vertices makes a quad snapped to the grid")
     func sharpBendMakesQuad() throws {
         let m = try gridEmptyTopRight()
         // L around the empty top-right cell: v7(1,2) → v8(2,2) → v5(2,1).
@@ -85,6 +85,16 @@ struct ContextAwareCreateFaceTests {
         #expect(result.best?.action == .createQuad,
             "sharp L between two verts should be a quad, got \(String(describing: result.best?.action))")
         #expect(result.quadCorners.count == 4)
+        // All four corners snap to the empty cell's grid vertices — the bend
+        // (v8), the two endpoints (v7, v5), AND the inferred 4th corner (v4),
+        // so the quad is uniform with its neighbours (no floating corner).
+        let want = [screen(1, 2), screen(2, 2), screen(2, 1), screen(1, 1)]
+        for expected in want {
+            let hit = result.quadCorners.contains { c in
+                abs(Double(c.x) - expected.x) < 0.02 && abs(Double(c.y) - expected.y) < 0.02
+            }
+            #expect(hit, "a corner should snap to grid vertex \(expected); got \(result.quadCorners)")
+        }
     }
 
     /// A bend point PERPENDICULAR to the v7–v5 chord by `offset` (screen units).

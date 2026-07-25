@@ -40,10 +40,10 @@ index 3f59eda..2765f57 100644
          // vertices this call created (existing topology stays untouched).
          std::vector<cyber::VertexId> ring;
 diff --git a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
-index c1b4780..410dd50 100644
+index c1b4780..546ccd4 100644
 --- a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
 +++ b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
-@@ -1140,6 +1140,103 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
+@@ -1140,6 +1140,134 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
      return refs;
  }
  
@@ -113,16 +113,47 @@ index c1b4780..410dd50 100644
 +        return false;
 +    }
 +    const float cosC = dot2(ca, cb) / (la * lb);
++    // Snap the INFERRED corners (the bend and the completed 4th corner) to a
++    // nearby existing vertex so the face conforms to the existing grid rather
++    // than inventing a skewed corner — this is what keeps hand-filled quads
++    // uniform for animation/sculpting. More generous than the endpoint radius
++    // because the completion is only an estimate. A and B already sit on
++    // vertices, so they are left alone.
++    const float inferRadius = contextParams.vertexRadius * 1.6f;
++    const auto snapInferred = [&](Vec2 corner) -> Vec2 {
++        if (const std::optional<VertexId> v = proj->nearestVertex(corner, inferRadius)) {
++            return proj->screen(*v);
++        }
++        return corner;
++    };
 +    std::vector<Vec2> ring;
 +    InterpretedAction action;
 +    if (cosC > -0.5f) {  // sharp ~60-120 degrees: two sides of a rectangle -> quad
-+        ring = {A, C, B, A + B - C};
++        const Vec2 Cs = snapInferred(C);
++        const Vec2 D = snapInferred(A + B - Cs);  // parallelogram 4th corner, snapped
++        ring = {A, Cs, B, D};
 +        action = InterpretedAction::CreateQuad;
 +    } else if (cosC > -0.94f) {  // gentle ~120-160 degrees: two sides of a triangle
-+        ring = {A, C, B};
++        ring = {A, snapInferred(C), B};
 +        action = InterpretedAction::CreateTriangle;
 +    } else {
 +        return false;  // near-straight (>160 degrees): no face
++    }
++    // Reject a self-intersecting (bow-tie / dart) ring: a snapped corner that
++    // still folds the quad would build a malformed face — better to create
++    // nothing than a bad quad.
++    if (ring.size() == 4 &&
++        (segmentsCross(ring[0], ring[1], ring[2], ring[3]) ||
++         segmentsCross(ring[1], ring[2], ring[3], ring[0]))) {
++        return false;
++    }
++    // Corners that collapsed onto the same point after snapping are degenerate.
++    for (std::size_t i = 0; i < ring.size(); ++i) {
++        for (std::size_t j = i + 1; j < ring.size(); ++j) {
++            if (length2(ring[i] - ring[j]) < 1e-8f) {
++                return false;
++            }
++        }
 +    }
 +    // Never create a face over an existing one.
 +    Vec2 centroid{0.0f, 0.0f};
@@ -147,7 +178,7 @@ index c1b4780..410dd50 100644
  }  // namespace interp_detail
  
  // Resolves the stroke against the EditMesh. `mesh`/`viewProj` may be null:
-@@ -1192,6 +1289,12 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
+@@ -1192,6 +1320,12 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
          out.context = UnderStroke::EmptySurface;
      }
  
