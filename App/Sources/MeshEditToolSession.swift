@@ -26,6 +26,11 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
     /// Pin Flip (task 4.3): flips pins per vertex, per swept run, or —
     /// on a HOLD over an interior edge — for the whole edge loop.
     case pinFlip
+    /// Guide (add-guide-stroke-authoring): a stroke on the Target is captured
+    /// as a world-space guide polyline that steers the next Auto-Retopo's edge
+    /// flow. Needs only a Target (no EditMesh) and journals nothing — guides are
+    /// authoring hints, not document edits.
+    case guide
 
     /// Camera-as-manipulator tools: a selection stroke arms a session,
     /// then the CAMERA is the manipulator until commit/cancel. Draw Strip
@@ -36,7 +41,7 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
         case .patchClone, .extendBoundary, .transformVertices:
             return true
         case .buildQuad, .buildTriangle, .mergePair, .pathDistribute,
-            .surfaceCut, .drawStrip, .pinFlip:
+            .surfaceCut, .drawStrip, .pinFlip, .guide:
             return false
         }
     }
@@ -115,7 +120,28 @@ extension MeshEditController {
             applyDrawStrip(stroke, samples: samples)
         case .pinFlip:
             commitPinFlipStroke(stroke, samples: samples)
+        case .guide:
+            commitGuideStroke(stroke, samples: samples)
         }
+    }
+
+    /// Guide capture (add-guide-stroke-authoring): raycast each sample onto the
+    /// Target into a world-space polyline and store it as a steering guide.
+    /// Journals nothing — guides are authoring hints, not document edits.
+    private func commitGuideStroke(_ stroke: ToolStroke, samples: [StrokeSample]) {
+        let context = stroke.context
+        var polyline: [SIMD3<Float>] = []
+        for sample in samples {
+            if let hit = surfacePoint(at: point(of: sample), in: context) {
+                // Skip near-duplicate points so a slow stroke doesn't pile up
+                // coincident samples (which carry no direction).
+                if let last = polyline.last, simd_distance(last, hit) < context.sceneRadius * 1e-3 {
+                    continue
+                }
+                polyline.append(hit)
+            }
+        }
+        appendGuide(polyline)
     }
 
     // MARK: - Build Quad / Build Triangle (drag from existing topology)
@@ -463,6 +489,8 @@ extension MeshEditController {
             probeTransformVertices(vertices: vertices, context: context)
         case .pinFlip:
             probePinLoopHold(vertices: vertices, context: context)
+        case .guide:
+            break  // guide capture has no screenshot probe
         }
         return lastCommit != nil
     }

@@ -321,6 +321,31 @@ final class MeshEditController {
     /// stroke end, so cancellation just drops this state.
     var toolStroke: ToolStroke?
 
+    /// Authored guide strokes (add-guide-stroke-authoring): world-space
+    /// polylines on the Target that steer the next Auto-Retopo's edge flow.
+    /// Session state — not journaled, not persisted. The Guide tool appends
+    /// here on stroke end; the viewport renders them and Auto-Retopo consumes
+    /// them.
+    private(set) var authoredGuides: [[SIMD3<Float>]] = []
+    /// Fired whenever `authoredGuides` changes, so the coordinator can refresh
+    /// the guide-line overlay.
+    var onGuidesChanged: (() -> Void)?
+
+    /// Removes every authored guide.
+    func clearGuides() {
+        guard !authoredGuides.isEmpty else { return }
+        authoredGuides.removeAll()
+        onGuidesChanged?()
+    }
+
+    /// Appends a captured world-space guide polyline (empty polylines — a
+    /// stroke that missed the Target — are ignored).
+    func appendGuide(_ polyline: [SIMD3<Float>]) {
+        guard polyline.count >= 2 else { return }
+        authoredGuides.append(polyline)
+        onGuidesChanged?()
+    }
+
     // MARK: - Camera-as-manipulator sessions (task 4.2)
 
     /// Active camera-as-manipulator session (Patch Clone / Extend
@@ -398,12 +423,18 @@ final class MeshEditController {
             // act on the document state and camera it started over. Tools
             // need an existing EditMesh and a Target to unproject onto;
             // without either the stroke stays inert.
-            if let tool = activeTool,
-                tool.isCameraManipulator || allowsStrokeAgainstLiveMesh(),
-                let context = contextProvider?(),
-                context.editObject != nil, context.editMesh != nil,
-                context.editPayload != nil, context.snapper != nil {
-                toolStroke = ToolStroke(tool: tool, context: context)
+            if let tool = activeTool, let context = contextProvider?() {
+                if tool == .guide {
+                    // Guide capture (add-guide-stroke-authoring) needs only a
+                    // Target to raycast onto — no EditMesh.
+                    if context.snapper != nil {
+                        toolStroke = ToolStroke(tool: tool, context: context)
+                    }
+                } else if tool.isCameraManipulator || allowsStrokeAgainstLiveMesh(),
+                    context.editObject != nil, context.editMesh != nil,
+                    context.editPayload != nil, context.snapper != nil {
+                    toolStroke = ToolStroke(tool: tool, context: context)
+                }
             }
             return  // interpreted (grammar) or committed (tool) at stroke end
         }

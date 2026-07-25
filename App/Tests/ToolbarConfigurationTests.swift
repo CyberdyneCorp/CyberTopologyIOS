@@ -243,16 +243,18 @@ struct ToolbarConfigurationTests {
     }
 
     @Test func toolActionsMapBothWaysAndOnlyTools() {
-        // Task 4.1: exactly the five build tools are tool actions, each
-        // mapping 1:1 onto its RetopoTool; verbs and gesture entries carry
-        // no tool.
-        for tool in RetopoTool.allCases {
+        // Task 4.1: the toolbar-slot tools each map 1:1 onto their RetopoTool;
+        // verbs and gesture entries carry no tool. Guide (add-guide-stroke-
+        // authoring) is menu-driven, not a toolbar-slot tool, so it has no
+        // EditorAction and is exempt.
+        let slotTools = RetopoTool.allCases.filter { $0 != .guide }
+        for tool in slotTools {
             let action = EditorAction(rawValue: tool.rawValue)
             #expect(action?.tool == tool, "\(tool.rawValue) needs a matching action")
             #expect(action?.verb == nil)
         }
         let toolActions = EditorAction.allCases.filter { $0.tool != nil }
-        #expect(toolActions.count == RetopoTool.allCases.count)
+        #expect(toolActions.count == slotTools.count)
         #expect(EditorAction.pencil.tool == nil)
         #expect(EditorAction.loopInsert.tool == nil)
     }

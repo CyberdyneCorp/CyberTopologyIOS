@@ -255,6 +255,31 @@ struct DocumentEditorView: View {
             .accessibilityIdentifier("auto-retopo-menu")
             .disabled(!document.bundle.manifest.objects.contains { $0.role == .target })
 
+            // Guide authoring (add-guide-stroke-authoring): draw strokes on the
+            // Target that steer the next Auto-Retopo's edge flow.
+            Menu {
+                Button {
+                    if inputModel.isGuideMode {
+                        inputModel.selectVerb(.pencil)  // exit guide mode
+                    } else {
+                        inputModel.armGuideMode()
+                    }
+                } label: {
+                    Label(
+                        inputModel.isGuideMode ? "Stop Drawing Guides" : "Draw Guides",
+                        systemImage: inputModel.isGuideMode ? "pencil.slash" : "pencil.and.scribble"
+                    )
+                }
+                .accessibilityIdentifier("guide-draw-toggle")
+                Button("Clear Guides", role: .destructive) { inputModel.clearGuides() }
+                    .accessibilityIdentifier("guide-clear")
+                    .disabled(inputModel.authoredGuides.isEmpty)
+            } label: {
+                Label("Guides", systemImage: "scribble.variable")
+            }
+            .accessibilityIdentifier("guides-menu")
+            .disabled(!document.bundle.manifest.objects.contains { $0.role == .target })
+
             Button("Save Version") {
                 versionName = ""
                 showingSaveVersion = true

@@ -55,9 +55,12 @@ extension MetalViewport.Coordinator {
         let targetData: Data
         do { targetData = try target.payloadData() } catch { return false }
 
-        // Honour the document's active symmetry: a symmetric document yields a
-        // symmetric retopology (the solver clips + mirrors about the plane).
-        let constraints = WeaveConstraints(symmetry: bundleProvider?().manifest.symmetry)
+        // Honour the document's active symmetry (clip + mirror about the plane)
+        // and any authored guide strokes (steer the cross field toward them).
+        let constraints = WeaveConstraints(
+            guideStrokes: meshEditor.authoredGuides.map { GuideStroke(points: $0) },
+            symmetry: bundleProvider?().manifest.symmetry
+        )
 
         inputModel.autoRetopoSolving = true
         defer { inputModel.autoRetopoSolving = false }

@@ -362,6 +362,21 @@ final class ViewportInputModel {
         meshEditor?.activeTool = tool
     }
 
+    // MARK: - Guide authoring (add-guide-stroke-authoring)
+
+    /// True while the Guide tool is armed (strokes on the Target become guides).
+    var isGuideMode: Bool { activeTool == .guide }
+
+    /// Arms guide authoring; strokes on the Target are captured as steering
+    /// guides until a verb or another tool is selected.
+    func armGuideMode() { selectTool(.guide) }
+
+    /// Removes every authored guide.
+    func clearGuides() { meshEditor?.clearGuides() }
+
+    /// The authored guide polylines (for the overlay + Auto-Retopo).
+    var authoredGuides: [[SIMD3<Float>]] { meshEditor?.authoredGuides ?? [] }
+
     // MARK: - Annotations: pins, loop-tag colours, Loop Info (task 4.3)
 
     /// Palette index new loop tags are authored in (spec: "Users SHALL

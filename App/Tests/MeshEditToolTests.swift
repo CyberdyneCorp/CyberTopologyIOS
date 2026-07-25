@@ -616,9 +616,11 @@ extension MeshEditToolTests {
     }
 
     /// The visual-verification probes drive REAL journaled strokes for
-    /// every tool (the screenshot hooks' entry point).
+    /// every tool (the screenshot hooks' entry point). Guide (add-guide-stroke-
+    /// authoring) is exempt: it captures steering hints, not document edits, so
+    /// it journals nothing and has no screenshot probe.
     @Test func visualVerificationProbesJournalEveryTool() throws {
-        for tool in RetopoTool.allCases {
+        for tool in RetopoTool.allCases where tool != .guide {
             let harness = try makeSeededHarness()
             let editor = try #require(harness.coordinator.inputModel.meshEditor)
             #expect(

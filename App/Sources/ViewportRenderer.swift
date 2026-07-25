@@ -57,6 +57,8 @@ final class ViewportRenderer: NSObject {
     /// offset, and it carries its OWN buffer pool, so the overlay's
     /// per-frame upload invariant is untouched.
     let editMeshFillPath: GhostRenderPath
+    /// Amber world-space guide-line overlay (add-guide-stroke-authoring).
+    let guideLinePath: GuideLineRenderPath
     /// Render-time probe over every submitted frame (perf harness).
     let frameProbe = FrameTimeProbe()
 
@@ -79,6 +81,7 @@ final class ViewportRenderer: NSObject {
     var hasMesh: Bool { renderPath.hasGeometry }
     var hasOverlay: Bool { overlayPath.hasGeometry }
     var hasGhost: Bool { ghostPath.hasGeometry }
+    var hasGuideLines: Bool { guideLinePath.hasGeometry }
     var hasHoverGhost: Bool { hoverGhostPath.hasGeometry }
     /// Whether a subdivision preview surface is currently loaded (task 4.6).
     var hasSubdivisionPreview: Bool { subdivisionPreviewPath.hasGeometry }
@@ -302,10 +305,14 @@ final class ViewportRenderer: NSObject {
             device: device, commandQueue: queue,
             preferPrivateStorage: pool.usesPrivateStorage
         )
+        let guideLines = GuideLineRenderPath(
+            device: device, commandQueue: queue,
+            preferPrivateStorage: pool.usesPrivateStorage
+        )
 
         guard
             let path, let overlay, let ghost, let hoverGhost, let subdivisionPreview,
-            let editMeshFill,
+            let editMeshFill, let guideLines,
             let depth = device.makeDepthStencilState(descriptor: depthDescriptor)
         else { return nil }
 
@@ -319,6 +326,7 @@ final class ViewportRenderer: NSObject {
         self.hoverGhostPath = hoverGhost
         self.subdivisionPreviewPath = subdivisionPreview
         self.editMeshFillPath = editMeshFill
+        self.guideLinePath = guideLines
         self.depthState = depth
         super.init()
     }
@@ -623,6 +631,20 @@ final class ViewportRenderer: NSObject {
         invalidate()
     }
 
+    // MARK: - Guide-line overlay (add-guide-stroke-authoring)
+
+    /// Uploads the guide-line overlay: `positions` is x,y,z per vertex,
+    /// `indices` vertex-index PAIRS per segment. Empty clears.
+    func loadGuideLines(positions: [Float], indices: [UInt32]) {
+        guideLinePath.load(positions: positions, indices: indices)
+        invalidate()
+    }
+
+    func clearGuideLines() {
+        guideLinePath.clear()
+        invalidate()
+    }
+
     // MARK: - Subdivision preview (task 4.6)
 
     /// Uploads a subdivision preview surface (spec: retopology-tools /
@@ -846,7 +868,7 @@ final class ViewportRenderer: NSObject {
         }
         defer { encoder.endEncoding() }
         guard hasMesh || hasOverlay || hasGhost || hasHoverGhost || hasSubdivisionPreview
-            || hasEditMeshFill
+            || hasEditMeshFill || hasGuideLines
         else { return }
 
         let view = camera.viewMatrix()
@@ -939,6 +961,17 @@ final class ViewportRenderer: NSObject {
             ),
             animationProgress: OverlayAnimation.progress(
                 creationTime: overlayCreationTime, now: time
+            )
+        )
+
+        // Authored guide strokes (add-guide-stroke-authoring): amber lines on
+        // top of the wireframe, depth-tested onto the Target so they follow the
+        // surface as the camera orbits. Same occlusion bias as the surface
+        // overlays so they sit ON the Target instead of z-fighting it.
+        guideLinePath.encode(
+            into: encoder,
+            uniforms: GuideLineUniformsFactory.uniforms(
+                mvp: mvp, color: GuideLineRenderPath.color, depthBias: surfaceBias
             )
         )
     }

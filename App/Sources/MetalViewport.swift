@@ -431,6 +431,11 @@ struct MetalViewport: UIViewRepresentable {
             meshEditor.onDiscardLiveEdits = { [weak self] in
                 self?.reloadLiveEditMesh()
             }
+            // Authored guide strokes changed (add-guide-stroke-authoring):
+            // refresh the amber guide-line overlay.
+            meshEditor.onGuidesChanged = { [weak self] in
+                self?.syncGuideLines()
+            }
 
             // Snap feedback (task 3.7, spec scenario "Snap feedback"): the
             // Tweak/Move merge-snap pre-highlight renders through the same
@@ -994,6 +999,31 @@ struct MetalViewport: UIViewRepresentable {
             ghostPreviewObjectID = nil
             ghostPreviewPayload = nil
             renderer.clearGhost()
+        }
+
+        /// Flattens the authored guide polylines into a single position buffer
+        /// plus line-segment index pairs and hands them to the renderer's guide
+        /// overlay (add-guide-stroke-authoring).
+        func syncGuideLines() {
+            guard let renderer else { return }
+            let guides = meshEditor.authoredGuides
+            guard !guides.isEmpty else {
+                renderer.clearGuideLines()
+                return
+            }
+            var positions: [Float] = []
+            var indices: [UInt32] = []
+            for polyline in guides where polyline.count >= 2 {
+                let base = UInt32(positions.count / 3)
+                for p in polyline {
+                    positions.append(p.x); positions.append(p.y); positions.append(p.z)
+                }
+                for i in 0..<UInt32(polyline.count - 1) {
+                    indices.append(base + i)
+                    indices.append(base + i + 1)
+                }
+            }
+            renderer.loadGuideLines(positions: positions, indices: indices)
         }
 
         // MARK: - Gesture handlers
