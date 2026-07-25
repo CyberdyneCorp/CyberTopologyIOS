@@ -40,13 +40,62 @@ index 3f59eda..2765f57 100644
          // vertices this call created (existing topology stays untouched).
          std::vector<cyber::VertexId> ring;
 diff --git a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
-index c1b4780..546ccd4 100644
+index c1b4780..72e2e7e 100644
 --- a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
 +++ b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
-@@ -1140,6 +1140,134 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
+@@ -1140,6 +1140,192 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
      return refs;
  }
  
++// Edge-walking quad completion (change add-context-aware-create-face). The
++// existing vertex adjacent to BOTH endpoints (a shared grid corner) that lies on
++// the OPPOSITE side of the A-B chord from the drawn bend C — the vertex that
++// closes a hand-filled quad against the existing topology, guaranteeing a
++// uniform quad rather than a geometric guess. Among candidates it prefers the
++// one nearest the parallelogram estimate. nullopt when the endpoints share no
++// such neighbour (e.g. drawing into empty space), where the caller falls back to
++// the geometric estimate.
++inline std::optional<VertexId> sharedCornerOppositeBend(
++    const ScreenProjection* proj, VertexId a, VertexId b, Vec2 A, Vec2 B, Vec2 C) {
++    const Mesh& mesh = proj->mesh();
++    // Neighbours of A: the verts before/after A in each of A's face rings.
++    std::vector<VertexId> neigh;
++    for (const FaceId f : mesh.vertexFaces(a)) {
++        const std::vector<VertexId> fv = mesh.faceVertices(f);
++        const std::size_t n = fv.size();
++        for (std::size_t i = 0; i < n; ++i) {
++            if (fv[i] == a) {
++                neigh.push_back(fv[(i + n - 1) % n]);
++                neigh.push_back(fv[(i + 1) % n]);
++            }
++        }
++    }
++    const float sideC = cross2(B - A, C - A);
++    const Vec2 estimate = A + B - C;
++    std::optional<VertexId> best;
++    float bestDist = std::numeric_limits<float>::max();
++    for (const VertexId d : neigh) {
++        if (d == a || d == b || !proj->valid(d)) {
++            continue;
++        }
++        if (!mesh.edgeBetween(b, d).valid()) {
++            continue;  // must also be a neighbour of B (a genuine shared corner)
++        }
++        const Vec2 Ds = proj->screen(d);
++        // Must sit on the opposite side of the chord from the bend, so the quad
++        // A-C-B-D opens correctly instead of folding.
++        if ((sideC > 0.0f) == (cross2(B - A, Ds - A) > 0.0f)) {
++            continue;
++        }
++        const float dist = length2(Ds - estimate);
++        if (dist < bestDist) {
++            bestDist = dist;
++            best = d;
++        }
++    }
++    return best;
++}
++
 +// Context-aware open-stroke face creation (change add-context-aware-create-face).
 +// An OPEN stroke whose two endpoints snap to existing vertices A, B is a hand
 +// filling a face against adjacent topology. It is read by the sharpness of its
@@ -130,7 +179,16 @@ index c1b4780..546ccd4 100644
 +    InterpretedAction action;
 +    if (cosC > -0.5f) {  // sharp ~60-120 degrees: two sides of a rectangle -> quad
 +        const Vec2 Cs = snapInferred(C);
-+        const Vec2 D = snapInferred(A + B - Cs);  // parallelogram 4th corner, snapped
++        // Prefer the edge-walked shared corner (guaranteed on the existing grid
++        // -> uniform); fall back to the snapped parallelogram estimate when the
++        // endpoints share no such neighbour (filling into empty space).
++        Vec2 D;
++        if (const std::optional<VertexId> shared =
++                sharedCornerOppositeBend(proj, *a, *b, A, B, Cs)) {
++            D = proj->screen(*shared);
++        } else {
++            D = snapInferred(A + B - Cs);
++        }
 +        ring = {A, Cs, B, D};
 +        action = InterpretedAction::CreateQuad;
 +    } else if (cosC > -0.94f) {  // gentle ~120-160 degrees: two sides of a triangle
@@ -178,7 +236,7 @@ index c1b4780..546ccd4 100644
  }  // namespace interp_detail
  
  // Resolves the stroke against the EditMesh. `mesh`/`viewProj` may be null:
-@@ -1192,6 +1320,12 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
+@@ -1192,6 +1378,12 @@ inline std::vector<ElementRef> faceRefs(const std::vector<FaceId>& faces) {
          out.context = UnderStroke::EmptySurface;
      }
  

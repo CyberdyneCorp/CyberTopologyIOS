@@ -6,8 +6,13 @@
       `Unknown` when `proj` is present): snap `stroke.front()`/`stroke.back()` to
       existing vertices A, B (`nearestVertex`, `vertexRadius`); require both and A≠B.
 - [x] 1.2 Find the dominant bend C (max perpendicular deviation from the A–B chord);
-      classify by the angle at C: sharp → QUAD `[A, C, B, A+B−C]`; gentle → TRIANGLE
-      `[A, C, B]`; near-straight → no face.
+      classify by the angle at C: sharp → QUAD; gentle → TRIANGLE `[A, C, B]`;
+      near-straight → no face.
+- [x] 1.2b Quad 4th corner by EDGE-WALKING: the existing vertex neighbouring both
+      endpoints, opposite the bend (`sharedCornerOppositeBend`) — guaranteed on the
+      grid, uniform. Fall back to the snapped `A+B−C` estimate only when no such
+      shared neighbour exists. Snap the bend; reject a self-intersecting/degenerate
+      ring.
 - [x] 1.3 Suppress when the ring centroid is over a live face (`faceContaining`).
 - [x] 1.4 Set `out.shape.corners` = ring; `addCandidate(CreateQuad|CreateTriangle,
       conf, {Vertex A, Vertex B})`. Do not disturb the Line→insert-loop path.

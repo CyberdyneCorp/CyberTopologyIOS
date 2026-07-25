@@ -60,6 +60,18 @@ A/B corners exactly at the snapped vertices' screen positions; the app's existin
 world-space weld re-snaps them onto those vertices. Minimal surface, reuses the
 proven weld path. (Candidate `elements` still carry the vertex refs for provenance.)
 
+### D1b — Edge-walking completion for uniform quads
+The 4th quad corner is found by TOPOLOGY, not geometry: the existing vertex that
+neighbours BOTH endpoints A and B (a shared grid corner), on the opposite side of
+the A–B chord from the drawn bend, is the corner that closes a hand-filled quad
+against the existing cage — guaranteeing the quad reuses the grid and stays uniform
+for animation/sculpting. `sharedCornerOppositeBend` walks A's face-ring neighbours
+and keeps those that also neighbour B. The geometric parallelogram estimate
+(`A+B−C`, snapped to a nearby vertex) is only a FALLBACK for when the endpoints
+share no such neighbour (filling into empty space). The inferred bend and the
+fallback corner are both snapped to nearby vertices; a self-intersecting or
+degenerate ring is rejected rather than built.
+
 ### D2 — Bend classification, not corner counting
 Per the chosen rule: one bend whose sharpness decides quad vs triangle (a sharp
 corner traces a rectangle → complete it; a gentle bend traces a triangle). Matches

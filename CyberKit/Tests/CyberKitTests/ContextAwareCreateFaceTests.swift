@@ -105,6 +105,48 @@ struct ContextAwareCreateFaceTests {
         return SIMD2(midX + offset * 0.7071, midY - offset * 0.7071)
     }
 
+    /// The same grid but with the shared inner corner v4 pulled off the regular
+    /// lattice to (1.3, 0.8). The parallelogram estimate A+B−C would land at the
+    /// regular (1,1) spot and MISS v4, so only topological edge-walking finds it.
+    private func gridOffsetCorner() throws -> Mesh {
+        try mesh(fromOBJ: """
+        v 0 0 0
+        v 1 0 0
+        v 2 0 0
+        v 0 1 0
+        v 1.3 0.8 0
+        v 2 1 0
+        v 0 2 0
+        v 1 2 0
+        v 2 2 0
+        f 1 2 5 4
+        f 2 3 6 5
+        f 4 5 8 7
+        """)
+    }
+
+    @Test("Edge-walking finds the shared corner even off the regular lattice")
+    func edgeWalkFindsSharedCorner() throws {
+        let m = try gridOffsetCorner()
+        // Same L around the empty top-right cell; the shared corner v4 is offset.
+        let result = try interpret([screen(1, 2), screen(2, 2), screen(2, 1)], m)
+        #expect(result.best?.action == .createQuad)
+        #expect(result.quadCorners.count == 4)
+        // The 4th corner is v4 at its OFFSET position (1.3, 0.8) — found by
+        // edge-walking, not the parallelogram estimate (which points at (1,1)).
+        let v4 = screen(1.3, 0.8)
+        let hitOffset = result.quadCorners.contains { c in
+            abs(Double(c.x) - v4.x) < 0.02 && abs(Double(c.y) - v4.y) < 0.02
+        }
+        #expect(hitOffset, "4th corner should edge-walk to the offset v4 \(v4); got \(result.quadCorners)")
+        // And NOT the regular-lattice estimate (1,1).
+        let regular = screen(1, 1)
+        let hitRegular = result.quadCorners.contains { c in
+            abs(Double(c.x) - regular.x) < 0.02 && abs(Double(c.y) - regular.y) < 0.02
+        }
+        #expect(!hitRegular, "the estimate at (1,1) should not be used when the real corner is offset")
+    }
+
     @Test("A gently-bent stroke between two vertices makes a triangle")
     func gentleBendMakesTriangle() throws {
         let m = try gridEmptyTopRight()
