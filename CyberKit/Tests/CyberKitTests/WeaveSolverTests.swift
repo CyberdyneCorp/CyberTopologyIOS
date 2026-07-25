@@ -147,6 +147,13 @@ struct WeaveSolverTests {
         #expect(fractions.allSatisfy { $0 >= 0 && $0 <= 1 })
     }
 
+    @Test("targetingQuads sets the requested budget and clamps to a floor")
+    func targetingQuadsClamps() {
+        #expect(SolverParameters.targetingQuads(2500).remesh.targetQuads == 2500)
+        #expect(SolverParameters.targetingQuads(0).remesh.targetQuads == 4, "clamped to floor")
+        #expect(SolverParameters.targetingQuads(-100).remesh.targetQuads == 4)
+    }
+
     @Test("The Auto-Retopo default uses a coarse, interactive quad budget")
     func autoRetopoDefaultIsCoarse() {
         // The engine's raw default (50k quads) is far too fine for one-tap use.

@@ -150,12 +150,12 @@ final class CyberTopologyUITests: XCTestCase {
         let app = launch(arguments: [
             "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
         ])
-        let ioMenu = app.buttons["io-menu"]
-        XCTAssertTrue(ioMenu.waitForExistence(timeout: 15))
-        ioMenu.tap()
-        let autoRetopo = app.buttons["auto-retopo-medium"]
-        XCTAssertTrue(autoRetopo.waitForExistence(timeout: 5))
-        autoRetopo.tap()
+        let retopoMenu = app.buttons["auto-retopo-menu"]
+        XCTAssertTrue(retopoMenu.waitForExistence(timeout: 15))
+        retopoMenu.tap()
+        let same = app.buttons["auto-retopo-same"]
+        XCTAssertTrue(same.waitForExistence(timeout: 5))
+        same.tap()
 
         // A solving indicator shows while the off-main solve runs; the app
         // stays responsive (no freeze), then the amber proposal's accept bar

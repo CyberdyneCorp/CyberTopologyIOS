@@ -22,6 +22,8 @@ struct DocumentEditorView: View {
 
     @State private var showingSaveVersion = false
     @State private var showingViewportSettings = false
+    @State private var showingCustomRetopo = false
+    @State private var customFaceCount = ""
     @State private var versionName = ""
     @State private var importRequest = FileImportRequest()
     @State private var statusMessage: String?
@@ -137,6 +139,20 @@ struct DocumentEditorView: View {
         } message: {
             Text("Creates a named copy alongside the original document.")
         }
+        .alert("Auto-Retopo Face Count", isPresented: $showingCustomRetopo) {
+            TextField("Target quad count", text: $customFaceCount)
+                .keyboardType(.numberPad)
+                .accessibilityIdentifier("auto-retopo-custom-field")
+            Button("Retopologize") {
+                if let n = Int(customFaceCount), n > 0 {
+                    inputModel.requestAutoRetopo(density: .targetingQuads(n))
+                }
+            }
+            .accessibilityIdentifier("auto-retopo-custom-run")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The number of quads the retopologized cage should aim for.")
+        }
         .fileImporter(
             isPresented: $importRequest.isPresented,
             allowedContentTypes: [.wavefrontOBJ, .fbx]
@@ -211,24 +227,33 @@ struct DocumentEditorView: View {
                 Button("Export EditMeshes") { exportNow() }
                     .accessibilityIdentifier("export-editmeshes")
                     .disabled(!document.bundle.manifest.objects.contains { $0.role == .editMesh })
-                Divider()
-                // Phase 5 (spec: weave-solver): propose a quad retopology of the
-                // Target at a chosen density (Coarse / Medium / Fine). Honours the
-                // document's active symmetry. Needs a Target to solve over.
-                let hasTarget = document.bundle.manifest.objects.contains { $0.role == .target }
-                Button("Auto-Retopo (Coarse)") { inputModel.requestAutoRetopo(density: .coarse) }
-                    .accessibilityIdentifier("auto-retopo-coarse")
-                    .disabled(!hasTarget)
-                Button("Auto-Retopo (Medium)") { inputModel.requestAutoRetopo(density: .medium) }
-                    .accessibilityIdentifier("auto-retopo-medium")
-                    .disabled(!hasTarget)
-                Button("Auto-Retopo (Fine)") { inputModel.requestAutoRetopo(density: .fine) }
-                    .accessibilityIdentifier("auto-retopo-fine")
-                    .disabled(!hasTarget)
             } label: {
                 Label("Import/Export", systemImage: "square.and.arrow.down.on.square")
             }
             .accessibilityIdentifier("io-menu")
+
+            // Phase 5 (spec: weave-solver): its own Auto-Retopo control. The
+            // quad budget is chosen RELATIVE to the Target's face count — Same /
+            // Double / Half — or a custom count. Honours the document's active
+            // symmetry. Disabled without a Target to solve over.
+            Menu {
+                Button("Same as Target") { runAutoRetopo(factor: 1) }
+                    .accessibilityIdentifier("auto-retopo-same")
+                Button("Double") { runAutoRetopo(factor: 2) }
+                    .accessibilityIdentifier("auto-retopo-double")
+                Button("Half") { runAutoRetopo(factor: 0.5) }
+                    .accessibilityIdentifier("auto-retopo-half")
+                Divider()
+                Button("Custom…") {
+                    customFaceCount = String(targetFaceCount ?? 1000)
+                    showingCustomRetopo = true
+                }
+                .accessibilityIdentifier("auto-retopo-custom")
+            } label: {
+                Label("Auto-Retopo", systemImage: "square.grid.3x3.square")
+            }
+            .accessibilityIdentifier("auto-retopo-menu")
+            .disabled(!document.bundle.manifest.objects.contains { $0.role == .target })
 
             Button("Save Version") {
                 versionName = ""
@@ -748,6 +773,22 @@ struct DocumentEditorView: View {
         } catch {
             assertionFailure("save new version failed: \(error)")
         }
+    }
+
+    /// The Target's current face count, or nil when there is no Target.
+    private var targetFaceCount: Int? {
+        document.bundle.manifest.objects.first { $0.role == .target }?.counts?.faces
+    }
+
+    /// Runs Auto-Retopo at a quad budget `factor` × the Target's face count
+    /// (Same = 1, Double = 2, Half = 0.5). Falls back to the Medium default
+    /// when the Target has no recorded face count.
+    private func runAutoRetopo(factor: Double) {
+        guard let faces = targetFaceCount, faces > 0 else {
+            inputModel.requestAutoRetopo()
+            return
+        }
+        inputModel.requestAutoRetopo(density: .targetingQuads(Int(Double(faces) * factor)))
     }
 
     /// Forces an autosave when the app is backgrounded (spec: document-model /

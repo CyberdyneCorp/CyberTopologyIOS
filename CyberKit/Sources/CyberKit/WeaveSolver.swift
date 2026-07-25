@@ -95,6 +95,14 @@ public struct SolverParameters: Equatable, Sendable {
     public static var medium: SolverParameters { withTargetQuads(1500) }
     public static var fine: SolverParameters { withTargetQuads(4000) }
 
+    /// Parameters targeting a specific output quad budget (clamped to a sane
+    /// floor so a stray value cannot request zero/negative quads). Used by the
+    /// Auto-Retopo face-count options (Same / Double / Half / Custom relative to
+    /// the Target).
+    public static func targetingQuads(_ count: Int) -> SolverParameters {
+        withTargetQuads(max(4, count))
+    }
+
     private static func withTargetQuads(_ count: Int) -> SolverParameters {
         var params = SolverParameters()
         params.remesh.targetQuads = count
