@@ -183,6 +183,15 @@ struct MetalViewport: UIViewRepresentable {
         private var targetObjectID: UUID?
         private var targetMesh: Mesh?
         private(set) var targetSnapper: SurfaceSnapper?
+        /// Pending Auto-Retopo ghost (Phase 5, add-weave-solver-pipeline): the
+        /// proposed EditMesh from a Weave solve, held until the user accepts
+        /// (commits it as the EditMesh) or discards it. nil = nothing pending.
+        /// Mutated only through `beginAutoRetopo`/`acceptAutoRetopo`/
+        /// `discardAutoRetopo` (in AutoRetopoSession.swift).
+        var autoRetopoGhost: SolverGhost?
+        /// The Weave solver backend — the engine auto-remesher now, the
+        /// constraint-aware solver later. `var` so tests can inject a stub.
+        var weaveSolver: WeaveSolving = EngineRemeshSolver()
         /// Verb layer (task 3.3): applies the five verbs to the live mesh
         /// and journals every mutation through `onCommit`.
         let meshEditor = MeshEditController()

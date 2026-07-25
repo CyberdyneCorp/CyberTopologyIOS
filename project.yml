@@ -113,6 +113,9 @@ targets:
       - path: CyberKit/Tests/CyberKitTests/BatchOpsTests.swift
       - path: CyberKit/Tests/CyberKitTests/SubdivisionPreviewTests.swift
       - path: CyberKit/Tests/CyberKitTests/MeshEditingTests.swift
+      # Weave solver session (Phase 5): public-API + inline fixtures, so it runs
+      # on device too (the auto-remesh backend + determinism verified on iPad).
+      - path: CyberKit/Tests/CyberKitTests/WeaveSolverTests.swift
       # Mesh fixtures the integration tests import, bundled into the test
       # target so they load on a physical device too (a #filePath / absolute
       # Mac path only resolves on the simulator's shared filesystem). This

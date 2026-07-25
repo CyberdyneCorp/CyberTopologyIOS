@@ -40,6 +40,18 @@ extension DocumentBundle {
             )
         }
         let mesh = try format.loadMesh(at: url)
+        return try objectCommand(for: mesh, name: name, role: role, verb: "import.replace")
+    }
+
+    /// Packages an IN-MEMORY mesh as a journaled create-or-replace command for
+    /// an object of `role` — the same single-instance semantics as
+    /// `importCommand`, but from a mesh the caller already holds (e.g. the
+    /// accepted Auto-Retopo ghost) rather than a file. The caller records the
+    /// returned command in the journal and applies it; nothing is mutated here.
+    public func objectCommand(
+        for mesh: Mesh, name: String, role: DocumentManifest.Object.Role,
+        verb: String = "object.replace"
+    ) throws -> DocumentCommand {
         let id = UUID()
         let object = DocumentManifest.Object(
             id: id,
@@ -49,12 +61,11 @@ extension DocumentBundle {
             counts: .init(vertices: mesh.vertexCount, faces: mesh.faceCount)
         )
         let add = DocumentCommand.addObject(object: object, payload: try mesh.payloadData())
-        // Single-instance import: an existing object of the SAME role is
-        // replaced, not stacked. The remove + add land as one undoable step,
-        // so a single undo restores the previous object exactly. Importing
-        // into an empty slot is a plain add.
+        // Single-instance: an existing object of the SAME role is replaced, not
+        // stacked. Remove + add land as one undoable step, so a single undo
+        // restores the previous object exactly. An empty slot is a plain add.
         if let existing = removeObjectCommand(role: role) {
-            return .compound(verb: "import.replace", commands: [existing, add])
+            return .compound(verb: verb, commands: [existing, add])
         }
         return add
     }
