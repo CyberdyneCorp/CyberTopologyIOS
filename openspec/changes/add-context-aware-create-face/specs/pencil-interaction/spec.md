@@ -5,13 +5,13 @@ Adds context-aware face creation from open strokes and a no-overlap rule.
 ## ADDED Requirements
 
 ### Requirement: Open strokes between two vertices create welded faces
-When an open Pencil stroke begins and ends near existing EditMesh vertices, the
-recognizer SHALL snap those endpoints to the vertices and create a face welded to
-them, choosing the face type by the stroke's dominant bend: a sharp (~right-angle)
-bend SHALL create a QUAD that completes the traced corner into a four-sided ring, and
-a gentle bend SHALL create a TRIANGLE from the two endpoints and the bend. A
-near-straight stroke SHALL NOT create a face. The created face SHALL share the
-endpoint vertices rather than duplicating them.
+The recognizer SHALL create a welded face from an open Pencil stroke whose start and
+end lie near existing EditMesh vertices, snapping those endpoints to the vertices and
+choosing the face type by the stroke's dominant bend. A sharp (~right-angle) bend
+SHALL create a QUAD that completes the traced corner into a four-sided ring; a gentle
+bend SHALL create a TRIANGLE from the two endpoints and the bend; a near-straight
+stroke SHALL NOT create a face. The created face SHALL share the endpoint vertices
+rather than duplicating them.
 
 #### Scenario: L-shaped stroke between two vertices makes a quad
 - **WHEN** an open stroke with a sharp ~90° bend starts and ends near two existing vertices
