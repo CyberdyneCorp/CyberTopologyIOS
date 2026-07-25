@@ -43,6 +43,55 @@ struct WeaveSolverTests {
         return p
     }
 
+    /// A flat triangulated plane in z = 0 spanning [-1,1]^2 with `n` cells per
+    /// side — an unconstrained surface where the cross field has no intrinsic
+    /// curvature preference, so a guide dominates the resulting edge flow.
+    private func flatPlane(_ n: Int = 12) throws -> Mesh {
+        var obj = ""
+        for row in 0...n {
+            for col in 0...n {
+                let x = Float(col) / Float(n) * 2 - 1
+                let y = Float(row) / Float(n) * 2 - 1
+                obj += "v \(x) \(y) 0\n"
+            }
+        }
+        for row in 0..<n {
+            for col in 0..<n {
+                let a = row * (n + 1) + col + 1
+                let b = a + 1
+                let c = a + n + 2
+                let d = a + n + 1
+                obj += "f \(a) \(b) \(c)\nf \(a) \(c) \(d)\n"  // two tris per cell
+            }
+        }
+        return try mesh(fromOBJ: obj)
+    }
+
+    /// Mean 4-RoSy alignment of the mesh's in-plane edges to world direction
+    /// `g`: `cos(4·θ)` averaged over edges, where θ is the in-plane angle
+    /// between the edge and `g`. +1 when every edge runs parallel OR
+    /// perpendicular to `g` (perfect quad alignment); lower when the flow sits
+    /// at an angle to `g`.
+    private func edgeAlignment(_ m: Mesh, to g: SIMD3<Float>) -> Float {
+        let gx = g.x, gy = g.y
+        let gLen = (gx * gx + gy * gy).squareRoot()
+        let gAng = Foundation.atan2(gy / gLen, gx / gLen)
+        var sum: Float = 0
+        var count = 0
+        for e in 0..<UInt32(m.edgeCount) {
+            guard let ends = m.edgeEndpoints(of: e),
+                let a = m.vertexPosition(ends.0), let b = m.vertexPosition(ends.1)
+            else { continue }
+            let d = b - a
+            let len = (d.x * d.x + d.y * d.y).squareRoot()
+            guard len > 1e-6 else { continue }
+            let theta = Foundation.atan2(d.y / len, d.x / len) - gAng
+            sum += Foundation.cos(4 * theta)
+            count += 1
+        }
+        return count > 0 ? sum / Float(count) : 0
+    }
+
     @Test("Auto-remesh solve produces a quad ghost and never touches the source")
     func solveProducesQuadGhost() throws {
         let source = try cube()
@@ -198,6 +247,77 @@ struct WeaveSolverTests {
                 params: params(), onProgress: nil, isCancelled: { false }
             ))
             return try ghost.mesh.payloadData()
+        }
+        #expect(try payload() == payload())
+    }
+
+    // MARK: - Guide-field steering (add-weave-guide-field-steering)
+
+    /// Field-aligned params (guides only steer the field-aligned quadrangulator;
+    /// force it on both sides so the comparison isolates the guide's effect).
+    private func fieldAlignedParams() -> SolverParameters {
+        var p = SolverParameters()
+        p.remesh.targetQuads = 400
+        p.remesh.quadMethod = .fieldAligned
+        return p
+    }
+
+    @Test("A guide steers edge flow toward its direction")
+    func guideSteersFlow() throws {
+        // A guide at 30° — deliberately off the plane's axis-aligned boundary,
+        // so an unguided solve (which the boundary pulls toward the axes) does
+        // NOT already align to it, making the guide's effect measurable.
+        let g = SIMD3<Float>(Foundation.cos(0.5236), Foundation.sin(0.5236), 0)  // 30°
+
+        // Unguided baseline.
+        let unguided = try #require(try EngineRemeshSolver().solve(
+            source: try flatPlane(), region: .wholeMesh, constraints: WeaveConstraints(),
+            params: fieldAlignedParams(), onProgress: nil, isCancelled: { false }
+        ))
+        let unguidedAlign = edgeAlignment(unguided.mesh, to: g)
+
+        // Guided: guide samples marching across the plane along g.
+        var guidePoints: [SIMD3<Float>] = []
+        for i in -5...5 {
+            let t = Float(i) / 5
+            guidePoints.append(SIMD3(t, t * 0.5, 0))
+        }
+        let stroke = GuideStroke(points: guidePoints)
+        let guided = try #require(try EngineRemeshSolver().solve(
+            source: try flatPlane(), region: .wholeMesh,
+            constraints: WeaveConstraints(guideStrokes: [stroke]),
+            params: fieldAlignedParams(), onProgress: nil, isCancelled: { false }
+        ))
+        let guidedAlign = edgeAlignment(guided.mesh, to: g)
+
+        // The guided flow aligns to the guide direction more than the unguided.
+        #expect(guidedAlign > unguidedAlign,
+            "guided \(guidedAlign) should align to the guide more than unguided \(unguidedAlign)")
+    }
+
+    @Test("An empty guide set leaves the solve identical")
+    func emptyGuidesUnchanged() throws {
+        let solver = EngineRemeshSolver()
+        func payload(_ constraints: WeaveConstraints) throws -> Data {
+            try #require(try solver.solve(
+                source: try flatPlane(), region: .wholeMesh, constraints: constraints,
+                params: fieldAlignedParams(), onProgress: nil, isCancelled: { false }
+            )).mesh.payloadData()
+        }
+        // Empty guide list == no guides == the plain solve.
+        #expect(try payload(WeaveConstraints(guideStrokes: [])) == payload(WeaveConstraints()))
+    }
+
+    @Test("A guided solve is deterministic")
+    func guidedSolveIsDeterministic() throws {
+        let stroke = GuideStroke(points: [SIMD3(-1, -0.5, 0), SIMD3(1, 0.5, 0)])
+        let solver = EngineRemeshSolver()
+        func payload() throws -> Data {
+            try #require(try solver.solve(
+                source: try flatPlane(), region: .wholeMesh,
+                constraints: WeaveConstraints(guideStrokes: [stroke]),
+                params: fieldAlignedParams(), onProgress: nil, isCancelled: { false }
+            )).mesh.payloadData()
         }
         #expect(try payload() == payload())
     }

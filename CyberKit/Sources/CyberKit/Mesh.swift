@@ -86,6 +86,40 @@ public final class Mesh {
         )
     }
 
+    // MARK: - Orientation guides (add-weave-guide-field-steering)
+
+    /// Sets world-space orientation guides that steer the NEXT `remeshed(...)`
+    /// on this mesh: each `(point, direction)` biases the cross field of the
+    /// output face it lands on toward `direction`, so quad flow follows the
+    /// guides (Weave guide strokes / tagged loops). Supplying guides forces the
+    /// field-aligned quadrangulator. `points` and `directions` must be the same
+    /// length; passing empty clears the guides. This is remesh input config, not
+    /// a geometry edit — it does not change the mesh's vertices or faces.
+    public func setOrientationGuides(
+        points: [SIMD3<Float>], directions: [SIMD3<Float>]
+    ) throws {
+        precondition(points.count == directions.count, "points and directions must match")
+        guard !points.isEmpty else {
+            try check(cyber_mesh_set_orientation_guides(handle, nil, nil, 0))
+            return
+        }
+        var flatPoints = [Float]()
+        var flatDirs = [Float]()
+        flatPoints.reserveCapacity(points.count * 3)
+        flatDirs.reserveCapacity(points.count * 3)
+        for i in points.indices {
+            flatPoints.append(points[i].x); flatPoints.append(points[i].y); flatPoints.append(points[i].z)
+            flatDirs.append(directions[i].x); flatDirs.append(directions[i].y); flatDirs.append(directions[i].z)
+        }
+        try flatPoints.withUnsafeBufferPointer { pts in
+            try flatDirs.withUnsafeBufferPointer { dirs in
+                try check(cyber_mesh_set_orientation_guides(
+                    handle, pts.baseAddress, dirs.baseAddress, points.count
+                ))
+            }
+        }
+    }
+
     // MARK: - Remeshing
 
     /// Runs the automatic quad-remeshing pipeline; `self` is not modified.

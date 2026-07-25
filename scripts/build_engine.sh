@@ -33,6 +33,14 @@
 #         smooth subdivision for the preview), plus the CreateTriangle action
 #         wiring the stroke grammar needs. capi + core mesh op + commands.
 #         TODO(upstream): PR face_vertices and smoothSubdivide.
+#   0003  cybertopology weave guide-field steering: an external orientation-
+#         constraint channel into the cross-field solve (crossfield.cpp:
+#         computeCrossField gains CrossFieldConstraint pins) so Weave guide
+#         strokes / tagged loops bias quad flow, threaded through the field-
+#         aligned quadrangulator and a new cyber_mesh_set_orientation_guides
+#         C API (guides ride the mesh handle; cyber_remesh reads + honours
+#         them, forcing the field-aligned path). Phase 5 (add-weave-guide-
+#         field-steering). TODO(upstream): PR the cross-field constraint input.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

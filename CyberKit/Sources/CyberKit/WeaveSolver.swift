@@ -171,6 +171,11 @@ public struct EngineRemeshSolver: WeaveSolving {
         if let density = constraints.density {
             remeshParams.edgeScale = Self.edgeScale(for: density, base: remeshParams.edgeScale)
         }
+        // Guide strokes + tagged loops → orientation guides that steer the cross
+        // field so edge flow follows them (add-weave-guide-field-steering). Set
+        // on the source handle; the engine reads them in the remesh below.
+        let (guidePoints, guideDirs) = Self.orientationGuides(from: constraints, source: source)
+        try source.setOrientationGuides(points: guidePoints, directions: guideDirs)
         // `withoutActuallyEscaping`: the engine invokes `isCancelled`
         // synchronously during the call, but the parameter is non-escaping.
         let ghostMesh = try withoutActuallyEscaping(isCancelled) { cancel -> Mesh? in
@@ -191,6 +196,43 @@ public struct EngineRemeshSolver: WeaveSolving {
             try Self.makeSymmetric(ghostMesh, settings: symmetry, axis: axis)
         }
         return SolverGhost(mesh: ghostMesh, addedFaces: ghostMesh.liveFaceIDs())
+    }
+
+    /// Builds world-space orientation guide samples from the flow constraints:
+    /// each guide stroke and each tagged loop becomes a run of (midpoint,
+    /// tangent) samples along its polyline / edge chain. Tagged-loop edges are
+    /// resolved to world positions through `source` (the mesh they index).
+    private static func orientationGuides(
+        from constraints: WeaveConstraints, source: Mesh
+    ) -> (points: [SIMD3<Float>], directions: [SIMD3<Float>]) {
+        var points: [SIMD3<Float>] = []
+        var directions: [SIMD3<Float>] = []
+
+        func addSegment(_ a: SIMD3<Float>, _ b: SIMD3<Float>) {
+            let d = b - a
+            let len = simd_length(d)
+            guard len > 1e-9 else { return }
+            points.append((a + b) * 0.5)
+            directions.append(d / len)
+        }
+
+        // Guide strokes carry world points directly.
+        for stroke in constraints.guideStrokes where stroke.points.count >= 2 {
+            for i in 0..<(stroke.points.count - 1) {
+                addSegment(stroke.points[i], stroke.points[i + 1])
+            }
+        }
+        // Tagged loops index edges of `source`; resolve each to its endpoints.
+        for loop in constraints.taggedLoops {
+            for edge in loop.edges {
+                guard let ends = source.edgeEndpoints(of: edge),
+                    let a = source.vertexPosition(ends.0),
+                    let b = source.vertexPosition(ends.1)
+                else { continue }
+                addSegment(a, b)
+            }
+        }
+        return (points, directions)
     }
 
     /// Maps a density field's target edge length onto the remesher's edge scale:
