@@ -1,6 +1,7 @@
 import CyberKit
 import Foundation
 import Testing
+import simd
 
 @testable import CyberTopology
 
@@ -151,6 +152,32 @@ struct AutoRetopoSessionTests {
         // One undo brings the original cage back exactly.
         harness.undo()
         #expect(try harness.editMesh().faceCount == priorFaces)
+    }
+
+    @Test("A symmetric document yields a symmetric accepted EditMesh")
+    func symmetricDocumentYieldsSymmetricCage() async throws {
+        let harness = Harness()
+        try harness.addTargetCube()
+        // Turn on X-mirror symmetry on the document.
+        harness.bundle.manifest.symmetry =
+            SymmetrySettings(mirrorAxes: [.x], origin: .zero, isEnabled: true)
+
+        _ = await harness.coordinator.beginAutoRetopoAsync(parameters: .coarse)
+        #expect(harness.coordinator.acceptAutoRetopo())
+
+        let edit = try harness.editMesh()
+        // The accepted cage is mirror-symmetric about the X plane (checking the
+        // face-referenced vertices — the payload round-trip drops any orphans).
+        var used = Set<UInt32>()
+        for face in edit.liveFaceIDs() { used.formUnion(edit.faceVertices(face)) }
+        let positions = used.compactMap { edit.vertexPosition($0) }
+        #expect(!positions.isEmpty)
+        let normal = SIMD3<Float>(1, 0, 0)
+        let symmetric = positions.allSatisfy { p in
+            let mirror = p - 2 * (p.x) * normal
+            return positions.contains { simd_distance($0, mirror) < 5e-3 }
+        }
+        #expect(symmetric, "a symmetric document should produce a symmetric cage")
     }
 
     private func seedQuadURL() throws -> URL {

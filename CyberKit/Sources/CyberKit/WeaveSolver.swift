@@ -84,13 +84,20 @@ public struct SolverParameters: Equatable, Sendable {
         self.seed = seed
     }
 
-    /// A sensible one-tap Auto-Retopo default: a moderate quad budget. The
-    /// engine's raw default (`targetQuads` 50 000) is far too fine for
-    /// interactive use — it makes even a small mesh take minutes — so the Weave
-    /// layer picks a coarse, fast retopo density until a density UI exists.
-    public static var autoRetopoDefault: SolverParameters {
+    /// One-tap Auto-Retopo default: a moderate quad budget. The engine's raw
+    /// default (`targetQuads` 50 000) is far too fine for interactive use, so
+    /// the Weave layer picks a middling density.
+    public static var autoRetopoDefault: SolverParameters { medium }
+
+    /// Density presets driving the solve's quad budget (the engine's raw
+    /// default is unusably fine for interactive retopology).
+    public static var coarse: SolverParameters { withTargetQuads(600) }
+    public static var medium: SolverParameters { withTargetQuads(1500) }
+    public static var fine: SolverParameters { withTargetQuads(4000) }
+
+    private static func withTargetQuads(_ count: Int) -> SolverParameters {
         var params = SolverParameters()
-        params.remesh.targetQuads = 1500
+        params.remesh.targetQuads = count
         return params
     }
 }
@@ -158,11 +165,17 @@ public struct EngineRemeshSolver: WeaveSolving {
             // clearly so callers rely on `.wholeMesh` this slice.
             throw CyberKitError(code: .invalidArgument, message: "EngineRemeshSolver supports only .wholeMesh")
         }
+        // Density: the density constraint scales the edge length (finer edge →
+        // smaller scale) on top of the params' quad budget.
+        var remeshParams = params.remesh
+        if let density = constraints.density {
+            remeshParams.edgeScale = Self.edgeScale(for: density, base: remeshParams.edgeScale)
+        }
         // `withoutActuallyEscaping`: the engine invokes `isCancelled`
         // synchronously during the call, but the parameter is non-escaping.
         let ghostMesh = try withoutActuallyEscaping(isCancelled) { cancel -> Mesh? in
             try source.remeshed(
-                parameters: params.remesh,
+                parameters: remeshParams,
                 onProgress: onProgress.map { report in
                     { fraction, stage in report(SolverProgress(fraction: Double(fraction), stage: stage)) }
                 },
@@ -170,7 +183,50 @@ public struct EngineRemeshSolver: WeaveSolving {
             )
         }
         guard let ghostMesh else { return nil }  // cancelled
-        let addedFaces = ghostMesh.liveFaceIDs()
-        return SolverGhost(mesh: ghostMesh, addedFaces: addedFaces)
+        // Symmetry: clip the fresh cage to the working side and mirror it, so
+        // the output is exactly symmetric about the plane. Only the first mirror
+        // axis is honoured this slice (multi-axis / radial are deferred).
+        if let symmetry = constraints.symmetry, symmetry.isEnabled,
+            let axis = symmetry.mirrorAxes.first {
+            try Self.makeSymmetric(ghostMesh, settings: symmetry, axis: axis)
+        }
+        return SolverGhost(mesh: ghostMesh, addedFaces: ghostMesh.liveFaceIDs())
+    }
+
+    /// Maps a density field's target edge length onto the remesher's edge scale:
+    /// a finer edge shrinks the scale. Clamped to a sane range so a stray value
+    /// cannot make the remesh degenerate or runaway.
+    private static func edgeScale(for density: DensityField, base: Float) -> Float {
+        guard density.targetEdgeLength > 0 else { return base }
+        return min(max(base * density.targetEdgeLength, 0.05), 100)
+    }
+
+    /// Makes `cage` mirror-symmetric about `axis`: keep only the faces WHOLLY on
+    /// the working side (delete any face with a vertex on the far side), snap the
+    /// seam onto the plane, then reflect + weld the working side — so every kept
+    /// face is mirrored and the result is symmetric. Clipping by whole-face
+    /// (not centroid) is what makes it symmetric: a face straddling the plane is
+    /// not "wholly on the working side", so `applySymmetry` would leave it
+    /// un-mirrored. Mutates `cage` (a fresh remesh handle — never the source).
+    private static func makeSymmetric(
+        _ cage: Mesh, settings: SymmetrySettings, axis: SymmetrySettings.Axis
+    ) throws {
+        let normal = axis.normal
+        let origin = settings.origin
+        func onFarSide(_ vertex: UInt32) -> Bool {
+            guard let position = cage.vertexPosition(vertex) else { return false }
+            let side = simd_dot(position - origin, normal)
+            return settings.workingSidePositive ? side < 0 : side > 0
+        }
+        var doomed: [UInt32] = []
+        for face in cage.liveFaceIDs()
+        where cage.faceVertices(face).contains(where: onFarSide) {
+            doomed.append(face)
+        }
+        // Nothing to mirror if the clip would empty the cage — leave it as-is.
+        guard !doomed.isEmpty, doomed.count < cage.faceCount else { return }
+        _ = try cage.deleteFaces(doomed)
+        _ = try cage.snapToSymmetryPlane(settings, axis: axis)
+        _ = try cage.applySymmetry(settings, axis: axis)
     }
 }

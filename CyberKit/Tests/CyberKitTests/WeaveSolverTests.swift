@@ -9,11 +9,17 @@ import simd
 /// app-hosted target (Phase 4 pattern) to run on the iPad too.
 @Suite("Weave solver session (auto-remesh backend)")
 struct WeaveSolverTests {
-    /// A unit cube — a small closed manifold the remesher can quadrangulate.
-    private func cube() throws -> Mesh {
+    private func mesh(fromOBJ text: String) throws -> Mesh {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("weave-\(UUID().uuidString).obj")
-        try """
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        return try Mesh.loadOBJ(at: url)
+    }
+
+    /// A unit cube — a small closed manifold the remesher can quadrangulate.
+    private func cube() throws -> Mesh {
+        try mesh(fromOBJ: """
         v -0.5 -0.5 -0.5
         v  0.5 -0.5 -0.5
         v  0.5  0.5 -0.5
@@ -28,9 +34,7 @@ struct WeaveSolverTests {
         f 2 3 7 6
         f 3 4 8 7
         f 4 1 5 8
-        """.write(to: url, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: url) }
-        return try Mesh.loadOBJ(at: url)
+        """)
     }
 
     private func params() -> SolverParameters {
@@ -99,6 +103,103 @@ struct WeaveSolverTests {
         // The engine's raw default (50k quads) is far too fine for one-tap use.
         #expect(SolverParameters.autoRetopoDefault.remesh.targetQuads == 1500)
         #expect(SolverParameters().remesh.targetQuads > 1500, "raw engine default is finer")
+    }
+
+    // MARK: - Density + symmetry honouring (add-weave-density-symmetry)
+
+    @Test("A finer density yields more quads than a coarser one")
+    func finerDensityYieldsMoreQuads() throws {
+        let solver = EngineRemeshSolver()
+        func quadCount(_ p: SolverParameters) throws -> Int {
+            let ghost = try #require(try solver.solve(
+                source: try cube(), region: .wholeMesh, constraints: WeaveConstraints(),
+                params: p, onProgress: nil, isCancelled: { false }
+            ))
+            return try ghost.mesh.stats().quads
+        }
+        let coarse = try quadCount(.coarse)
+        let fine = try quadCount(.fine)
+        #expect(fine > coarse, "fine (\(fine)) should have more quads than coarse (\(coarse))")
+    }
+
+    /// Every face-referenced vertex has a partner at its mirror image across the
+    /// plane. Orphan vertices (points left un-referenced by `deleteFaces`, which
+    /// the OBJ payload round-trip drops) are ignored — the cage's geometry is
+    /// what its faces span.
+    private func isMirrorSymmetric(
+        _ mesh: Mesh, normal: SIMD3<Float>, origin: SIMD3<Float>, tolerance: Float
+    ) -> Bool {
+        var used = Set<UInt32>()
+        for face in mesh.liveFaceIDs() { used.formUnion(mesh.faceVertices(face)) }
+        let positions = used.compactMap { mesh.vertexPosition($0) }
+        for p in positions {
+            let mirrored = p - 2 * simd_dot(p - origin, normal) * normal
+            if !positions.contains(where: { simd_distance($0, mirrored) < tolerance }) {
+                return false
+            }
+        }
+        return !positions.isEmpty
+    }
+
+    @Test("A symmetry constraint yields a mirror-symmetric cage")
+    func symmetryConstraintYieldsSymmetricCage() throws {
+        let symmetry = SymmetrySettings(mirrorAxes: [.x], origin: .zero, isEnabled: true)
+        let source = try cube()
+        let facesBefore = source.faceCount
+        let ghost = try #require(try EngineRemeshSolver().solve(
+            source: source, region: .wholeMesh,
+            constraints: WeaveConstraints(symmetry: symmetry),
+            params: params(), onProgress: nil, isCancelled: { false }
+        ))
+        #expect(ghost.mesh.faceCount > 0)
+        #expect(isMirrorSymmetric(ghost.mesh, normal: SIMD3(1, 0, 0), origin: .zero, tolerance: 1e-3),
+            "the cage should be mirror-symmetric about the X plane")
+        #expect(source.faceCount == facesBefore, "source untouched")
+    }
+
+    @Test("A non-symmetric Target still yields a symmetric cage")
+    func nonSymmetricTargetStillSymmetric() throws {
+        // A wedge — deliberately NOT symmetric about X.
+        let wedge = try mesh(fromOBJ: """
+        v 0 0 0
+        v 2 0 0
+        v 2 1 0
+        v 0 1 0
+        v 0 0 1
+        v 1.5 0 1
+        v 1.5 1 1
+        v 0 1 1
+        f 1 4 3 2
+        f 5 6 7 8
+        f 1 2 6 5
+        f 2 3 7 6
+        f 3 4 8 7
+        f 4 1 5 8
+        """)
+        let symmetry = SymmetrySettings(mirrorAxes: [.x], origin: SIMD3(1, 0, 0), isEnabled: true)
+        let ghost = try #require(try EngineRemeshSolver().solve(
+            source: wedge, region: .wholeMesh,
+            constraints: WeaveConstraints(symmetry: symmetry),
+            params: params(), onProgress: nil, isCancelled: { false }
+        ))
+        #expect(isMirrorSymmetric(ghost.mesh, normal: SIMD3(1, 0, 0), origin: SIMD3(1, 0, 0), tolerance: 5e-3),
+            "even a non-symmetric Target yields a symmetric cage")
+    }
+
+    @Test("A constrained solve is still deterministic")
+    func constrainedSolveIsDeterministic() throws {
+        let solver = EngineRemeshSolver()
+        let constraints = WeaveConstraints(
+            symmetry: SymmetrySettings(mirrorAxes: [.x], origin: .zero, isEnabled: true)
+        )
+        func payload() throws -> Data {
+            let ghost = try #require(try solver.solve(
+                source: try cube(), region: .wholeMesh, constraints: constraints,
+                params: params(), onProgress: nil, isCancelled: { false }
+            ))
+            return try ghost.mesh.payloadData()
+        }
+        #expect(try payload() == payload())
     }
 
     @Test("A sub-region solve is rejected this slice")

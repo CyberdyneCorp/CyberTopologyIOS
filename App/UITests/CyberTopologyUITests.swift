@@ -153,7 +153,7 @@ final class CyberTopologyUITests: XCTestCase {
         let ioMenu = app.buttons["io-menu"]
         XCTAssertTrue(ioMenu.waitForExistence(timeout: 15))
         ioMenu.tap()
-        let autoRetopo = app.buttons["auto-retopo"]
+        let autoRetopo = app.buttons["auto-retopo-medium"]
         XCTAssertTrue(autoRetopo.waitForExistence(timeout: 5))
         autoRetopo.tap()
 

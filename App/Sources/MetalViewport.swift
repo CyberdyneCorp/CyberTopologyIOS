@@ -393,9 +393,9 @@ struct MetalViewport: UIViewRepresentable {
             // Auto-Retopo (Phase 5): the session lives here (it owns the Target
             // mesh, the renderer ghost, and the journal sink); the input model
             // is the SwiftUI trigger surface.
-            inputModel.beginAutoRetopoHandler = { [weak self] in
+            inputModel.beginAutoRetopoHandler = { [weak self] params in
                 guard let self else { return false }
-                return await self.beginAutoRetopoAsync()
+                return await self.beginAutoRetopoAsync(parameters: params)
             }
             inputModel.acceptAutoRetopoHandler = { [weak self] in self?.acceptAutoRetopo() ?? false }
             inputModel.discardAutoRetopoHandler = { [weak self] in self?.discardAutoRetopo() }

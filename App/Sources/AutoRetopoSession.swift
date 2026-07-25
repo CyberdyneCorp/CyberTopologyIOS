@@ -55,11 +55,16 @@ extension MetalViewport.Coordinator {
         let targetData: Data
         do { targetData = try target.payloadData() } catch { return false }
 
+        // Honour the document's active symmetry: a symmetric document yields a
+        // symmetric retopology (the solver clips + mirrors about the plane).
+        let constraints = WeaveConstraints(symmetry: bundleProvider?().manifest.symmetry)
+
         inputModel.autoRetopoSolving = true
         defer { inputModel.autoRetopoSolving = false }
 
         let ghostData = await Self.solveOffMain(
-            targetData: targetData, params: parameters, solver: weaveSolver
+            targetData: targetData, params: parameters, constraints: constraints,
+            solver: weaveSolver
         )
         guard let ghostData else {
             autoRetopoGhost = nil
@@ -81,7 +86,8 @@ extension MetalViewport.Coordinator {
     /// are created and destroyed inside this call, so nothing non-`Sendable`
     /// crosses the boundary.
     private nonisolated static func solveOffMain(
-        targetData: Data, params: SolverParameters, solver: WeaveSolving
+        targetData: Data, params: SolverParameters, constraints: WeaveConstraints,
+        solver: WeaveSolving
     ) async -> Data? {
         await Task.detached(priority: .userInitiated) { () -> Data? in
             let source: Mesh
@@ -89,7 +95,7 @@ extension MetalViewport.Coordinator {
             let ghost: SolverGhost?
             do {
                 ghost = try solver.solve(
-                    source: source, region: .wholeMesh, constraints: WeaveConstraints(),
+                    source: source, region: .wholeMesh, constraints: constraints,
                     params: params, onProgress: nil, isCancelled: { false }
                 )
             } catch { return nil }

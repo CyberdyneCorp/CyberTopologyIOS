@@ -205,19 +205,19 @@ final class ViewportInputModel {
     var autoRetopoSolving = false
     /// Wired by the coordinator to its Auto-Retopo session (which owns the
     /// Target mesh, the renderer ghost, and the journal sink). The begin
-    /// handler is async — the solve runs off-main.
-    @ObservationIgnored var beginAutoRetopoHandler: (() async -> Bool)?
+    /// handler is async (the solve runs off-main) and takes the chosen density.
+    @ObservationIgnored var beginAutoRetopoHandler: ((SolverParameters) async -> Bool)?
     @ObservationIgnored var acceptAutoRetopoHandler: (() -> Bool)?
     @ObservationIgnored var discardAutoRetopoHandler: (() -> Void)?
 
-    /// Kicks off a Weave solve over the Target (off-main); the ghost appears on
-    /// completion. Returns whether the solve was started (false when already
-    /// solving or no handler is wired). The result arrives asynchronously via
-    /// `autoRetopoGhostPending`.
+    /// Kicks off a Weave solve over the Target at `density` (off-main); the ghost
+    /// appears on completion. Returns whether the solve was started (false when
+    /// already solving or no handler is wired). The result arrives asynchronously
+    /// via `autoRetopoGhostPending`.
     @discardableResult
-    func requestAutoRetopo() -> Bool {
+    func requestAutoRetopo(density: SolverParameters = .autoRetopoDefault) -> Bool {
         guard let handler = beginAutoRetopoHandler, !autoRetopoSolving else { return false }
-        Task { _ = await handler() }
+        Task { _ = await handler(density) }
         return true
     }
 

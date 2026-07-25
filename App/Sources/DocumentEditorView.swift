@@ -212,11 +212,19 @@ struct DocumentEditorView: View {
                     .accessibilityIdentifier("export-editmeshes")
                     .disabled(!document.bundle.manifest.objects.contains { $0.role == .editMesh })
                 Divider()
-                // Phase 5 (spec: weave-solver): propose a quad retopology of
-                // the Target. Needs a Target to solve over.
-                Button("Auto-Retopologize Target") { inputModel.requestAutoRetopo() }
-                    .accessibilityIdentifier("auto-retopo")
-                    .disabled(!document.bundle.manifest.objects.contains { $0.role == .target })
+                // Phase 5 (spec: weave-solver): propose a quad retopology of the
+                // Target at a chosen density (Coarse / Medium / Fine). Honours the
+                // document's active symmetry. Needs a Target to solve over.
+                let hasTarget = document.bundle.manifest.objects.contains { $0.role == .target }
+                Button("Auto-Retopo (Coarse)") { inputModel.requestAutoRetopo(density: .coarse) }
+                    .accessibilityIdentifier("auto-retopo-coarse")
+                    .disabled(!hasTarget)
+                Button("Auto-Retopo (Medium)") { inputModel.requestAutoRetopo(density: .medium) }
+                    .accessibilityIdentifier("auto-retopo-medium")
+                    .disabled(!hasTarget)
+                Button("Auto-Retopo (Fine)") { inputModel.requestAutoRetopo(density: .fine) }
+                    .accessibilityIdentifier("auto-retopo-fine")
+                    .disabled(!hasTarget)
             } label: {
                 Label("Import/Export", systemImage: "square.and.arrow.down.on.square")
             }
