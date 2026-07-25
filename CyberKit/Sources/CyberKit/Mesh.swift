@@ -90,14 +90,65 @@ public final class Mesh {
 
     /// Runs the automatic quad-remeshing pipeline; `self` is not modified.
     ///
-    /// TODO(upstream): expose progress/cancel through Swift Concurrency once
-    /// the app needs it; the C API already provides the callbacks.
+    /// The no-callback form: a remesh with no cancellation can only succeed or
+    /// throw, so it returns a non-optional `Mesh`.
     public func remeshed(parameters: RemeshParameters = RemeshParameters()) throws -> Mesh {
+        guard let result = try remeshed(
+            parameters: parameters, onProgress: nil, isCancelled: nil
+        ) else {
+            throw CyberKitError(status: CYBER_ERR_RUNTIME)
+        }
+        return result
+    }
+
+    /// Runs the automatic quad-remeshing pipeline with progress reporting and
+    /// cooperative cancellation; `self` is never modified. `onProgress` is
+    /// advisory (fraction in 0…1 plus a stage label). `isCancelled` is polled
+    /// by the engine between steps; when it returns `true` the remesh stops and
+    /// this method returns `nil` having produced no mesh.
+    public func remeshed(
+        parameters: RemeshParameters = RemeshParameters(),
+        onProgress: ((Float, String) -> Void)?,
+        isCancelled: (() -> Bool)?
+    ) throws -> Mesh? {
         var params = parameters.cParams
         var out: OpaquePointer?
-        try check(cyber_remesh(handle, &params, nil, nil, nil, &out))
+
+        let context = RemeshCallbackContext(onProgress: onProgress, isCancelled: isCancelled)
+        // Only hand the engine a non-NULL callback when a Swift closure exists,
+        // so the no-callback path is byte-for-byte the previous behaviour.
+        let progressCb: CyberProgressCb? = onProgress == nil ? nil : { fraction, stage, user in
+            guard let user else { return }
+            let ctx = Unmanaged<RemeshCallbackContext>.fromOpaque(user).takeUnretainedValue()
+            ctx.onProgress?(fraction, stage.map { String(cString: $0) } ?? "")
+        }
+        let cancelCb: CyberCancelCb? = isCancelled == nil ? nil : { user in
+            guard let user else { return 0 }
+            let ctx = Unmanaged<RemeshCallbackContext>.fromOpaque(user).takeUnretainedValue()
+            return (ctx.isCancelled?() ?? false) ? 1 : 0
+        }
+        let userPtr = Unmanaged.passUnretained(context).toOpaque()
+
+        do {
+            try withExtendedLifetime(context) {
+                try check(cyber_remesh(handle, &params, progressCb, cancelCb, userPtr, &out))
+            }
+        } catch let error as CyberKitError where error.code == .cancelled {
+            return nil
+        }
         guard let out else { throw CyberKitError(status: CYBER_ERR_RUNTIME) }
         return Mesh(owning: out)
+    }
+}
+
+/// Boxes the Swift remesh callbacks so they can be reached from the engine's C
+/// callbacks through the `void* user` context pointer.
+private final class RemeshCallbackContext {
+    let onProgress: ((Float, String) -> Void)?
+    let isCancelled: (() -> Bool)?
+    init(onProgress: ((Float, String) -> Void)?, isCancelled: (() -> Bool)?) {
+        self.onProgress = onProgress
+        self.isCancelled = isCancelled
     }
 }
 
