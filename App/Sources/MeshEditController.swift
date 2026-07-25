@@ -742,10 +742,11 @@ final class MeshEditController {
                 screenPoints: interpretation.quadCorners,
                 context: context
             ) { mesh, corners, snapper in
-                // Weld onto existing topology: a face drawn against an
-                // existing edge shares it (task 4) instead of floating free.
-                try mesh.createWeldedFace(
-                    at: corners, mergeRadius: mergeRadius, snapping: snapper
+                // A face drawn against an existing edge welds onto it (task 4)
+                // instead of floating free; drawn against a SUBDIVIDED boundary
+                // it continues that boundary's loops as a welded patch.
+                try Self.buildCreatedFace(
+                    mesh: mesh, corners: corners, snapper: snapper, mergeRadius: mergeRadius
                 )
             }
         case .createGrid:
@@ -1024,10 +1025,10 @@ final class MeshEditController {
             // Weld like the live gesture path, so a swap shares edges
             // identically (task 4).
             let context = contextProvider?()
-            try mesh.createWeldedFace(
-                at: corners,
-                mergeRadius: (context?.sceneRadius ?? 1) * Self.mergeSnapRadiusFraction,
-                snapping: context?.snapper
+            try Self.buildCreatedFace(
+                mesh: mesh, corners: corners,
+                snapper: context?.snapper,
+                mergeRadius: (context?.sceneRadius ?? 1) * Self.mergeSnapRadiusFraction
             )
             verb = candidate.action == .createTriangle
                 ? "pencil.createTriangle" : "pencil.createQuad"
@@ -1149,6 +1150,137 @@ final class MeshEditController {
     /// - Parameter layout: how `screenPoints` are laid out, so a
     ///   REFLECTING symmetry replica can reorder them and keep the created
     ///   faces' winding (task 4.4).
+    /// Largest number of columns a single continued patch may span — a guard
+    /// against a runaway extrusion from a stray cell-size estimate.
+    static let maxPatchDimension = 24
+
+    /// A drawn quad's shorter side must span at least this many neighbour cells
+    /// before it is treated as a patch that CONTINUES the neighbour's loops (as
+    /// opposed to a plain one-cell append, which stays a single quad).
+    static let patchContinuationMinCells: Float = 1.5
+
+    /// Builds a created face from a recognized quad/triangle ring. When a quad
+    /// is drawn against an existing SUBDIVIDED boundary (e.g. the multi-row edge
+    /// of an existing grid), its shared side's boundary chain is extruded across
+    /// the drawn region — the new quads WELD onto that boundary and CONTINUE its
+    /// edge loops (CozyBlanket-style patch fill). A triangle, a standalone quad,
+    /// or a one-cell append (no subdivided neighbour) is a single welded face.
+    static func buildCreatedFace(
+        mesh: Mesh, corners: [SIMD3<Float>], snapper: SurfaceSnapper?, mergeRadius: Float
+    ) throws {
+        if corners.count == 4,
+            try continueAdjacentBoundary(
+                mesh: mesh, corners: corners, snapper: snapper, mergeRadius: mergeRadius
+            )
+        {
+            return
+        }
+        try mesh.createWeldedFace(at: corners, mergeRadius: mergeRadius, snapping: snapper)
+    }
+
+    /// When the drawn quad lands against a subdivided existing boundary, extends
+    /// that boundary's vertex chain across the drawn region (welded rows that
+    /// continue the neighbour's loops) and returns `true`. Returns `false` with
+    /// the mesh UNCHANGED when there is no such neighbour, so the caller falls
+    /// back to a single welded face. Any engine rejection also returns `false`.
+    private static func continueAdjacentBoundary(
+        mesh: Mesh, corners: [SIMD3<Float>], snapper: SurfaceSnapper?, mergeRadius: Float
+    ) throws -> Bool {
+        // Snap radius capped to the quad's own scale, matching createWeldedFace:
+        // a corner may only reuse a vertex sitting ~on it, never a distant one.
+        var shortestEdge = Float.greatestFiniteMagnitude
+        for i in 0..<4 {
+            shortestEdge = min(shortestEdge, simd_distance(corners[i], corners[(i + 1) % 4]))
+        }
+        guard shortestEdge.isFinite, shortestEdge > 1e-6 else { return false }
+        let radius = min(mergeRadius, shortestEdge * 0.35)
+
+        let snapped = corners.map { mesh.nearestVertex(to: $0, maxDistance: radius)?.vertex }
+
+        // Look for a quad SIDE whose two corners both snapped to distinct
+        // existing vertices — the candidate weld side against the neighbour.
+        for i in 0..<4 {
+            let j = (i + 1) % 4
+            guard let a = snapped[i], let b = snapped[j], a != b else { continue }
+            let sharedMid = (corners[i] + corners[j]) * 0.5
+            guard let chain = boundarySubChain(mesh: mesh, from: a, to: b, near: sharedMid),
+                chain.count >= 3
+            else { continue }  // needs a genuinely SUBDIVIDED neighbour (≥2 cells)
+
+            // Mean neighbour cell size along the shared chain.
+            var segSum: Float = 0
+            for k in 1..<chain.count {
+                guard let p = mesh.vertexPosition(chain[k - 1]),
+                    let q = mesh.vertexPosition(chain[k])
+                else { continue }
+                segSum += simd_distance(p, q)
+            }
+            let cell = segSum / Float(chain.count - 1)
+            guard cell > 1e-6 else { continue }
+
+            // The shared side must span several neighbour cells to count as a
+            // patch — a one-cell append stays a single quad.
+            let sharedSide = simd_distance(corners[i], corners[j])
+            guard sharedSide >= cell * patchContinuationMinCells else { continue }
+
+            // Extrude from the shared side toward the opposite (far) side.
+            let farMid = (corners[(i + 2) % 4] + corners[(i + 3) % 4]) * 0.5
+            let offsetVec = farMid - sharedMid
+            let depth = simd_length(offsetVec)
+            guard depth > 1e-6 else { continue }
+            let rings = max(1, min(maxPatchDimension, Int((depth / cell).rounded())))
+            let perRing = offsetVec / Float(rings)
+            do {
+                let extended = try mesh.extendBoundary(
+                    chain: chain, closed: false, offset: perRing, rings: rings, snapping: snapper
+                )
+                if extended.newFaces > 0 { return true }
+            } catch {
+                // A non-boundary chain / winding rejection: leave the mesh for
+                // the single-quad fallback rather than losing the stroke.
+                return false
+            }
+        }
+        return false
+    }
+
+    /// The ordered boundary sub-chain of existing vertices from `a` to `b`
+    /// (inclusive) — the arc of the boundary loop nearest the drawn shared side.
+    /// nil when the shared side is not on a boundary or `a`/`b` are not both on
+    /// that loop.
+    private static func boundarySubChain(
+        mesh: Mesh, from a: UInt32, to b: UInt32, near: SIMD3<Float>
+    ) -> [UInt32]? {
+        guard let edge = mesh.nearestEdge(to: near, maxDistance: .greatestFiniteMagnitude)?.edge,
+            mesh.isBoundaryEdge(edge) == true,
+            let loop = mesh.boundaryChain(through: edge)
+        else { return nil }
+        let verts = loop.vertices
+        guard let ia = verts.firstIndex(of: a), let ib = verts.firstIndex(of: b) else {
+            return nil
+        }
+        if loop.closed {
+            // Two arcs wrap the closed loop; the shorter one is the shared side.
+            func arc(from: Int, to: Int) -> [UInt32] {
+                var out: [UInt32] = []
+                var k = from
+                while true {
+                    out.append(verts[k])
+                    if k == to { break }
+                    k = (k + 1) % verts.count
+                }
+                return out
+            }
+            let forward = arc(from: ia, to: ib)
+            let backward = arc(from: ib, to: ia)
+            return forward.count <= backward.count ? forward : backward.reversed()
+        }
+        // Open boundary: the linear slice between the two indices, a → b.
+        let lo = min(ia, ib), hi = max(ia, ib)
+        let slice = Array(verts[lo...hi])
+        return ia <= ib ? slice : slice.reversed()
+    }
+
     func applyCreate(
         verb: String, screenPoints: [SIMD2<Float>], context: Context,
         layout: SymmetryPointLayout = .ring,
