@@ -390,6 +390,15 @@ struct MetalViewport: UIViewRepresentable {
             // handle the overlay/recognizer use, and journals through the
             // document's command path.
             inputModel.meshEditor = meshEditor
+            // Auto-Retopo (Phase 5): the session lives here (it owns the Target
+            // mesh, the renderer ghost, and the journal sink); the input model
+            // is the SwiftUI trigger surface.
+            inputModel.beginAutoRetopoHandler = { [weak self] in
+                guard let self else { return false }
+                return await self.beginAutoRetopoAsync()
+            }
+            inputModel.acceptAutoRetopoHandler = { [weak self] in self?.acceptAutoRetopo() ?? false }
+            inputModel.discardAutoRetopoHandler = { [weak self] in self?.discardAutoRetopo() }
             meshEditor.contextProvider = { [weak self] in
                 self?.makeEditContext()
             }

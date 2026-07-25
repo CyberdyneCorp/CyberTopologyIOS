@@ -141,6 +141,41 @@ final class CyberTopologyUITests: XCTestCase {
         XCTAssertTrue(status.label.hasPrefix("Exported"))
     }
 
+    /// Phase 5 (spec: weave-solver): Auto-Retopologize proposes a quad cage as
+    /// a ghost, and accepting it journals the new EditMesh in one undoable step.
+    /// Pure button flow (menu → command → accept bar), so it needs no Pencil
+    /// synthesis and runs on any runner.
+    @MainActor
+    func testAutoRetopoProposesAndAcceptsAQuadCage() throws {
+        let app = launch(arguments: [
+            "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
+        ])
+        let ioMenu = app.buttons["io-menu"]
+        XCTAssertTrue(ioMenu.waitForExistence(timeout: 15))
+        ioMenu.tap()
+        let autoRetopo = app.buttons["auto-retopo"]
+        XCTAssertTrue(autoRetopo.waitForExistence(timeout: 5))
+        autoRetopo.tap()
+
+        // A solving indicator shows while the off-main solve runs; the app
+        // stays responsive (no freeze), then the amber proposal's accept bar
+        // appears. Generous timeout — the solve time depends on the Target.
+        let accept = app.buttons["auto-retopo-accept"]
+        XCTAssertTrue(
+            accept.waitForExistence(timeout: 90), "the Auto-Retopo proposal bar should appear"
+        )
+        accept.tap()
+
+        // Accept journaled the new EditMesh: undo arms and the bar dismisses.
+        XCTAssertTrue(
+            waitForCondition(timeout: 10) { app.buttons["undo"].isEnabled },
+            "accepting the proposal should journal one undoable step"
+        )
+        XCTAssertFalse(
+            app.buttons["auto-retopo-accept"].exists, "the bar dismisses after accept"
+        )
+    }
+
     /// Object removal (change: manage-document-objects): the per-row delete
     /// control removes that object, and undo restores it — one journaled
     /// step.

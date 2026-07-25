@@ -211,6 +211,12 @@ struct DocumentEditorView: View {
                 Button("Export EditMeshes") { exportNow() }
                     .accessibilityIdentifier("export-editmeshes")
                     .disabled(!document.bundle.manifest.objects.contains { $0.role == .editMesh })
+                Divider()
+                // Phase 5 (spec: weave-solver): propose a quad retopology of
+                // the Target. Needs a Target to solve over.
+                Button("Auto-Retopologize Target") { inputModel.requestAutoRetopo() }
+                    .accessibilityIdentifier("auto-retopo")
+                    .disabled(!document.bundle.manifest.objects.contains { $0.role == .target })
             } label: {
                 Label("Import/Export", systemImage: "square.and.arrow.down.on.square")
             }
@@ -449,6 +455,20 @@ struct DocumentEditorView: View {
             // is armed; the transient status keeps the Transform Vertices
             // re-snap report visible after the session ends.
             VStack(spacing: 6) {
+                // Phase 5: the Auto-Retopo solve runs off-main; show progress
+                // while it runs, then the accept/discard bar for the proposal
+                // (above the camera-tool banner — a proposal is a modal decision).
+                if inputModel.autoRetopoSolving {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Solving retopology…").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    .padding(10)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityIdentifier("auto-retopo-solving")
+                } else if inputModel.autoRetopoGhostPending {
+                    AutoRetopoBannerView(model: inputModel)
+                }
                 if let banner = inputModel.cameraToolBanner {
                     CameraToolBannerView(banner: banner, model: inputModel)
                 } else if let status = inputModel.cameraToolStatus {

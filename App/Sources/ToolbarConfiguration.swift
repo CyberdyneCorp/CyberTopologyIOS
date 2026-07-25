@@ -91,6 +91,11 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     case toggleAutoRelax
     case batchCommands
 
+    // Phase 5 (spec: weave-solver). `autoRetopo` runs the Weave solver over
+    // the Target (the engine auto-remesher today) and proposes the result as a
+    // ghost; accepting it commits the EditMesh in one undoable step.
+    case autoRetopo
+
     /// The verb a toolbar slot holding this action selects; nil for
     /// gesture-grammar actions (drawn, not tapped) and tools.
     var verb: InputArbiter.Verb? {

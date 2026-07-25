@@ -24,11 +24,14 @@
 
 - [x] 4.2 The solver session on the coordinator (begin/accept/discard) running the
       injected `WeaveSolving` over the Target and holding the `SolverGhost`.
-- [ ] 4.1 An `autoRetopo` action in the toolbar / Action Gallery. DEFERRED (UI
-      wiring): the session API exists; the button that calls `beginAutoRetopo` is
-      the visual follow-up.
-- [ ] 4.3 Render the ghost with the amber Weave `GhostStyle` via `GhostRenderPath`.
-      DEFERRED (visual, mirrors the subdivision-preview ghost path; not unit-tested).
+- [x] 4.1 An `autoRetopo` `EditorAction` + a gallery entry; the "Auto-Retopologize
+      Target" item in the IO menu triggers it (disabled without a Target).
+- [x] 4.3 The ghost renders amber via `GhostRenderPath` (`GhostStyle.weaveProposal`).
+- [x] 4.4 The solve runs OFF the main thread (payload-Data round-trip, since meshes
+      are not `Sendable`) so a large Target never freezes the UI; a solving
+      indicator shows while it runs. A coarse default quad budget
+      (`SolverParameters.autoRetopoDefault` = 1500; the engine's raw 50k is far
+      too fine) keeps one-tap interactive.
 
 ## 5. Accept / override flow
 
@@ -36,9 +39,11 @@
       in exactly ONE journal entry; accepted topology is ordinary EditMesh.
 - [x] 5.2 `discardAutoRetopo` drops the ghost with no journal entry.
 - [x] 5.3 Strict opt-in: without a begin, no ghost or geometry exists.
-- [ ] 5.x Gesture routing (tap → accept, draw-over → discard) through the arbiter.
-      DEFERRED (UI wiring): the accept/discard methods exist and are tested; the
-      gesture bindings are the visual follow-up.
+- [x] 5.4 An Accept/Discard bar (`AutoRetopoBannerView`) is the accept/override
+      affordance while a proposal is shown — accept commits, discard drops it.
+- [ ] 5.x In-viewport gesture shortcuts (tap → accept, draw-over → discard). Not
+      done: the discoverable bar covers accept/discard; the gesture shortcuts are
+      an optional refinement.
 
 ## 6. Tests (device + simulator, per the Phase 4 pattern)
 
@@ -56,10 +61,13 @@
 - [x] 7.1 `openspec validate add-weave-solver-pipeline --strict`.
 - [ ] 7.2 Full suite green on the simulator AND the iPad; `CyberKitTests` unaffected.
 
-## Deferred to a follow-up (UI wiring, noted above)
+## Remaining (optional refinements, not blocking)
 
-The interactive surface — the toolbar/Gallery Auto-Retopo button, the amber ghost
-rendered through `GhostRenderPath`, and the tap-accept / draw-over-discard gesture
-bindings — is the remaining visual layer. It mirrors the existing subdivision-preview
-ghost path and is not unit-testable, so it is split out; the solver, the session state
-machine, and every spec guarantee are implemented and tested here.
+- In-viewport gesture shortcuts (tap → accept, draw-over → discard) on top of the
+  Accept/Discard bar.
+- A density control (target quad budget / method) instead of the fixed coarse default.
+- Progress percentage in the solving indicator (the engine reports it; the session
+  currently shows an indeterminate spinner).
+
+Everything the spec requires is implemented and covered: the solver, the session,
+off-main solving, the amber ghost, the Accept/Discard bar, and one-undo accept.

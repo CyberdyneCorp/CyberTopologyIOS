@@ -83,6 +83,16 @@ public struct SolverParameters: Equatable, Sendable {
         self.remesh = remesh
         self.seed = seed
     }
+
+    /// A sensible one-tap Auto-Retopo default: a moderate quad budget. The
+    /// engine's raw default (`targetQuads` 50 000) is far too fine for
+    /// interactive use — it makes even a small mesh take minutes — so the Weave
+    /// layer picks a coarse, fast retopo density until a density UI exists.
+    public static var autoRetopoDefault: SolverParameters {
+        var params = SolverParameters()
+        params.remesh.targetQuads = 1500
+        return params
+    }
 }
 
 /// Advisory progress from a running solve.
@@ -117,7 +127,7 @@ public struct SolverGhost {
 /// - Non-mutating: the solve never modifies `source`.
 /// - Cancellable: `isCancelled` is polled; when it returns `true` the solve
 ///   stops and returns `nil`, having produced nothing.
-public protocol WeaveSolving {
+public protocol WeaveSolving: Sendable {
     func solve(
         source: Mesh,
         region: SolveRegion,

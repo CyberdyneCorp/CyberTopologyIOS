@@ -477,6 +477,21 @@ extension EditorAction {
                     "square.grid.3x3", "list.bullet.rectangle.fill",
                 ]
             )
+        case .autoRetopo:
+            GalleryEntry(
+                title: "Auto-Retopologize",
+                symbol: "square.grid.3x3.square",
+                gesture: "Command — tap to propose a quad retopology",
+                notes: "Runs the Weave solver over the Target and proposes a "
+                    + "fresh quad EditMesh as an amber ghost. Tap Accept to "
+                    + "commit it (one undoable step, replacing any current "
+                    + "EditMesh) or Discard to drop it. The proposal never "
+                    + "changes the document until you accept.",
+                demoFrames: [
+                    "square.grid.3x3.square", "sparkles.square.filled.on.square",
+                    "square.grid.3x3.fill.square", "checkmark.square",
+                ]
+            )
         }
     }
 }

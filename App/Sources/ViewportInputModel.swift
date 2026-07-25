@@ -195,6 +195,39 @@ final class ViewportInputModel {
         meshEditor?.runBatchCommand(command) ?? false
     }
 
+    // MARK: - Auto-Retopo (Phase 5, spec: weave-solver)
+
+    /// True while an Auto-Retopo ghost is proposed and awaiting accept/discard.
+    /// Observed: the viewport shows the accept/discard bar while it holds.
+    var autoRetopoGhostPending = false
+    /// True while a solve is running (off the main thread). Observed: the
+    /// viewport shows a progress indicator instead of freezing.
+    var autoRetopoSolving = false
+    /// Wired by the coordinator to its Auto-Retopo session (which owns the
+    /// Target mesh, the renderer ghost, and the journal sink). The begin
+    /// handler is async — the solve runs off-main.
+    @ObservationIgnored var beginAutoRetopoHandler: (() async -> Bool)?
+    @ObservationIgnored var acceptAutoRetopoHandler: (() -> Bool)?
+    @ObservationIgnored var discardAutoRetopoHandler: (() -> Void)?
+
+    /// Kicks off a Weave solve over the Target (off-main); the ghost appears on
+    /// completion. Returns whether the solve was started (false when already
+    /// solving or no handler is wired). The result arrives asynchronously via
+    /// `autoRetopoGhostPending`.
+    @discardableResult
+    func requestAutoRetopo() -> Bool {
+        guard let handler = beginAutoRetopoHandler, !autoRetopoSolving else { return false }
+        Task { _ = await handler() }
+        return true
+    }
+
+    /// Accepts the proposed ghost as the EditMesh (one undoable step).
+    @discardableResult
+    func acceptAutoRetopo() -> Bool { acceptAutoRetopoHandler?() ?? false }
+
+    /// Discards the proposed ghost with no journal entry.
+    func discardAutoRetopo() { discardAutoRetopoHandler?() }
+
     /// Whether a toggle-style immediate command currently reads as ON (the
     /// toolbar slot tints and reports it).
     func isCommandActive(_ action: EditorAction) -> Bool {
@@ -377,6 +410,9 @@ final class ViewportInputModel {
         case .batchCommands:
             showsBatchCommands = true
             return false
+        // Phase 5: propose an Auto-Retopo ghost (accepted via the bar/tap).
+        case .autoRetopo:
+            return requestAutoRetopo()
         default: return false
         }
     }

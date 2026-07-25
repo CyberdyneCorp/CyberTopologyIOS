@@ -94,6 +94,13 @@ struct WeaveSolverTests {
         #expect(fractions.allSatisfy { $0 >= 0 && $0 <= 1 })
     }
 
+    @Test("The Auto-Retopo default uses a coarse, interactive quad budget")
+    func autoRetopoDefaultIsCoarse() {
+        // The engine's raw default (50k quads) is far too fine for one-tap use.
+        #expect(SolverParameters.autoRetopoDefault.remesh.targetQuads == 1500)
+        #expect(SolverParameters().remesh.targetQuads > 1500, "raw engine default is finer")
+    }
+
     @Test("A sub-region solve is rejected this slice")
     func subRegionRejected() throws {
         #expect(throws: CyberKitError.self) {

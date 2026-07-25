@@ -46,20 +46,20 @@ on wall-clock time or unseeded randomness.
 - **THEN** the two ghost meshes SHALL be identical vertex-for-vertex and face-for-face
 
 ### Requirement: Ghost accept/override flow
-Solver output SHALL appear as ghost geometry, not committed mesh. Tapping SHALL accept
-the ghost into the EditMesh as exactly one undoable journal entry; drawing over the
-ghost or cancelling SHALL discard it, leaving the document byte-unchanged. Accepted
-topology SHALL be ordinary EditMesh — every existing verb and tool SHALL work on it
-with no special-casing.
+Solver output SHALL appear as ghost geometry, not committed mesh. While a proposal is
+shown the user SHALL be offered an accept and a discard affordance: accepting commits
+the ghost into the EditMesh as exactly one undoable journal entry; discarding drops it,
+leaving the document byte-unchanged. Accepted topology SHALL be ordinary EditMesh —
+every existing verb and tool SHALL work on it with no special-casing.
 
 #### Scenario: Accept journals once and undoes cleanly
 - **WHEN** the user accepts an Auto-Retopo ghost
 - **THEN** the acceptance SHALL be a single journal entry
 - **AND** one undo SHALL restore the document to its exact pre-accept bytes
 
-#### Scenario: Draw-over discards
-- **WHEN** a ghost is showing and the user draws their own geometry through it
-- **THEN** the ghost SHALL be discarded
+#### Scenario: Discard changes nothing
+- **WHEN** a ghost is showing and the user discards it
+- **THEN** the ghost SHALL be removed
 - **AND** no journal entry SHALL be recorded for the discarded ghost
 
 #### Scenario: Accepted topology takes further edits

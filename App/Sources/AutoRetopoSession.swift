@@ -1,4 +1,5 @@
 import CyberKit
+import Foundation
 
 /// Auto-Retopo session (Phase 5, add-weave-solver-pipeline): runs the Weave
 /// solver over the Target and holds the proposed EditMesh as a ghost the user
@@ -34,10 +35,67 @@ extension MetalViewport.Coordinator {
             )
         } catch {
             autoRetopoGhost = nil
+            syncAutoRetopoGhostState()
             return false
         }
         autoRetopoGhost = ghost
+        syncAutoRetopoGhostState()
         return ghost != nil
+    }
+
+    /// The UI entry point: runs the solve OFF the main thread so a large Target
+    /// does not freeze the app, then presents the ghost. Engine meshes are not
+    /// `Sendable`, so the Target and the result cross the thread boundary as
+    /// payload `Data` (which is), deserialized into a fresh mesh on each side —
+    /// the `WeaveSolving` seam is preserved. Sets `autoRetopoSolving` for the
+    /// duration so the viewport can show progress.
+    @discardableResult
+    func beginAutoRetopoAsync(parameters: SolverParameters = .autoRetopoDefault) async -> Bool {
+        guard let target = currentTargetMesh() else { return false }
+        let targetData: Data
+        do { targetData = try target.payloadData() } catch { return false }
+
+        inputModel.autoRetopoSolving = true
+        defer { inputModel.autoRetopoSolving = false }
+
+        let ghostData = await Self.solveOffMain(
+            targetData: targetData, params: parameters, solver: weaveSolver
+        )
+        guard let ghostData else {
+            autoRetopoGhost = nil
+            syncAutoRetopoGhostState()
+            return false
+        }
+        let ghostMesh: Mesh
+        do { ghostMesh = try Mesh(payloadData: ghostData) } catch {
+            autoRetopoGhost = nil
+            syncAutoRetopoGhostState()
+            return false
+        }
+        autoRetopoGhost = SolverGhost(mesh: ghostMesh, addedFaces: ghostMesh.liveFaceIDs())
+        syncAutoRetopoGhostState()
+        return true
+    }
+
+    /// Runs the solve OFF the main actor. Data in, Data out — the engine meshes
+    /// are created and destroyed inside this call, so nothing non-`Sendable`
+    /// crosses the boundary.
+    private nonisolated static func solveOffMain(
+        targetData: Data, params: SolverParameters, solver: WeaveSolving
+    ) async -> Data? {
+        await Task.detached(priority: .userInitiated) { () -> Data? in
+            let source: Mesh
+            do { source = try Mesh(payloadData: targetData) } catch { return nil }
+            let ghost: SolverGhost?
+            do {
+                ghost = try solver.solve(
+                    source: source, region: .wholeMesh, constraints: WeaveConstraints(),
+                    params: params, onProgress: nil, isCancelled: { false }
+                )
+            } catch { return nil }
+            guard let ghost else { return nil }
+            return try? ghost.mesh.payloadData()
+        }.value
     }
 
     /// Accepts the pending ghost as the EditMesh in ONE journal entry
@@ -51,6 +109,7 @@ extension MetalViewport.Coordinator {
             for: ghost.mesh, name: "EditMesh", role: .editMesh, verb: "autoRetopo.accept"
         ) else { return false }
         autoRetopoGhost = nil
+        syncAutoRetopoGhostState()
         onCommit?(command)
         return true
     }
@@ -59,6 +118,21 @@ extension MetalViewport.Coordinator {
     /// byte-unchanged. Drawing over the ghost routes here.
     func discardAutoRetopo() {
         autoRetopoGhost = nil
+        syncAutoRetopoGhostState()
+    }
+
+    /// Reflects the pending ghost into the renderer (amber Weave proposal) and
+    /// the input model (the accept/discard bar observes it). No-ops on the
+    /// renderer headless (tests have no renderer); the state still updates.
+    private func syncAutoRetopoGhostState() {
+        inputModel.autoRetopoGhostPending = autoRetopoGhost != nil
+        guard let renderer else { return }
+        if let ghost = autoRetopoGhost {
+            renderer.ghostStyle = .weaveProposal(sceneRadius: renderer.bounds.radius)
+            renderer.loadGhost(mesh: ghost.mesh)
+        } else {
+            renderer.clearGhost()
+        }
     }
 
     /// The live Target mesh from the current document bundle, or nil when the

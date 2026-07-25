@@ -111,6 +111,16 @@ struct GhostStyle: Equatable {
         return style
     }
 
+    /// The amber Weave proposal ghost (Phase 5, spec: weave-solver): the
+    /// default proposal look — amber, pulsing (it is asking to be accepted) —
+    /// lifted a fraction of the scene radius off the Target so the solver's
+    /// surface-conforming quads do not z-fight the surface they came from.
+    static func weaveProposal(sceneRadius: Float) -> GhostStyle {
+        var style = GhostStyle()
+        style.normalOffset = max(sceneRadius, 1e-6) * 0.005
+        return style
+    }
+
     /// Subdivision preview surface (task 4.6, spec: retopology-tools /
     /// "Subdivision preview"): the Catmull-Clark smooth-subdivided cage
     /// rendered as a shaded surface UNDER the base wireframe.
