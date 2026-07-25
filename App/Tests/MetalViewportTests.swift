@@ -247,6 +247,89 @@ struct MetalViewportTests {
         #expect(renderer.hasMesh)
     }
 
+    /// REGRESSION (device: after deleting the Target AND the EditMesh, a
+    /// translucent shaded face lingered with an empty document — image #12).
+    /// Emptying the document must tear down EVERY EditMesh render path — solid,
+    /// wireframe, and the translucent fill — and drop the live recognizer
+    /// handle, or the recognizer still reports "on face" over nothing.
+    @Test func emptyingTheDocumentClearsAllEditMeshGeometry() throws {
+        let coordinator = makeViewport().makeCoordinator()
+        _ = coordinator.makeView()
+        let renderer = try #require(coordinator.renderer)
+        renderer.overlaySettings.fillOpacity = 0.3
+
+        let bundle = try seededBundle(roles: [.target, .editMesh])
+        coordinator.syncMesh(from: bundle)
+        #expect(renderer.hasMesh, "the Target renders")
+        #expect(renderer.hasOverlay, "the EditMesh wireframe renders")
+        #expect(renderer.hasEditMeshFill, "the EditMesh fill renders")
+        #expect(coordinator.recognizerEditMesh != nil, "the live handle is bound")
+
+        // Delete everything (the document goes empty).
+        coordinator.syncMesh(from: DocumentBundle())
+        #expect(!renderer.hasMesh, "no solid lingers")
+        #expect(!renderer.hasOverlay, "no wireframe lingers")
+        #expect(!renderer.hasEditMeshFill, "no translucent fill lingers")
+        #expect(coordinator.recognizerEditMesh == nil, "the live handle is dropped")
+    }
+
+    /// The EXACT image-#12 sequence: delete the Target FIRST (the EditMesh
+    /// becomes the solid render object), THEN delete the EditMesh. The
+    /// renderedObjectID transitions target → editMesh → nil; a stale id there
+    /// would leave the solid on screen.
+    @Test func deletingTargetThenEditMeshClearsEverything() throws {
+        let coordinator = makeViewport().makeCoordinator()
+        _ = coordinator.makeView()
+        let renderer = try #require(coordinator.renderer)
+        renderer.overlaySettings.fillOpacity = 0.3
+
+        let mesh = try Mesh.loadOBJ(at: UITestSupport.writeSeedOBJ())
+        var bundle = DocumentBundle()
+        try bundle.addObject(name: "target", role: .target, mesh: mesh)
+        try bundle.addObject(name: "cage", role: .editMesh, mesh: mesh)
+        let targetID = try #require(bundle.manifest.objects.first { $0.role == .target }).id
+        let editID = try #require(bundle.manifest.objects.first { $0.role == .editMesh }).id
+        coordinator.syncMesh(from: bundle)
+        #expect(renderer.hasMesh)
+        #expect(renderer.hasEditMeshFill)
+
+        // Delete the Target: the EditMesh is now the solid render object.
+        var afterTarget = bundle
+        afterTarget.manifest.objects.removeAll { $0.id == targetID }
+        coordinator.syncMesh(from: afterTarget)
+        #expect(renderer.hasMesh, "the EditMesh renders as the solid now")
+        #expect(renderer.hasEditMeshFill)
+
+        // Delete the EditMesh: the document is empty.
+        var empty = afterTarget
+        empty.manifest.objects.removeAll { $0.id == editID }
+        coordinator.syncMesh(from: empty)
+        #expect(!renderer.hasMesh, "no solid lingers")
+        #expect(!renderer.hasOverlay)
+        #expect(!renderer.hasEditMeshFill, "no translucent fill lingers")
+        #expect(coordinator.recognizerEditMesh == nil)
+    }
+
+    /// The same teardown for a TARGET-LESS document, where the EditMesh is the
+    /// SOLID render object (not just the overlay): deleting it must clear the
+    /// solid too.
+    @Test func emptyingATargetlessDocumentClearsTheEditMeshSolid() throws {
+        let coordinator = makeViewport().makeCoordinator()
+        _ = coordinator.makeView()
+        let renderer = try #require(coordinator.renderer)
+        renderer.overlaySettings.fillOpacity = 0.3
+
+        coordinator.syncMesh(from: try seededBundle(roles: [.editMesh]))
+        #expect(renderer.hasMesh)
+        #expect(renderer.hasEditMeshFill)
+
+        coordinator.syncMesh(from: DocumentBundle())
+        #expect(!renderer.hasMesh)
+        #expect(!renderer.hasOverlay)
+        #expect(!renderer.hasEditMeshFill)
+        #expect(coordinator.recognizerEditMesh == nil)
+    }
+
     // MARK: - Undo overlay plumbing
 
     @Test func undoCoordinatorRoutesTapsToDocumentHandlers() {
