@@ -236,7 +236,7 @@ struct HoverPreviewTests {
         let view: UIView
 
         init() throws {
-            coordinator = MetalViewport(
+            coordinator = IsolatedViewportModel.viewport(
                 bundle: DocumentBundle(), orbitSpeed: 1, zoomSpeed: 1,
                 onUndo: {}, onRedo: {}
             ).makeCoordinator()

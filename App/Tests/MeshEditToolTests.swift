@@ -28,12 +28,7 @@ struct MeshEditToolTests {
             // UserDefaults.standard, so a device with Auto Relax left ON nudges
             // vertices inside every authoring transaction and geometry assertions
             // fail for reasons that have nothing to do with the code under test.
-            var viewport = MetalViewport(
-                bundle: DocumentBundle(), orbitSpeed: 1, zoomSpeed: 1,
-                onUndo: {}, onRedo: {}
-            )
-            viewport.inputModel = IsolatedViewportModel.make()
-            coordinator = viewport.makeCoordinator()
+            coordinator = IsolatedViewportModel.viewport().makeCoordinator()
             _ = coordinator.makeView()
             try #require(coordinator.renderer != nil, "Metal device unavailable")
             coordinator.onCommit = { [weak self] command in

@@ -33,7 +33,7 @@ struct SubdivisionPreviewViewportTests {
         private(set) var committed: [DocumentCommand] = []
 
         init() throws {
-            coordinator = MetalViewport(
+            coordinator = IsolatedViewportModel.viewport(
                 bundle: DocumentBundle(), orbitSpeed: 1, zoomSpeed: 1,
                 onUndo: {}, onRedo: {}
             ).makeCoordinator()

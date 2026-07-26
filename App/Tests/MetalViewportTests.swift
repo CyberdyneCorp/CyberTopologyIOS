@@ -29,12 +29,13 @@ private final class PanStub: UIPanGestureRecognizer {
 
 @MainActor
 struct MetalViewportTests {
+    /// Isolated preferences: a directly-constructed `MetalViewport` reads
+    /// `UserDefaults.standard`, so a preference left on by hand becomes a failure on
+    /// that machine only (see `IsolatedViewportModel`).
     private func makeViewport(
         bundle: DocumentBundle = DocumentBundle()
     ) -> MetalViewport {
-        MetalViewport(
-            bundle: bundle, orbitSpeed: 1, zoomSpeed: 1, onUndo: {}, onRedo: {}
-        )
+        IsolatedViewportModel.viewport(bundle: bundle)
     }
 
     private func seededBundle(roles: [DocumentManifest.Object.Role]) throws -> DocumentBundle {
@@ -163,7 +164,7 @@ struct MetalViewportTests {
     @Test func fallbackViewKeepsUndoGestureOverlay() throws {
         var undone = 0
         var redone = 0
-        let viewport = MetalViewport(
+        let viewport = IsolatedViewportModel.viewport(
             bundle: DocumentBundle(), orbitSpeed: 1, zoomSpeed: 1,
             onUndo: { undone += 1 }, onRedo: { redone += 1 }
         )
@@ -335,7 +336,7 @@ struct MetalViewportTests {
     @Test func undoCoordinatorRoutesTapsToDocumentHandlers() {
         var undone = 0
         var redone = 0
-        let viewport = MetalViewport(
+        let viewport = IsolatedViewportModel.viewport(
             bundle: DocumentBundle(), orbitSpeed: 1, zoomSpeed: 1,
             onUndo: { undone += 1 }, onRedo: { redone += 1 }
         )
@@ -525,11 +526,10 @@ struct MetalViewportTests {
     /// mapping itself is what can regress, so it is asserted directly
     /// (`UIViewRepresentableContext` cannot be constructed in tests).
     @Test func viewportMapsDisplayOptionsToOverlaySettings() {
-        let viewport = MetalViewport(
-            bundle: DocumentBundle(), orbitSpeed: 1, zoomSpeed: 1,
-            overlayOpacity: 0.4, xrayEnabled: true, occlusionBias: 0.01,
-            onUndo: {}, onRedo: {}
-        )
+        var viewport = IsolatedViewportModel.viewport()
+        viewport.overlayOpacity = 0.4
+        viewport.xrayEnabled = true
+        viewport.occlusionBias = 0.01
         let settings = viewport.overlaySettings
         #expect(settings.opacity == 0.4)
         #expect(settings.xrayEnabled)

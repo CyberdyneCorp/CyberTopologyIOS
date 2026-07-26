@@ -18,7 +18,7 @@ struct GuideCaptureTests {
         let coordinator: MetalViewport.Coordinator
 
         init() throws {
-            coordinator = MetalViewport(
+            coordinator = IsolatedViewportModel.viewport(
                 bundle: DocumentBundle(), orbitSpeed: 1, zoomSpeed: 1, onUndo: {}, onRedo: {}
             ).makeCoordinator()
             _ = coordinator.makeView()

@@ -1,4 +1,6 @@
+import CyberKit
 import Foundation
+import Testing
 
 @testable import CyberTopology
 
@@ -33,5 +35,56 @@ enum IsolatedViewportModel {
         // reused name (or a future default-on preference) cannot change a result.
         defaults.removePersistentDomain(forName: suite)
         return ViewportInputModel(defaults: defaults)
+    }
+}
+
+extension IsolatedViewportModel {
+    /// A `MetalViewport` whose preferences are isolated from the host machine.
+    ///
+    /// Use this in app tests instead of constructing `MetalViewport` directly. The
+    /// direct constructor picks up `UserDefaults.standard`, which is how a preference
+    /// left on by hand becomes a test failure on that machine only.
+    @MainActor
+    static func viewport(
+        bundle: DocumentBundle = DocumentBundle(),
+        orbitSpeed: Double = 1,
+        zoomSpeed: Double = 1,
+        onUndo: @escaping @MainActor () -> Void = {},
+        onRedo: @escaping @MainActor () -> Void = {}
+    ) -> MetalViewport {
+        var viewport = MetalViewport(
+            bundle: bundle, orbitSpeed: orbitSpeed, zoomSpeed: zoomSpeed,
+            onUndo: onUndo, onRedo: onRedo
+        )
+        viewport.inputModel = make()
+        return viewport
+    }
+}
+
+/// Guards the isolation itself. Without this, a harness quietly reverting to
+/// `UserDefaults.standard` only shows up as an unrelated geometry failure on whichever
+/// machine happens to have the preference set — which is how it hid the first time.
+@MainActor
+struct IsolatedViewportModelTests {
+    @Test("An isolated model starts from a CLEAN preference state")
+    func startsClean() {
+        // On a machine where Auto Relax was left ON (the iPad this was found on), a
+        // model reading UserDefaults.standard reports true here. Isolation means this
+        // assertion is machine-independent.
+        #expect(IsolatedViewportModel.make().autoRelaxEnabled == false)
+    }
+
+    @Test("Two isolated models share no state")
+    func modelsAreIndependent() {
+        let a = IsolatedViewportModel.make()
+        let b = IsolatedViewportModel.make()
+        a.setAutoRelax(true)
+        #expect(a.autoRelaxEnabled)
+        #expect(b.autoRelaxEnabled == false, "preferences leaked between isolated models")
+    }
+
+    @Test("A viewport built by the factory carries the isolated model")
+    func viewportUsesTheIsolatedModel() {
+        #expect(IsolatedViewportModel.viewport().inputModel.autoRelaxEnabled == false)
     }
 }

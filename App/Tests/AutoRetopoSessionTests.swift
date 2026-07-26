@@ -20,7 +20,7 @@ struct AutoRetopoSessionTests {
         private(set) var committed: [DocumentCommand] = []
 
         init() {
-            coordinator = MetalViewport(
+            coordinator = IsolatedViewportModel.viewport(
                 bundle: DocumentBundle(), orbitSpeed: 1, zoomSpeed: 1, onUndo: {}, onRedo: {}
             ).makeCoordinator()
             coordinator.onCommit = { [weak self] command in

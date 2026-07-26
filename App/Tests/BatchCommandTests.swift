@@ -32,6 +32,9 @@ struct BatchCommandTests {
             let defaults = try #require(
                 UserDefaults(suiteName: "batch-commands-\(UUID().uuidString)")
             )
+            // Already isolated, and deliberately NOT via IsolatedViewportModel: this
+            // suite asserts the Auto Relax preference PERSISTS, so it needs a handle on
+            // the defaults it can read back.
             coordinator = MetalViewport(
                 bundle: DocumentBundle(), orbitSpeed: 1, zoomSpeed: 1,
                 inputModel: ViewportInputModel(defaults: defaults),
