@@ -36,16 +36,30 @@ If a task here turns out to need one, it is out of scope and belongs in 5.4b.
       with 5.3a. The `add-weave-regional-solve` interface goldens were regenerated —
       they had been recorded at the clamped density.
 
-## 1. Domain construction (CyberKit)
+## 1. Domain construction (CyberKit) — DONE
 
-- [ ] 1.1 `WeaveFillDomain.seed(cage:target:rows:)` — find the open boundary chain,
-      grow `rows` snapped quad rows, return the new face ids. Refuse with a distinct
-      reason when there is no open boundary.
-- [ ] 1.2 Row count from the painted extent: grow until the extent is covered, capped
-      (`extendBoundary` already floors the step at 1% of scene radius and caps rows —
-      reuse that cap rather than inventing a second one).
-- [ ] 1.3 The seed is scratch: it exists only inside the solve. A discarded proposal
-      must leave NO seed rows behind — the document never sees them.
+- [x] 1.1 `WeaveFillDomain.grow(cage:snapper:towards:rows:maximumRows:)`. Signature
+      differs from the plan: it takes `towards` — where the user asked to fill — and it
+      is REQUIRED, for a reason the plan missed. **Any cage patch's boundary is a CLOSED
+      loop**, and `extendBoundary` steps the whole chain by ONE translation, so handing
+      it the closed ring would SHIFT the cage rather than extend it. `facingRun` selects
+      the contiguous stretch of the ring lying on the fill side of its centroid, which
+      is what makes a single translation the correct operation. Without a fill direction
+      there is no non-arbitrary run, hence `Failure.noFillDirection`. Refusals are
+      typed and distinct: `noOpenBoundary`, `noFillDirection`, `runTooShort`,
+      `degenerateStep`.
+- [x] 1.2 `WeaveFillDomain.rows(toCover:from:of:step:maximumRows:)` — rows to reach the
+      furthest painted point along the step direction, capped (the runaway-rows hazard
+      task 4.2 already had to bound). Paint BEHIND the boundary asks for one row, not a
+      negative count.
+- [x] 1.3 The seed is built on `cage.duplicated()` — the ID-PRESERVING clone from task
+      8.4, not a payload round-trip, which would renumber the very ids `chain` refers to.
+      So the live cage is provably untouched (asserted on face ids AND rings) and a
+      discarded proposal leaves nothing behind, without any undo bookkeeping.
+- [x] 1.4 Covered by 6 tests: the facing run is the +y edge of a closed rectangular
+      loop (not all 14 vertices), the live cage is unchanged, grown vertices lie on the
+      Target within 1e-5, a CLOSED cage is refused, row derivation and its cap, and a
+      grown domain solving with the prescribed boundary bitwise preserved.
 
 ## 2. The armed tool
 
