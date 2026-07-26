@@ -151,15 +151,23 @@ be quietly forgotten.
       never aliased to the whole-mesh path), `Disconnected`, `CoincidentVertices`,
       `InconsistentWinding`. A refused build leaves the mesh byte-untouched — asserted.
 
-## 2. Engine: region-scoped boundary walk (header-only, read-only)
+## 2. Engine: region-scoped interface walk
 
-- [ ] 2.1 In `retopo/boundary.hpp`, add `isRegionBoundaryEdge(mesh, e, mask)` (exactly
-      one incident face in the region) and `regionBoundaryLoops(mesh, mask)`,
-      parameterising `detail::nextBoundaryEdge` (`:35`) on the predicate and reusing the
-      bidirectional walk, `closed` flag, pinch stop (`:44-46`) and deterministic
-      prefix-prepend (`:107`) verbatim.
-- [ ] 2.2 Unit-test that this returns the correct 16-vertex ring on an interior 4×4 block
-      where the existing `boundaryChain` (`:63`) returns empty.
+**DEVIATION — the plan specified something impossible.** 2.1 said to put this in
+`retopo/boundary.hpp`. It cannot go there: `cyber_retopo` depends on `cyber_core`, and
+`buildRegionSolve` lives in core, so core would have to include retopo. The walk therefore
+ships as `RegionSolve::isInterfaceEdge` plus the loop walk inside `region_solve.cpp`,
+mirroring `detail::nextBoundaryEdge`'s bidirectional walk and its deterministic pinch stop.
+A retopo-level wrapper can be added later if 5.4a needs one for interface rendering.
+
+- [x] 2.1 `RegionSolve::isInterfaceEdge` — a live edge with exactly TWO incident faces, of
+      which exactly one is in the region. Ordered `interfaceLoops` walked in ascending
+      `EdgeId` for determinism.
+- [x] 2.2 Asserted: on the interior 4×4 block every interface edge is invisible to
+      `retopo::isBoundaryEdge` AND yields an empty `retopo::boundaryChain`, while the region
+      walk returns exactly one closed 16-vertex ring.
+- [x] 2.3 Cage-derived prescription asserted: 4 block corners require 1 in-region face, 12
+      mid-side vertices require 2; a caller override replaces the derived value.
 
 ## 3. Engine: the SplitPass guard
 
@@ -242,14 +250,17 @@ unachievable by any local pass). Refusing on irregularity rejected every fixture
 
 ## 9. Engine tests (ship inside patch 0006)
 
-- [ ] 9.1 New `tests/core/test_region_solve.cpp`: Invariant P (every pinned `VertexId`
+- [x] 9.1 New `tests/core/test_region_solve.cpp`: Invariant P (every pinned `VertexId`
       alive at a bitwise-identical `Vec3` after a full region solve); Invariant F (every
       frozen `FaceId` alive with an identical `faceVertices` ring); the interface `EdgeId`
       set unchanged **at 4× density** — the test that actually pins the SplitPass guard, since
       a low-density run passes with or without it.
-- [ ] 9.2 The index identity holds on every fixture.
-- [ ] 9.3 `regionBoundaryLoops` returns the correct ring where `boundaryChain` returns empty.
-- [ ] 9.4 Add the file to `tests/CMakeLists.txt`. NOTE: `scripts/build_engine.sh:198-199`
+- [ ] 9.2 The index identity holds on every fixture. NOT DONE — `interiorIndexBudget` is
+      computed and reported but nothing asserts it yet; it needs the task-7 report tier to be
+      meaningful.
+- [x] 9.3 The region walk returns the correct ring where `boundaryChain` returns empty
+      (see 2.2 — same test).
+- [x] 9.4 Added to `tests/CMakeLists.txt`. NOTE: `scripts/build_engine.sh:198-199`
       sets `CYBER_BUILD_TESTS=OFF`, so these need a separate host configure with
       `-DCYBER_BUILD_TESTS=ON` — document the command in design.md. Without this, patch
       0006 ships with the same zero-engine-test posture patch 0003 did.
@@ -266,10 +277,13 @@ unachievable by any local pass). Refusing on irregularity rejected every fixture
       against the FULLY PATCHED tree. 0002/0003/0004 own `capi.cpp`/`cyber_capi.h`; 0003 owns
       `field_quadrangulator.{cpp,hpp}`. `pipeline.{cpp,hpp}`, `isotropic.{cpp,hpp}`,
       `remesh_params.{hpp,cpp}`, `boundary.hpp` and the new files are owned by no existing patch.
-- [ ] 10.3 Verify the full stack 0001→0006 applies cleanly and the engine rebuilds (limited
-      parallelism, no OOM), matching the 0003 task 3.3 precedent.
-- [ ] 10.4 Add the 0006 paragraph to the `scripts/build_engine.sh` header block (lines 20-52)
-      with a `TODO(upstream)` note in the house style.
+- [x] 10.3 Verified from a PRISTINE tree (stashed to bare HEAD, replayed 0001→0006): all six
+      apply cleanly, the engine rebuilds, and the reconstructed tree passes the full suite —
+      **274 test cases, 126 112 assertions, 0 failures**, no golden regenerated. That green run
+      over the pre-existing goldens is also task 16.1's null-object evidence at the ENGINE
+      layer (the CyberKit half of 16.1 still stands).
+- [x] 10.4 0006 paragraph added to the `scripts/build_engine.sh` header block, in numbered
+      order after 0005, with the `TODO(upstream)` note in the house style.
 
 ## 11. CyberKit: primitives
 
