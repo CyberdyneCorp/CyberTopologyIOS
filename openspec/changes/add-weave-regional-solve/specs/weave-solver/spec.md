@@ -69,38 +69,51 @@ polyline.
   interface edge spacing
 - **THEN** the set of vertex pairs forming the interface SHALL be unchanged
 
-### Requirement: Singularities are interior to the solved region
-Every interface vertex SHALL end the solve at its prescribed total valence, so that no
-singularity is introduced on the interface. The prescription SHALL default to the valence
-implied by the surrounding topology and SHALL be overridable per vertex by the caller, so
-that a deliberately authored pole on the interface does not force a rejection. The solver
-SHALL report the residual interior index budget.
+### Requirement: Interface irregularity is measured and reported
+The solver SHALL compute, for each interface vertex, the total valence implied by the
+surrounding topology and the valence the solve actually produced, and SHALL report every
+vertex where they differ together with the residual interior index budget. The prescription
+SHALL be overridable per vertex by the caller, so that a deliberately authored pole on the
+interface is not counted as a defect.
 
-#### Scenario: No new singularity lands on the interface
-- **WHEN** a sub-region is solved
-- **THEN** each interface vertex's total incident-face count SHALL equal its prescribed
-  valence
-- **AND** any irregular vertex in the ghost SHALL be strictly interior to the region
+This change reports the measure; it does not guarantee the measure is zero. Forcing it to
+zero is a coupled degree-constrained matching over the interface ring (see design.md
+ADDENDUM 2) and is deferred to its own change — the guarantee must not be claimed until a
+solver for it exists.
 
-#### Scenario: Curvature does not change the combinatorics
-- **WHEN** the same ring combinatorics are solved on a flat region and on a curved region
-- **THEN** the reported interface conformance and interior index budget SHALL be identical
+#### Scenario: Interface irregularities are surfaced, not hidden
+- **WHEN** a sub-region solve produces an interface vertex whose valence differs from its
+  prescription
+- **THEN** the solve SHALL report that vertex and the count of such vertices
+- **AND** the report SHALL be available to the caller alongside the ghost
 
-### Requirement: A non-conforming solve is refused, never published
-Where the solver cannot satisfy the prescribed-boundary guarantee, it SHALL fail with a
-reason identifying the offending interface vertices and SHALL emit no ghost. It SHALL NOT
-emit a ghost that violates the guarantee, and SHALL NOT silently repair the violation by
-moving prescribed geometry. Inputs that cannot be solved safely — a region that is
-disconnected, empty, or whose boundary loop has odd parity, or a source containing
-coincident duplicate vertices or inconsistent face winding — SHALL be refused up front
-with a distinct reason for each case.
+#### Scenario: An authored pole is not a defect
+- **WHEN** the caller overrides the prescribed valence at an interface vertex and the solve
+  matches that override
+- **THEN** the vertex SHALL NOT be reported as irregular
 
-#### Scenario: Non-conforming region produces no geometry
-- **WHEN** a solve cannot place quads meeting every interface vertex at its prescribed
-  valence
-- **THEN** the solve SHALL report failure naming the offending vertices
+### Requirement: A solve that would violate exact landing is refused, never published
+The solver SHALL refuse, emitting no ghost, where it cannot preserve prescribed vertex
+identity, prescribed positions, or the prescribed interface edge set. It SHALL NOT silently
+repair such a violation by moving prescribed geometry. Inputs that cannot be solved safely —
+a region that is disconnected or empty, or a source containing coincident duplicate vertices
+or inconsistent face winding — SHALL be refused up front with a distinct reason for each
+case.
+
+Interface IRREGULARITY is deliberately excluded from this requirement: it is reported, not
+refused. Refusing on it was measured to reject every test fixture (design.md ADDENDUM 1-2),
+which would make regional solve unusable while guaranteeing nothing extra.
+
+#### Scenario: A solve that would move prescribed geometry produces nothing
+- **WHEN** a solve cannot preserve the prescribed positions or interface edge set
+- **THEN** the solve SHALL report failure naming the offending elements
 - **AND** no ghost SHALL be produced
 - **AND** the source mesh SHALL be unchanged
+
+#### Scenario: An irregular interface does not block the ghost
+- **WHEN** a solve lands the interface exactly but leaves an interface vertex irregular
+- **THEN** a ghost SHALL still be produced
+- **AND** the irregularity SHALL appear in the report
 
 #### Scenario: Unweldable source is refused before solving
 - **WHEN** a sub-region solve is requested on a mesh containing coincident duplicate

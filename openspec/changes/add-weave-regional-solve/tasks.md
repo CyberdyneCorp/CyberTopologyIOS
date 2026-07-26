@@ -1,9 +1,10 @@
 # Tasks: add-weave-regional-solve
 
-Ordered. **Task 0 is a falsification spike and gates everything after task 3** — do not
-author patch 0006 until its number (c) is measured on three fixtures.
+Ordered. **Task 0 was a falsification spike; it ran, it fired, and the change was rescoped
+in response (task 0.5).** Read §0 before touching anything else — it is why the conformance
+gate has two tiers instead of one, and why 5.3 ships half-closed.
 
-## 0. Falsification spike — RUN 2026-07-26. **THE FALSIFIER FIRED. STOP.**
+## 0. Falsification spike — RUN 2026-07-26. **FIRED; CHANGE RESCOPED.**
 
 - [x] 0.1 Implemented against the fully-patched engine tree: `frozenFace`/`vertexPinned`
       masks, `setFeatureEdge` interface tagging, the 4-line `SplitPass` guard. No gate, no
@@ -106,6 +107,35 @@ consequence.
       spec's interior-singularity requirement rather than deferring it.
 **Tasks 1-3 remain validated. Tasks 4-17 stay on hold.**
 
+- [x] 0.5 **DECISION: land 5.1a on the proven foundation; split the singularity guarantee
+      out as 5.3a.** Not one of the three options as framed — the framing conflated two
+      separable deliverables.
+
+G1 (exact boundary landing) is PROVEN by measurement, and regional solve does not depend on
+the singularity guarantee: that is task 5.3's second half, and 5.1a is what four downstream
+tasks (5.2a, 5.4a, 5.5a, 5.6) are actually blocked on. So this change now ships regional
+solve with exact landing enforced, and interface irregularity MEASURED AND REPORTED rather
+than guaranteed or refused.
+
+Concretely, versus the pre-spike plan:
+  - the conformance gate splits into a REFUSE tier (exact landing — always achievable, so a
+    failure is a regression) and a REPORT tier (irregularity, index residual, interface
+    triangles) — task 7;
+  - the spec's "Singularities are interior to the solved region" requirement becomes
+    "Interface irregularity is measured and reported";
+  - test 14.4 asserts the report is CORRECT, not that it is zero;
+  - 5.3 closes only for exact landing; **5.3a** carries the guarantee, blocked on a
+    constrained-matching solver;
+  - the marketing claim that Weave puts no singularity on a prescribed interface is
+    unsupported until 5.3a lands, and 5.7 must say so.
+
+Rejected: option (a) now, because a b-matching solver is the largest item in the change and
+would block four downstream tasks behind it — it is better sequenced as 5.3a once regional
+solve is real and can exercise it. Option (b) for the same reason plus a narrower domain.
+Option (c) as literally framed, because "relax 5.3" understates it: the guarantee is not
+weakened, it is SPLIT, and the half that is deferred is named with its blocker so it cannot
+be quietly forgotten.
+
 ## 1. Engine: RegionSolve core (new files, zero patch conflict)
 
 - [ ] 1.1 `src/core/include/cyber/core/region_solve.hpp` — `struct RegionSolve` with
@@ -170,14 +200,21 @@ consequence.
       design Stage 5, reusing the `quadQuality` × field-diagonalness weight (`:169-180`)
       and ascending-`EdgeId` ordering for determinism.
 
-## 7. Engine: verifyInterfaceConformance — the gate
+## 7. Engine: verifyInterfaceConformance — exactness gate + irregularity report
+
+**Revised after the spike.** Two tiers, and the split is the point: refuse on anything that
+breaks EXACT LANDING (proven achievable), report anything about IRREGULARITY (measured
+unachievable by any local pass). Refusing on irregularity rejected every fixture.
 
 - [ ] 7.1 New `core/interface_conformance.{hpp,cpp}`.
-- [ ] 7.2 The three checks from design Stage 6: per-vertex `incidentSolvedFaces(b) ==
-      q_in(b)`; the index identity `Σ_interior(4-deg) + Σ_boundary(3-deg) == 4χ`; no
-      triangle incident to an interface edge.
-- [ ] 7.3 On any failure return `RunStatus::Error` with the offending source vertex ids in
-      `interfaceIssues`; publish nothing.
+- [ ] 7.2 REFUSE tier — `RunStatus::Error`, no ghost, offending ids in `interfaceIssues`:
+      a prescribed vertex dead or moved (bitwise), a lost interface edge, a frozen face ring
+      changed. These are exactly the properties the spike measured as always-holding, so a
+      failure here is a real regression, not a hard problem.
+- [ ] 7.3 REPORT tier — never blocks publication: per-vertex `incidentSolvedFaces(b)` vs
+      `q_in(b)` with the differing ids listed, the index-identity residual
+      `Σ_interior(4-deg) + Σ_boundary(3-deg) − 4χ`, and the count of triangles incident to an
+      interface edge. Callers decide what to do with a non-zero count.
 - [ ] 7.4 Call it from the pipeline region branch after quadrangulation, before `std::move(work)`.
 
 ## 8. Engine C API
@@ -279,11 +316,13 @@ provably cannot distinguish "never touched the vertex" from "snapped to within 1
 - [ ] 14.3 `regionSolvePreservesInterfaceEdgeSet` at 4× density — derive the interface
       vertex-pair set from the frozen rings in both meshes and assert Set equality. Catches the
       SplitPass hazard that 14.1 and 14.2 both miss.
-- [ ] 14.4 `regionSolveKeepsSingularitiesOffTheInterface` — every interface vertex's
-      `vertexFaceCount` equals its target; the index identity holds; irregular interior vertices
-      are reported and their ids absent from `interfaceVertices`. Asserted on the output quad
-      mesh, NOT on `SeamlessSetup::singularityIndex` (vacuously 0 on boundaries,
-      `seamless_solver.cpp:136-139`).
+- [ ] 14.4 `regionSolveReportsInterfaceIrregularity` — the REPORT is correct, not that it is
+      zero: on a fixture with known irregular interface vertices the reported ids match the ones
+      an independent `vertexFaceCount` sweep finds, and the index-identity residual matches an
+      independently computed value. Asserted on the output quad mesh, NOT on
+      `SeamlessSetup::singularityIndex` (vacuously 0 on boundaries,
+      `seamless_solver.cpp:136-139`). A caller-supplied valence override at a vertex removes it
+      from the report. **Deliberately NOT asserting zero irregularity — see 5.3a.**
 - [ ] 14.5 **Negative control:** the identical region through `EngineRemeshSolver` must FAIL
       14.1 and 14.2. Without it these can pass vacuously.
 - [ ] 14.6 Rejection cases, each asserting its own distinct reason: odd-parity loop,
@@ -301,7 +340,7 @@ provably cannot distinguish "never touched the vertex" from "snapped to within 1
       vertex, so it proves the accounting is not just "a rectangle"); `region_solve_sphere_cap`
       (same ring combinatorics as the flat case on a curved surface — must produce an IDENTICAL
       `.interface.golden`, proving the guarantee is topological); `region_solve_pentagon` (nonzero
-      budget: at least one interior irregular vertex MUST exist and none may be on the interface).
+      budget: at least one interior irregular vertex MUST exist).
 - [ ] 15.3 Keep a companion `.payload.golden` per fixture in
       `CyberKit/Tests/CyberKitTests/Goldens/MeshEdits/` as a separate, clearly-labelled test, so an
       interior numerical wobble never masquerades as an interface-guarantee failure.
@@ -325,7 +364,8 @@ provably cannot distinguish "never touched the vertex" from "snapped to within 1
 - [ ] 17.2 Full CyberKit suite green on simulator AND device; engine + CyberKit link.
 - [ ] 17.3 Engine C++ suite green under a host configure with `-DCYBER_BUILD_TESTS=ON`.
 - [ ] 17.4 Update `openspec/changes/add-cybertopology-app/tasks.md`: mark 5.1a's region-scoped
-      clause done, mark 5.3 done with the enforce-or-fail scope stated explicitly, and add a `5.3a`
-      for the deferred remainder (construct-correct / prescribed interior cone placement) in the
-      house "split out honestly" style.
+      clause done; mark 5.3 done ONLY for exact boundary landing, stating in the entry that the
+      interior-only-singularity half is measured-and-reported, not guaranteed; add `5.3a` for that
+      half in the house "split out honestly" style, citing the b-matching characterisation. Also
+      note in 5.7 that the interface-singularity marketing claim is unsupported until 5.3a lands.
 - [ ] 17.5 Update `scripts/build_engine.sh` docs and the repo README's engine-patch table.

@@ -70,10 +70,15 @@ property of the shipped code rather than of an audit.
   `pureQuads` block. Scopes `totalSurfaceArea` to active faces so `targetEdgeLength` is
   region-local. Output is `std::move(work)` — the input mesh with the region rewritten
   in place, ids intact.
-- **Engine: a HARD conformance gate.** `verifyInterfaceConformance()` runs after
-  quadrangulation and before publication, checking per-vertex interface regularity, the
-  discrete index identity, and that no triangle touches the interface. On any failure it
-  returns `RunStatus::Error` naming the offending vertices — **no ghost is emitted.**
+- **Engine: an exactness gate plus an irregularity REPORT.** `verifyInterfaceConformance()`
+  runs after quadrangulation and before publication. It REFUSES (`RunStatus::Error`, no
+  ghost) on anything that would break exact landing — a prescribed vertex moved or dead, a
+  lost interface edge, a corrupted frozen ring. It REPORTS, without refusing, per-vertex
+  interface irregularity, the discrete index identity residual, and triangles touching the
+  interface. **This split is the change's central revision and it is measurement-driven:
+  refusing on irregularity was implemented and measured to reject every fixture in the
+  suite (see design.md ADDENDUM 1-2), so the hard gate would have shipped a solver that
+  never solves.**
 - **Engine C API:** `cyber_mesh_set_solve_region` (handle side-channel, the patch-0003
   precedent), `cyber_mesh_solved_faces`, `cyber_mesh_interface_vertices`,
   `cyber_mesh_vertex_face_count` (the valence primitive, verified absent), and
@@ -109,9 +114,15 @@ property of the shipped code rather than of an audit.
 
 ## Non-Goals (deferred)
 
-- **Construct-correct interior singularity placement.** This change delivers
-  enforce-or-fail (a violating ghost cannot exist), not construct-correct (a conforming
-  ghost always exists). Some regions will produce no ghost. Split out as 5.3a.
+- **The interior-only singularity GUARANTEE (the second half of task 5.3).** This change
+  closes 5.1a and the exact-landing half of 5.3, and it MEASURES interface irregularity —
+  it does not guarantee zero. Forcing zero is a coupled degree-constrained matching over
+  the interface ring: a merge across `(b,x)` decrements the face count at both endpoints,
+  so interface vertices are coupled and every local pass deadlocks (three were built and
+  measured; see design.md ADDENDUM 2). That needs a global combinatorial solver, and the
+  engine's matching is blossom-free. Split out as **5.3a** — and until it lands, the
+  marketing claim that Weave places no singularity on a prescribed interface is NOT
+  supported and must not be made.
 - **Prescribed interior cone placement** — the caller cannot yet say "put a pole here".
 - **Multi-loop strong guarantee.** Multi-loop, pinched and holed regions work
   mechanically, but the interior-index claim degrades to per-loop parity. The spec says
