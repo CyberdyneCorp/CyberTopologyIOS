@@ -1,8 +1,15 @@
 diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
-index ae157a1..88a3ccf 100644
+index ae157a1..cb83bdc 100644
 --- a/src/core/CMakeLists.txt
 +++ b/src/core/CMakeLists.txt
-@@ -12,6 +12,7 @@ add_library(cyber_core STATIC
+@@ -1,5 +1,6 @@
+ add_library(cyber_core STATIC
+     src/bvh.cpp
++    src/interface_conformance.cpp
+     src/io.cpp
+     src/io_gltf.cpp
+     src/io_obj.cpp
+@@ -12,6 +13,7 @@ add_library(cyber_core STATIC
      src/pipeline.cpp
      src/quadrangulate.cpp
      src/reference_surface.cpp
@@ -10,6 +17,75 @@ index ae157a1..88a3ccf 100644
      src/remesh_params.cpp
      src/version.cpp
  )
+diff --git a/src/core/include/cyber/core/interface_conformance.hpp b/src/core/include/cyber/core/interface_conformance.hpp
+new file mode 100644
+index 0000000..ac0aedb
+--- /dev/null
++++ b/src/core/include/cyber/core/interface_conformance.hpp
+@@ -0,0 +1,63 @@
++#pragma once
++#include <unordered_map>
++#include <vector>
++
++#include "cyber/core/mesh.hpp"
++#include "cyber/core/region_solve.hpp"
++
++// Post-solve verification for a region solve (add-weave-regional-solve, task 7).
++//
++// TWO TIERS, and the split is the whole point.
++//
++//   REFUSE — everything that would break EXACT LANDING: a prescribed vertex
++//   dead or moved, a lost interface edge, a corrupted frozen face ring. The
++//   task-0 spike measured all three as always-holding across flat, L-shaped and
++//   domed fixtures at 1x and 4x density, so a failure here is a REGRESSION, not
++//   a hard problem. Refusing costs nothing and catches real breakage — removing
++//   the SplitPass guard, for instance, corrupts 20 frozen rings and loses 16
++//   interface edges on the 6x6 fixture while leaving every POSITION correct.
++//
++//   REPORT — interface irregularity, the index-identity residual, and triangles
++//   touching the interface. Never blocks publication. Forcing irregularity to
++//   zero is a coupled degree-constrained matching over the interface ring: a
++//   merge across (b,x) decrements the face count at BOTH endpoints, so the ring
++//   is coupled and every local pass deadlocks. Three were built and measured
++//   during the spike; the best left 3 of 16 vertices unresolved on the simplest
++//   fixture. Gating on it rejected EVERY fixture, which would have shipped a
++//   solver that never solves. See the change's design.md ADDENDUM 2, and task
++//   5.3a for the guarantee.
++namespace cyber::remesh {
++
++// The prescription, captured BEFORE the solve mutates anything.
++struct InterfaceSnapshot {
++    std::unordered_map<Index, Vec3> prescribedPositions;        // pinned vertex -> position
++    std::unordered_map<Index, std::vector<Index>> frozenRings;  // frozen face -> vertex ring
++    std::vector<std::pair<Index, Index>> interfaceEdges;        // sorted, endpoints ordered
++};
++
++[[nodiscard]] InterfaceSnapshot captureInterface(const Mesh& mesh, const RegionSolve& region);
++
++struct ConformanceResult {
++    // REFUSE tier — non-empty/non-zero means the solve must not be published.
++    std::vector<VertexId> movedOrDeadPrescribed;
++    std::vector<FaceId> corruptedFrozenFaces;
++    std::vector<std::pair<Index, Index>> lostInterfaceEdges;
++
++    // REPORT tier — information for the caller.
++    std::vector<VertexId> irregularInterface;
++    int indexResidual = 0;  // 0 means the discrete index identity balances
++    std::size_t interfaceTriangles = 0;
++
++    [[nodiscard]] bool exact() const {
++        return movedOrDeadPrescribed.empty() && corruptedFrozenFaces.empty() &&
++               lostInterfaceEdges.empty();
++    }
++    // A human-readable summary of the REFUSE tier only.
++    [[nodiscard]] std::string describeFailure() const;
++};
++
++[[nodiscard]] ConformanceResult verifyInterfaceConformance(const Mesh& mesh,
++                                                           const RegionSolve& region,
++                                                           const InterfaceSnapshot& before);
++
++}  // namespace cyber::remesh
 diff --git a/src/core/include/cyber/core/isotropic.hpp b/src/core/include/cyber/core/isotropic.hpp
 index bddbb20..94011e0 100644
 --- a/src/core/include/cyber/core/isotropic.hpp
@@ -242,6 +318,257 @@ index 0000000..000b89b
 +                                   const std::unordered_map<Index, int>* valenceOverrides = nullptr);
 +
 +}  // namespace cyber::remesh
+diff --git a/src/core/include/cyber/core/remesh_params.hpp b/src/core/include/cyber/core/remesh_params.hpp
+index 9b5cc90..15163a1 100644
+--- a/src/core/include/cyber/core/remesh_params.hpp
++++ b/src/core/include/cyber/core/remesh_params.hpp
+@@ -46,7 +46,19 @@ struct ValidatedParameters {
+ // value) and flags non-finite values as fatal. Every entry point SHALL call
+ // this before the pipeline starts (remeshing-parameters spec, "Validation at
+ // every entry point").
+-[[nodiscard]] ValidatedParameters validate(const Parameters& raw);
++// `regionSolve` marks a REGION solve (add-weave-regional-solve): a subset of
++// faces rewritten in place against frozen surrounding topology. It makes
++// `pureQuads` a FATAL issue, because the pure-quad construction rewrites
++// geometry wholesale and ends in an unguarded whole-vertex reprojection that
++// would move the prescribed boundary. Validating it here rather than only in
++// the pipeline stops a direct `cyber::remesh::remesh` caller too.
++//
++// Deliberately NOT fatal in region mode: holeFillMaxBoundary and
++// smallPatchPolicy. Both are DEFAULTS (64 and KeepLargest) and both are
++// meaningless for one connected region bounded by frozen topology, so refusing
++// would reject every ordinary call. The pipeline skips them and reports a
++// non-fatal issue where they are ignored.
++[[nodiscard]] ValidatedParameters validate(const Parameters& raw, bool regionSolve = false);
+ 
+ // Derived target edge length from total surface area (guarded: non-positive
+ // area or quad count is an error, never a division by zero — the AutoRemesher
+diff --git a/src/core/src/interface_conformance.cpp b/src/core/src/interface_conformance.cpp
+new file mode 100644
+index 0000000..588a93d
+--- /dev/null
++++ b/src/core/src/interface_conformance.cpp
+@@ -0,0 +1,220 @@
++#include "cyber/core/interface_conformance.hpp"
++
++#include <algorithm>
++#include <cstring>
++#include <string>
++#include <unordered_set>
++
++namespace cyber::remesh {
++
++namespace {
++
++// Bit pattern, never an epsilon. A tolerance cannot distinguish "never touched"
++// from "moved and snapped back to within 1e-6", and that distinction IS the
++// guarantee — the whole reason the region path exists rather than a solve-then-
++// snap. io_obj.cpp writes at 6 significant digits, so a payload round-trip
++// cannot carry this proof either; it must run against the live handle.
++bool bitwiseEqual(Vec3 a, Vec3 b) {
++    return std::memcmp(&a.x, &b.x, sizeof(float)) == 0 &&
++           std::memcmp(&a.y, &b.y, sizeof(float)) == 0 &&
++           std::memcmp(&a.z, &b.z, sizeof(float)) == 0;
++}
++
++std::pair<Index, Index> ordered(VertexId a, VertexId b) {
++    return {std::min(a.value, b.value), std::max(a.value, b.value)};
++}
++
++bool edgeExists(const Mesh& mesh, Index a, Index b) {
++    const VertexId va{a};
++    if (!mesh.isAlive(va)) {
++        return false;
++    }
++    for (const EdgeId e : mesh.vertexEdges(va)) {
++        if (!mesh.isAlive(e)) {
++            continue;
++        }
++        const auto [x, y] = mesh.edgeVertices(e);
++        if ((x.value == a && y.value == b) || (x.value == b && y.value == a)) {
++            return true;
++        }
++    }
++    return false;
++}
++
++int activeFaceCount(const Mesh& mesh, const RegionSolve& region, VertexId v) {
++    int n = 0;
++    for (const FaceId f : mesh.vertexFaces(v)) {
++        if (!region.frozen(f)) {
++            ++n;
++        }
++    }
++    return n;
++}
++
++}  // namespace
++
++std::string ConformanceResult::describeFailure() const {
++    if (exact()) {
++        return {};
++    }
++    std::string out = "region solve broke exact landing:";
++    if (!movedOrDeadPrescribed.empty()) {
++        out += " " + std::to_string(movedOrDeadPrescribed.size()) + " prescribed vertices moved "
++               "or died (first id " + std::to_string(movedOrDeadPrescribed.front().value) + ");";
++    }
++    if (!corruptedFrozenFaces.empty()) {
++        out += " " + std::to_string(corruptedFrozenFaces.size()) + " frozen face rings changed "
++               "(first id " + std::to_string(corruptedFrozenFaces.front().value) + ");";
++    }
++    if (!lostInterfaceEdges.empty()) {
++        out += " " + std::to_string(lostInterfaceEdges.size()) + " interface edges lost;";
++    }
++    return out;
++}
++
++InterfaceSnapshot captureInterface(const Mesh& mesh, const RegionSolve& region) {
++    InterfaceSnapshot snap;
++    for (Index i = 0; i < mesh.vertexCapacity(); ++i) {
++        const VertexId v{i};
++        if (mesh.isAlive(v) && region.pinned(v)) {
++            snap.prescribedPositions[i] = mesh.position(v);
++        }
++    }
++    for (Index i = 0; i < mesh.faceCapacity(); ++i) {
++        const FaceId f{i};
++        if (!mesh.isAlive(f) || !region.frozen(f)) {
++            continue;
++        }
++        std::vector<Index> ring;
++        for (const VertexId v : mesh.faceVertices(f)) {
++            ring.push_back(v.value);
++        }
++        snap.frozenRings[i] = std::move(ring);
++    }
++    for (Index i = 0; i < mesh.edgeCapacity(); ++i) {
++        const EdgeId e{i};
++        if (!region.isInterfaceEdge(mesh, e)) {
++            continue;
++        }
++        const auto [a, b] = mesh.edgeVertices(e);
++        snap.interfaceEdges.push_back(ordered(a, b));
++    }
++    std::sort(snap.interfaceEdges.begin(), snap.interfaceEdges.end());
++    return snap;
++}
++
++ConformanceResult verifyInterfaceConformance(const Mesh& mesh, const RegionSolve& region,
++                                             const InterfaceSnapshot& before) {
++    ConformanceResult out;
++
++    // --- REFUSE tier ---------------------------------------------------------
++    {
++        std::vector<Index> moved;
++        for (const auto& [idx, pos] : before.prescribedPositions) {
++            const VertexId v{idx};
++            if (!mesh.isAlive(v) || !bitwiseEqual(mesh.position(v), pos)) {
++                moved.push_back(idx);
++            }
++        }
++        std::sort(moved.begin(), moved.end());
++        for (const Index idx : moved) {
++            out.movedOrDeadPrescribed.push_back(VertexId{idx});
++        }
++    }
++    {
++        std::vector<Index> broken;
++        for (const auto& [idx, ring] : before.frozenRings) {
++            const FaceId f{idx};
++            if (!mesh.isAlive(f)) {
++                broken.push_back(idx);
++                continue;
++            }
++            std::vector<Index> now;
++            for (const VertexId v : mesh.faceVertices(f)) {
++                now.push_back(v.value);
++            }
++            if (now != ring) {
++                broken.push_back(idx);
++            }
++        }
++        std::sort(broken.begin(), broken.end());
++        for (const Index idx : broken) {
++            out.corruptedFrozenFaces.push_back(FaceId{idx});
++        }
++    }
++    for (const auto& [a, b] : before.interfaceEdges) {
++        if (!edgeExists(mesh, a, b)) {
++            out.lostInterfaceEdges.push_back({a, b});
++        }
++    }
++
++    // --- REPORT tier ---------------------------------------------------------
++    // Per-vertex interface regularity against the cage-derived prescription.
++    {
++        std::vector<Index> irregular;
++        for (const auto& [idx, required] : region.requiredInRegion) {
++            const VertexId v{idx};
++            if (!mesh.isAlive(v)) {
++                continue;  // already named by the refuse tier
++            }
++            if (activeFaceCount(mesh, region, v) != required) {
++                irregular.push_back(idx);
++            }
++        }
++        std::sort(irregular.begin(), irregular.end());
++        for (const Index idx : irregular) {
++            out.irregularInterface.push_back(VertexId{idx});
++        }
++    }
++
++    // Discrete index identity over the SOLVED patch:
++    //   sum_interior(4 - deg) + sum_boundary(3 - deg) == 4 * chi
++    // A quad disk balances at exactly 4 (re-derived: 4F = 2E_int + E_bnd and
++    // E_bnd = V_bnd give 4*V_int + 2*V_bnd - 4F, and Euler closes it). Reported
++    // as a residual rather than asserted, since a multi-loop or pinched region
++    // legitimately does not balance.
++    {
++        std::unordered_set<Index> rv, re;
++        std::size_t rf = 0;
++        for (Index i = 0; i < mesh.faceCapacity(); ++i) {
++            const FaceId f{i};
++            if (!mesh.isAlive(f) || region.frozen(f)) {
++                continue;
++            }
++            ++rf;
++            const std::vector<VertexId> ring = mesh.faceVertices(f);
++            bool touchesInterface = false;
++            for (std::size_t k = 0; k < ring.size(); ++k) {
++                rv.insert(ring[k].value);
++                if (region.pinned(ring[k])) {
++                    touchesInterface = true;
++                }
++                const VertexId a = ring[k];
++                const VertexId b = ring[(k + 1) % ring.size()];
++                for (const EdgeId e : mesh.vertexEdges(a)) {
++                    const auto [x, y] = mesh.edgeVertices(e);
++                    if ((x.value == a.value && y.value == b.value) ||
++                        (x.value == b.value && y.value == a.value)) {
++                        re.insert(e.value);
++                        break;
++                    }
++                }
++            }
++            if (touchesInterface && ring.size() != 4) {
++                ++out.interfaceTriangles;
++            }
++        }
++        const int chi =
++            static_cast<int>(rv.size()) - static_cast<int>(re.size()) + static_cast<int>(rf);
++        int sum = 0;
++        for (const Index idx : rv) {
++            const VertexId v{idx};
++            const int deg = activeFaceCount(mesh, region, v);
++            sum += region.pinned(v) ? (3 - deg) : (4 - deg);
++        }
++        out.indexResidual = sum - 4 * chi;
++    }
++    return out;
++}
++
++}  // namespace cyber::remesh
 diff --git a/src/core/src/isotropic.cpp b/src/core/src/isotropic.cpp
 index 1bd1196..024f5af 100644
 --- a/src/core/src/isotropic.cpp
@@ -266,10 +593,18 @@ index 1bd1196..024f5af 100644
                  m_options.targetEdgeLength * 0.5f * (scaleOf(scales, a) + scaleOf(scales, b));
              if (edgeLength(e) <= target * kLongFactor) {
 diff --git a/src/core/src/pipeline.cpp b/src/core/src/pipeline.cpp
-index 0256f36..92fb28f 100644
+index 0256f36..1ad4593 100644
 --- a/src/core/src/pipeline.cpp
 +++ b/src/core/src/pipeline.cpp
-@@ -37,6 +37,26 @@ double totalSurfaceArea(const Mesh& mesh) {
+@@ -11,6 +11,7 @@
+ #include <thread>
+ 
+ #include "cyber/core/bvh.hpp"
++#include "cyber/core/interface_conformance.hpp"
+ #include "cyber/core/isotropic.hpp"
+ #include "cyber/core/quadrangulate.hpp"
+ #include "cyber/core/reference_surface.hpp"
+@@ -37,6 +38,26 @@ double totalSurfaceArea(const Mesh& mesh) {
      return area;
  }
  
@@ -296,7 +631,7 @@ index 0256f36..92fb28f 100644
  // Extracts one island into a standalone mesh (local vertex indexing).
  Mesh extractIsland(const Mesh& source, const std::vector<FaceId>& faces) {
      std::vector<Vec3> positions;
-@@ -464,6 +484,145 @@ void countFaces(const Mesh& mesh, Statistics& stats) {
+@@ -464,6 +485,159 @@ void countFaces(const Mesh& mesh, Statistics& stats) {
      }
  }
  
@@ -335,6 +670,8 @@ index 0256f36..92fb28f 100644
 +    // no patch to drop. Refusing on a default would make the API unusable, and
 +    // skipping in silence would hide a difference from what the caller asked
 +    // for — so they are skipped and REPORTED as non-fatal issues.
++    // pureQuads is caught by validate() under region rules (stage 0); this stays
++    // as a defensive assertion of that contract for a direct remeshRegion caller.
 +    if (params.pureQuads) {
 +        return fail("region solve does not support pureQuads");
 +    }
@@ -371,6 +708,10 @@ index 0256f36..92fb28f 100644
 +        result.status = RunStatus::Cancelled;
 +        return result;
 +    }
++
++    // The prescription, captured before anything mutates. This is what the
++    // refuse tier is checked against afterwards.
++    const InterfaceSnapshot snapshot = captureInterface(work, region);
 +
 +    // One reference surface over the WHOLE working mesh, built before mutation.
 +    // Whole-mesh rather than region-local: the per-island path gets a local
@@ -409,8 +750,16 @@ index 0256f36..92fb28f 100644
 +        return fail("region quadrangulation failed: " + quadOutcome.failureReason);
 +    }
 +
-+    // Report. Note what is NOT here: any verification that the interface is
-+    // REGULAR. That is task 7's report tier, and it is reported, never enforced.
++    // Verify. The refuse tier is exact landing — always achievable, so a
++    // failure is a regression. The report tier is irregularity, which is
++    // measured and surfaced but never blocks (task 5.3a owns the guarantee).
++    const ConformanceResult conformance = verifyInterfaceConformance(work, region, snapshot);
++    if (!conformance.exact()) {
++        return fail(conformance.describeFailure());
++    }
++    result.region.interfaceIrregular = conformance.irregularInterface;
++    result.region.interfaceTriangles = conformance.interfaceTriangles;
++
 +    for (Index i = 0; i < work.faceCapacity(); ++i) {
 +        const FaceId f{i};
 +        if (work.isAlive(f) && !region.frozen(f)) {
@@ -442,7 +791,7 @@ index 0256f36..92fb28f 100644
  }  // namespace
  
  void applySmallPatchPolicy(Mesh& mesh, SmallPatchPolicy policy, int minFaces) {
-@@ -495,7 +654,9 @@ void applySmallPatchPolicy(Mesh& mesh, SmallPatchPolicy policy, int minFaces) {
+@@ -495,11 +669,15 @@ void applySmallPatchPolicy(Mesh& mesh, SmallPatchPolicy policy, int minFaces) {
  
  PipelineResult remesh(const Mesh& input, const Parameters& rawParams, ProgressSink* progress,
                        const CancelToken* cancel, const QuadrangulatorFactory& quadrangulator,
@@ -452,8 +801,16 @@ index 0256f36..92fb28f 100644
 +                      const std::unordered_map<Index, int>* regionValenceOverrides) {
      PipelineResult result;
  
-     // Stage 0: parameters (validated at every entry point — spec).
-@@ -522,6 +683,13 @@ PipelineResult remesh(const Mesh& input, const Parameters& rawParams, ProgressSi
+-    // Stage 0: parameters (validated at every entry point — spec).
+-    ValidatedParameters validated = validate(rawParams);
++    // Stage 0: parameters (validated at every entry point — spec). A region
++    // solve validates under region rules, so pureQuads is fatal here rather
++    // than being caught later in the branch.
++    ValidatedParameters validated = validate(rawParams, !regionFaces.empty());
+     result.parameterIssues = validated.issues;
+     if (!validated.ok()) {
+         result.status = RunStatus::Error;
+@@ -522,6 +700,13 @@ PipelineResult remesh(const Mesh& input, const Parameters& rawParams, ProgressSi
      const int effectiveQuads =
          params.pureQuads ? std::max(25, params.targetQuadCount / 4) : params.targetQuadCount;
  
@@ -849,6 +1206,31 @@ index 0000000..7121041
 +}
 +
 +}  // namespace cyber::remesh
+diff --git a/src/core/src/remesh_params.cpp b/src/core/src/remesh_params.cpp
+index 30571cd..22caa71 100644
+--- a/src/core/src/remesh_params.cpp
++++ b/src/core/src/remesh_params.cpp
+@@ -39,11 +39,19 @@ void clampFloat(float& value, float lo, float hi, const char* name,
+ 
+ }  // namespace
+ 
+-ValidatedParameters validate(const Parameters& raw) {
++ValidatedParameters validate(const Parameters& raw, bool regionSolve) {
+     ValidatedParameters out;
+     out.params = raw;
+     Parameters& p = out.params;
+ 
++    if (regionSolve && p.pureQuads) {
++        out.issues.push_back({"pureQuads",
++                              "not supported by a region solve: the pure-quad construction "
++                              "rewrites geometry wholesale and reprojects every vertex, which "
++                              "would move the prescribed boundary",
++                              true});
++    }
++
+     clampInt(p.targetQuadCount, 100, 2'000'000, "targetQuadCount", out.issues);
+     clampFloat(p.edgeScale, 0.5f, 4.0f, "edgeScale", out.issues);
+     clampFloat(p.sharpEdgeDegrees, 30.0f, 180.0f, "sharpEdgeDegrees", out.issues);
 diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
 index 61e1d6f..a05b9c8 100644
 --- a/tests/CMakeLists.txt
@@ -863,10 +1245,10 @@ index 61e1d6f..a05b9c8 100644
      core/test_mesh.cpp
 diff --git a/tests/core/test_region_solve.cpp b/tests/core/test_region_solve.cpp
 new file mode 100644
-index 0000000..d896190
+index 0000000..7eb0bc4
 --- /dev/null
 +++ b/tests/core/test_region_solve.cpp
-@@ -0,0 +1,453 @@
+@@ -0,0 +1,527 @@
 +// Regional prescribed-boundary solve — tasks 1-3 (openspec add-weave-regional-solve).
 +//
 +// These assert the EXACT-LANDING properties (G1), which the task-0 spike measured
@@ -879,10 +1261,12 @@ index 0000000..d896190
 +#include <algorithm>
 +#include <cmath>
 +#include <cstring>
++#include <limits>
 +#include <map>
 +#include <set>
 +#include <vector>
 +
++#include "cyber/core/interface_conformance.hpp"
 +#include "cyber/core/isotropic.hpp"
 +#include "cyber/core/mesh.hpp"
 +#include "cyber/core/pipeline.hpp"
@@ -1288,12 +1672,15 @@ index 0000000..d896190
 +    Mesh mesh = flatGrid();
 +    const auto faces = centreBlock();
 +
-+    SUBCASE("pureQuads") {
++    SUBCASE("pureQuads is fatal, and caught by validation") {
 +        remesh::Parameters params;
 +        params.pureQuads = true;
 +        const auto out = remesh::remesh(mesh, params, nullptr, nullptr, {}, {}, faces);
 +        CHECK(out.status == remesh::RunStatus::Error);
-+        CHECK(out.error.find("pureQuads") != std::string::npos);
++        CHECK(std::any_of(out.parameterIssues.begin(), out.parameterIssues.end(),
++                          [](const remesh::ParameterIssue& i) {
++                              return i.parameter == "pureQuads" && i.fatal;
++                          }));
 +    }
 +    SUBCASE("inapplicable defaults are skipped but REPORTED, not silently dropped") {
 +        // holeFillMaxBoundary (64) and smallPatchPolicy (KeepLargest) are the
@@ -1320,3 +1707,201 @@ index 0000000..d896190
 +        CHECK(out.error.find("face-connected") != std::string::npos);
 +    }
 +}
++
++// --- task 7: the two-tier conformance gate ----------------------------------
++
++TEST_CASE("interface irregularity is reported but never blocks the result") {
++    // The spike measured 3 of 16 interface vertices irregular on this exact
++    // fixture at prescribed density, and no local pass fixes it (it is a coupled
++    // b-matching — design.md ADDENDUM 2). The contract is therefore: report it,
++    // publish anyway. If this ever starts blocking, the rescope was undone.
++    Mesh mesh = flatGrid();
++    remesh::Parameters params;
++    params.targetQuadCount = 400;
++    const auto out = remesh::remesh(mesh, params, nullptr, nullptr, {}, {}, centreBlock());
++
++    REQUIRE(out.status == remesh::RunStatus::Success);
++    CHECK(out.mesh.faceCount() > 0);
++    // Whatever the count is, every reported id must be a real interface vertex.
++    const std::set<Index> iface = [&] {
++        std::set<Index> s;
++        for (const VertexId v : out.region.interfaceVertices) {
++            s.insert(v.value);
++        }
++        return s;
++    }();
++    for (const VertexId v : out.region.interfaceIrregular) {
++        CAPTURE(v.value);
++        CHECK(iface.count(v.value) == 1);
++    }
++}
++
++TEST_CASE("the refuse tier catches a broken prescription") {
++    Mesh mesh = flatGrid();
++    auto built = remesh::buildRegionSolve(mesh, centreBlock(), 30.0f);
++    REQUIRE(built.ok());
++    const remesh::InterfaceSnapshot before = remesh::captureInterface(mesh, built.region);
++
++    SUBCASE("an untouched mesh is exact") {
++        const auto r = remesh::verifyInterfaceConformance(mesh, built.region, before);
++        CHECK(r.exact());
++        CHECK(r.movedOrDeadPrescribed.empty());
++        CHECK(r.corruptedFrozenFaces.empty());
++        CHECK(r.lostInterfaceEdges.empty());
++    }
++
++    SUBCASE("a moved prescribed vertex is caught, and by bit pattern not epsilon") {
++        const Index victim = before.prescribedPositions.begin()->first;
++        const Vec3 p = mesh.position(VertexId{victim});
++        // ONE ULP — the smallest change a float can represent. Every epsilon
++        // comparison in existence passes this; the bitwise check must not. That
++        // is exactly the failure mode it exists to prevent: "moved and snapped
++        // back to within tolerance" is not "never touched".
++        Mesh nudged = mesh;
++        nudged.setPosition(VertexId{victim},
++                           {std::nextafter(p.x, std::numeric_limits<float>::infinity()), p.y, p.z});
++        const auto r = remesh::verifyInterfaceConformance(nudged, built.region, before);
++        CHECK_FALSE(r.exact());
++        REQUIRE(r.movedOrDeadPrescribed.size() == 1);
++        CHECK(r.movedOrDeadPrescribed.front().value == victim);
++        CHECK(r.describeFailure().find("prescribed vertices moved") != std::string::npos);
++    }
++
++    SUBCASE("a corrupted frozen ring is caught") {
++        Mesh broken = mesh;
++        const FaceId frozen{before.frozenRings.begin()->first};
++        broken.removeFace(frozen);
++        const auto r = remesh::verifyInterfaceConformance(broken, built.region, before);
++        CHECK_FALSE(r.exact());
++        CHECK(r.corruptedFrozenFaces.size() >= 1);
++    }
++}
+diff --git a/tests/core/test_remesh_params.cpp b/tests/core/test_remesh_params.cpp
+index b10be23..c857de2 100644
+--- a/tests/core/test_remesh_params.cpp
++++ b/tests/core/test_remesh_params.cpp
+@@ -54,3 +54,26 @@ TEST_CASE("target edge length matches the equilateral derivation") {
+     const auto scaled = remesh::targetEdgeLength(1000.0, 1000, 2.0f);
+     REQUIRE(scaled.edgeLength == doctest::Approx(2.0f * result.edgeLength));
+ }
++
++TEST_CASE("region validation makes pureQuads fatal, and only pureQuads") {
++    cyber::remesh::Parameters params;
++    params.pureQuads = true;
++
++    // Whole-mesh: pureQuads is a supported option.
++    const auto whole = cyber::remesh::validate(params, false);
++    CHECK(whole.ok());
++
++    // Region: fatal, because the pure-quad construction reprojects every vertex
++    // and would move the prescribed boundary.
++    const auto region = cyber::remesh::validate(params, true);
++    CHECK_FALSE(region.ok());
++    CHECK(std::any_of(region.issues.begin(), region.issues.end(),
++                      [](const cyber::remesh::ParameterIssue& i) {
++                          return i.parameter == "pureQuads" && i.fatal;
++                      }));
++
++    // The two INAPPLICABLE defaults must not be fatal — they are the defaults,
++    // so refusing on them would reject every ordinary region call.
++    cyber::remesh::Parameters defaults;
++    CHECK(cyber::remesh::validate(defaults, true).ok());
++}
+--- a/src/quadrangulate/include/cyber/quadrangulate/field_quadrangulator.hpp
++++ b/src/quadrangulate/include/cyber/quadrangulate/field_quadrangulator.hpp
+@@ -4,6 +4,7 @@
+ #include <memory>
+ 
+ #include "cyber/core/quadrangulate.hpp"
++#include "cyber/core/region_solve.hpp"
+ #include "cyber/quadrangulate/crossfield.hpp"
+ 
+ namespace cyber::remesh {
+@@ -27,6 +28,28 @@
+ std::unique_ptr<IQuadrangulator> makeFieldAlignedQuadrangulator(int fieldIterations,
+                                                                 OrientationGuides guides);
+ 
++// Region-aware variant (add-weave-regional-solve). `region` must outlive the
++// returned quadrangulator; null is exactly the call above.
++//
++// What it changes: PRECEDENCE. crossfield.cpp already pins a feature/boundary
++// face's field as an exact Dirichlet condition (:83 seeds it, :186-189 never
++// writes a constrained face back), and a region solve feature-tags its whole
++// interface — so the interface field is already hard-pinned. But the external
++// guide loop (:102-119) runs AFTER the feature loop and does not check
++// `constrained`, deliberately, so "the user's intent wins" on free surface.
++// On an interface face that is wrong: it erases the prescription the region
++// solve depends on. The fix is to filter the guides, not to add a constraint
++// tier to crossfield.hpp — which patch 0003 owns, and enlarging its conflict
++// surface buys no behavioural difference.
++//
++// Deliberately NOT included: an interface-first triangle-pairing pass. It was
++// built and measured during the task-0 spike and changed interface conformance
++// by exactly zero, because pairing decides WHICH triangles merge, not how many
++// quads meet a given vertex. See the change's design.md ADDENDUM 2.
++std::unique_ptr<IQuadrangulator> makeFieldAlignedQuadrangulator(int fieldIterations,
++                                                                OrientationGuides guides,
++                                                                const RegionSolve* region);
++
+ // Post-quadrangulation valence cleanup (roadmap 5.4/5.5 depth — NOT a seamless
+ // MIQ port). After pairing and doublet removal, rotates the diagonal shared by
+ // two quads whenever the rotation strictly lowers the total |valence - 4| over
+--- a/src/quadrangulate/src/field_quadrangulator.cpp
++++ b/src/quadrangulate/src/field_quadrangulator.cpp
+@@ -457,8 +457,9 @@
+ 
+ class FieldAlignedQuadrangulator final : public IQuadrangulator {
+ public:
+-    explicit FieldAlignedQuadrangulator(int iterations, OrientationGuides guides = {})
+-        : m_iterations(iterations), m_guides(std::move(guides)) {}
++    explicit FieldAlignedQuadrangulator(int iterations, OrientationGuides guides = {},
++                                        const RegionSolve* region = nullptr)
++        : m_iterations(iterations), m_guides(std::move(guides)), m_region(region) {}
+ 
+     Outcome quadrangulate(Mesh& mesh, float /*targetEdgeLength*/, ProgressSink* progress,
+                           const CancelToken* cancel) override {
+@@ -543,7 +544,24 @@
+                 if (d < bestDist) {
+                     bestDist = d;
+                     best = f;
++                }
++            }
++            // Region solve: never let a guide overwrite an interface field pin.
++            // The interface is already an exact Dirichlet condition, and the
++            // guide loop in crossfield.cpp runs after the feature loop without
++            // checking `constrained`, so an unfiltered guide landing here would
++            // silently replace the prescription. Two or more pinned corners
++            // means the face straddles the interface, not merely touches it.
++            if (best.valid() && m_region != nullptr) {
++                int pinnedCorners = 0;
++                for (const VertexId v : mesh.faceVertices(best)) {
++                    if (m_region->pinned(v)) {
++                        ++pinnedCorners;
++                    }
+                 }
++                if (pinnedCorners >= 2) {
++                    continue;
++                }
+             }
+             if (best.valid()) {
+                 out.push_back(CrossFieldConstraint{best, m_guides.dirs[i]});
+@@ -554,6 +572,7 @@
+ 
+     int m_iterations;
+     OrientationGuides m_guides;
++    const RegionSolve* m_region = nullptr;
+ };
+ 
+ }  // namespace
+@@ -600,4 +619,11 @@
+     return std::make_unique<FieldAlignedQuadrangulator>(fieldIterations, std::move(guides));
+ }
+ 
++std::unique_ptr<IQuadrangulator> makeFieldAlignedQuadrangulator(int fieldIterations,
++                                                                OrientationGuides guides,
++                                                                const RegionSolve* region) {
++    return std::make_unique<FieldAlignedQuadrangulator>(fieldIterations, std::move(guides),
++                                                        region);
++}
++
+ }  // namespace cyber::remesh

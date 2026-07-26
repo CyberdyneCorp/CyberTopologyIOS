@@ -220,25 +220,30 @@ is safe because `Mesh work = input` preserves element ids.
 
 ## 5. Engine: fatal parameter issues (loud refusal, not silent override)
 
-- [ ] 5.1 **REVISED by 4.4 — only `pureQuads` is fatal.** Move that one check from
+- [x] 5.1 **REVISED by 4.4 — only `pureQuads` is fatal.** Move that one check from
       `remeshRegion` into `remesh_params.cpp validate()` as a fatal `ParameterIssue` so a
       direct C++ caller of `cyber::remesh::remesh` is stopped by validation rather than by the
       region branch. The other two stay non-fatal issues raised where they are ignored.
-- [ ] 5.2 Verify `pipeline.cpp:502-509` turns each into `RunStatus::Error`.
-- [ ] 5.3 Extend `tests/core/test_remesh_params.cpp` with the `pureQuads` case (the other two
+- [x] 5.2 `remesh()` now calls `validate(rawParams, !regionFaces.empty())`, so stage 0 turns
+      the fatal issue into `RunStatus::Error`; the `remeshRegion` check remains as a defensive
+      assertion of that contract for a direct caller.
+- [x] 5.3 Extended `tests/core/test_remesh_params.cpp` with the `pureQuads` case (the other two
       are already covered as non-fatal issues in `test_region_solve.cpp`).
 
 ## 6. Engine: field-aligned quadrangulator additions
 
-- [ ] 6.1 `field_quadrangulator.hpp` — third factory overload taking `const RegionSolve*`.
+- [x] 6.1 `field_quadrangulator.hpp` — third factory overload taking `const RegionSolve*`.
       Ids are stable in this path (no `extractIsland`, no `fromIndexed`), so unlike patch
       0003's guides the mask can be constructor-injected BY ID.
-- [ ] 6.2 `projectGuides` (`:521-553`) — skip any candidate face with ≥ 2 pinned vertices,
+- [x] 6.2 `projectGuides` — skip any candidate face with ≥ 2 pinned vertices,
       so a guide stroke cannot overwrite the interface's Dirichlet pin. Do NOT touch
       `crossfield.cpp/.hpp` (patch 0003 owns them; the pins are already hard at `:186-189`).
-- [ ] 6.3 New `pairInterfaceRingFirst(mesh, field, region)` between `:471` and `:479`, per
-      design Stage 5, reusing the `quadQuality` × field-diagonalness weight (`:169-180`)
-      and ascending-`EdgeId` ordering for determinism.
+- [~] 6.3 **DROPPED, with evidence.** `pairInterfaceRingFirst` was implemented and measured in
+      the task-0 spike: 11-16 merges per fixture, and the interface-conformance failure count
+      changed by **exactly zero** (grid66 3→3, lshape 4→4 at prescribed density). Pairing decides
+      WHICH triangles merge, not how many quads meet a given vertex, so it cannot repair a
+      valence count. Shipping it would have added a pass whose name promises something it does
+      not do. The guarantee it was meant to serve is 5.3a's. See design.md ADDENDUM 1-2.
 
 ## 7. Engine: verifyInterfaceConformance — exactness gate + irregularity report
 
@@ -246,16 +251,16 @@ is safe because `Mesh work = input` preserves element ids.
 breaks EXACT LANDING (proven achievable), report anything about IRREGULARITY (measured
 unachievable by any local pass). Refusing on irregularity rejected every fixture.
 
-- [ ] 7.1 New `core/interface_conformance.{hpp,cpp}`.
-- [ ] 7.2 REFUSE tier — `RunStatus::Error`, no ghost, offending ids in `interfaceIssues`:
+- [x] 7.1 New `core/interface_conformance.{hpp,cpp}`.
+- [x] 7.2 REFUSE tier — `RunStatus::Error`, no ghost, offending ids in `interfaceIssues`:
       a prescribed vertex dead or moved (bitwise), a lost interface edge, a frozen face ring
       changed. These are exactly the properties the spike measured as always-holding, so a
       failure here is a real regression, not a hard problem.
-- [ ] 7.3 REPORT tier — never blocks publication: per-vertex `incidentSolvedFaces(b)` vs
+- [x] 7.3 REPORT tier — never blocks publication: per-vertex `incidentSolvedFaces(b)` vs
       `q_in(b)` with the differing ids listed, the index-identity residual
       `Σ_interior(4-deg) + Σ_boundary(3-deg) − 4χ`, and the count of triangles incident to an
       interface edge. Callers decide what to do with a non-zero count.
-- [ ] 7.4 Call it from the pipeline region branch after quadrangulation, before `std::move(work)`.
+- [x] 7.4 Call it from the pipeline region branch after quadrangulation, before `std::move(work)`.
 
 ## 8. Engine C API
 
@@ -301,9 +306,12 @@ unachievable by any local pass). Refusing on irregularity rejected every fixture
 - [x] 10.2 Authored `Engine/patches/0006-cybertopology-regional-prescribed-boundary-solve.patch`
       (tasks 1-3: +845 across 7 files). Verified it touches NO file owned by 0001-0005, so a
       plain `git diff HEAD` over its own files is exactly its delta.
-- [x] 10.2b Extended 0006 with task 4 (now +1174/-6 across 9 files); re-verified from a
-      pristine tree — 0001→0006 apply cleanly, engine rebuilds, full suite green at **277
-      cases / 127 196 assertions / 0 failures**. Extend again as tasks 5-9 land. ORIGINAL NOTE retained:
+- [x] 10.2b Extended 0006 through task 7 — 16 files. **Two files (`field_quadrangulator.hpp/.cpp`)
+      ARE owned by patch 0003**, so their hunks are diffed against the 0001-0005 baseline, not
+      against HEAD; everything else has no owner and is diffed against HEAD directly. Getting
+      this wrong would have silently folded 0003's guide-steering into 0006. Re-verified from a
+      pristine tree: 0001→0006 apply cleanly, engine rebuilds, full suite green at **280 cases /
+      127 231 assertions / 0 failures**. Extend again as tasks 8-9 land. ORIGINAL NOTE retained:
       against the FULLY PATCHED tree. 0002/0003/0004 own `capi.cpp`/`cyber_capi.h`; 0003 owns
       `field_quadrangulator.{cpp,hpp}`. `pipeline.{cpp,hpp}`, `isotropic.{cpp,hpp}`,
       `remesh_params.{hpp,cpp}`, `boundary.hpp` and the new files are owned by no existing patch.
