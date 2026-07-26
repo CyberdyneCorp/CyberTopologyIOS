@@ -450,6 +450,18 @@ struct MetalViewport: UIViewRepresentable {
             meshEditor.onGuidesChanged = { [weak self] in
                 self?.syncGuideLines()
             }
+            // Weave Fill (add-weave-region-selection): the captured request changing
+            // IS the re-solve trigger. A tap or each paint stroke lands here, so a
+            // second stroke replaces the pending proposal rather than stacking one.
+            // Clearing the request drops the proposal with it.
+            meshEditor.onWeaveFillIntentChanged = { [weak self] intent in
+                guard let self else { return }
+                if intent == nil {
+                    self.discardAutoRetopo()
+                } else {
+                    self.beginWeaveFill()
+                }
+            }
 
             // Snap feedback (task 3.7, spec scenario "Snap feedback"): the
             // Tweak/Move merge-snap pre-highlight renders through the same

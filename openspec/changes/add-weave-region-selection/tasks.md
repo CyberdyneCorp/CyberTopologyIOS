@@ -125,14 +125,31 @@ If a task here turns out to need one, it is out of scope and belongs in 5.4b.
       until it was wired. Auto-Retopo is unaffected (the composite routes `.wholeMesh`
       to the same backend), which the existing suite confirms.
 
-## 4. Live re-solve
+## 4. Live re-solve — DONE, and two of its three clauses turned out to be moot
 
-- [ ] 4.1 Re-solve when the extent or density changes; debounce so a multi-stroke
-      paint does not launch a solve per stroke.
-- [ ] 4.2 **Generation-token the in-flight solve** so a superseded result is dropped,
-      not presented — the 3.5 interpretation chip's `generation` token is the precedent.
-- [ ] 4.3 Re-solving journals nothing and replaces the pending ghost rather than
-      stacking a second one.
+- [x] 4.1 `onWeaveFillIntentChanged` IS the re-solve trigger: a tap or each completed
+      paint stroke re-solves and replaces the proposal; clearing the request drops it.
+      This is also what finally makes the feature reachable from the UI — before this
+      hook, nothing called `beginWeaveFill`.
+      **No debounce needed.** A solve is only ever triggered at stroke END
+      (`commitToolStroke`), so the worst case is already one solve per stroke, not one
+      per sample. The plan assumed a per-sample trigger.
+- [~] 4.2 **NOT NEEDED, because task 3.2 made the solve synchronous.** A generation
+      token exists to drop a result whose inputs changed while it was in flight; with a
+      main-actor solve there is no in-flight window — the solve completes before the
+      next input is processed. Implementing a token here would guard nothing and read
+      as though it guarded something. **If 3.2 ever goes async, this comes back**, and
+      the 3.5 interpretation chip's `generation` token is still the precedent.
+- [x] 4.3 Re-solving journals nothing and replaces the pending proposal rather than
+      stacking one — asserted, along with re-solve determinism (same request, same
+      proposal) and that reaching further proposes different geometry, so "replaced" is
+      distinguishable from "unchanged".
+- [x] 4.4 **Tool lifetime, beyond the plan.** Disarming or switching tools abandons the
+      request and its proposal. Leaving an Accept up after its tool is gone is a stale
+      affordance with no visible owner — the same class of bug as commit 65866a8.
+      **There is no density clause to honour**: fill density comes from the prescribed
+      boundary spacing, which is the spec's "no density dial", so there is no dial whose
+      change could trigger a re-solve.
 
 ## 5. Tests
 

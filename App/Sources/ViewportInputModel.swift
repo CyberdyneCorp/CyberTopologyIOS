@@ -360,6 +360,9 @@ final class ViewportInputModel {
     func selectTool(_ tool: RetopoTool) {
         if activeTool != tool {
             meshEditor?.cancelCameraToolSession()
+            // Switching tools abandons a pending fill request for the same reason
+            // disarming does.
+            meshEditor?.clearWeaveFill()
         }
         controller.selectVerb(.pencil)
         refreshActiveVerb()
@@ -440,6 +443,11 @@ final class ViewportInputModel {
     private func disarmTool() {
         guard activeTool != nil else { return }
         meshEditor?.cancelCameraToolSession()
+        // A Weave Fill request belongs to the armed tool: disarming abandons it, and
+        // its pending proposal with it (via onWeaveFillIntentChanged). Leaving the
+        // proposal up after the tool is gone would offer an Accept with no visible
+        // owner — the same class of stale-affordance bug as commit 65866a8.
+        meshEditor?.clearWeaveFill()
         activeTool = nil
         meshEditor?.activeTool = nil
     }
