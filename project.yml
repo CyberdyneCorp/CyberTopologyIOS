@@ -117,6 +117,7 @@ targets:
       # on device too (the auto-remesh backend + determinism verified on iPad).
       - path: CyberKit/Tests/CyberKitTests/WeaveSolverTests.swift
       - path: CyberKit/Tests/CyberKitTests/RegionSolveOpsTests.swift
+      - path: CyberKit/Tests/CyberKitTests/RegionSolveProofTests.swift
       # Context-aware create-face: public-API + inline mesh, runs on device too.
       - path: CyberKit/Tests/CyberKitTests/ContextAwareCreateFaceTests.swift
       # Relax boundary preservation: public-API + inline mesh, runs on device too.
