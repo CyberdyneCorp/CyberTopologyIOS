@@ -227,9 +227,15 @@ If a task here turns out to need one, it is out of scope and belongs in 5.4b.
          the provenance weld welds NOTHING on device, so the crack 4.4b exists to close
          is still open there.
 
-      These matter: 4.4 and 4.4b both assert exact-landing-style guarantees that hold on
-      the simulator and do NOT hold on device. They belong to those tasks rather than to
-      this change, and are recorded on 9.6 (the device gate) so they are not lost.
+      **ALL THREE FIXED, and the cause was not device float behaviour.** Diagnosed by
+      measurement: these harnesses build a real coordinator whose `ViewportInputModel`
+      reads `UserDefaults.standard`, and **Auto Relax had been left ON on that iPad**.
+      Auto Relax runs INSIDE each authoring transaction (task 4.5), so it nudged vertices
+      after the symmetry-plane snap. Forcing it off on the SAME device reproduced the
+      simulator numbers byte for byte. Fixed with an ephemeral `UserDefaults` suite for
+      those harnesses (`IsolatedViewportModel`); device suite now **821/81 green**.
+      Recorded on 9.6, including the 38 other harness sites that still carry the same
+      latent dependency.
 - [ ] 6.5 **NOT DONE — engine C++ tests are still absent from CI.**
       `scripts/build_engine.sh` sets `CYBER_BUILD_TESTS=OFF`, so the engine suite only
       ever runs by hand. This change did not add engine code, so it did not widen the
