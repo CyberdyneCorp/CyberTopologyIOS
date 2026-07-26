@@ -264,20 +264,20 @@ unachievable by any local pass). Refusing on irregularity rejected every fixture
 
 ## 8. Engine C API
 
-- [ ] 8.1 `cyber_mesh_set_solve_region(CyberMesh*, const uint32_t*, size_t)` following the
+- [x] 8.1 `cyber_mesh_set_solve_region(CyberMesh*, const uint32_t*, size_t)` following the
       `cyber_retopo_patch_clone` id-array contract (`:699` — alive ids, no repeats,
       `CYBER_ERR_INVALID_ARG`, mesh untouched on failure).
-- [ ] 8.2 `cyber_mesh_solved_faces`, `cyber_mesh_interface_vertices`, and
+- [x] 8.2 `cyber_mesh_solved_faces`, `cyber_mesh_interface_vertices`, and
       `struct CyberRegionSolveReport { uint32 interface_vertex_count; int32
       interior_index_budget; uint32 residual_triangles; uint32 unresolved_count; }`.
-- [ ] 8.3 `cyber_mesh_vertex_face_count` — the valence primitive, verified absent
+- [x] 8.3 `cyber_mesh_vertex_face_count` — the valence primitive, verified absent
       (`cyber_capi.h` mentions "valence" only in prose at `:284`, `:452`, `:542`). The
       entire 5.3 test strategy rests on it.
-- [ ] 8.4 `cyber_mesh_duplicate(const CyberMesh*, CyberMesh**)` — id-preserving clone
+- [x] 8.4 `cyber_mesh_duplicate(const CyberMesh*, CyberMesh**)` — id-preserving clone
       (`*out = new CyberMesh{in->mesh}` plus the handle side-channels at `:93`, `:99-100`).
       Today the only cross-ABI copy is a `payloadData` OBJ round-trip, which renumbers and
       would void every id-based assertion.
-- [ ] 8.5 `cyber_remesh` (`:261`): when `solveRegionFaces` is non-empty, force
+- [x] 8.5 `cyber_remesh` (`:261`): when `solveRegionFaces` is non-empty, force
       `CYBER_QUAD_FIELD_ALIGNED` (mirroring the guide force at `:307-309`), build the
       `RegionSolve`, pass it down, copy the report onto the out handle.
 
@@ -288,9 +288,10 @@ unachievable by any local pass). Refusing on irregularity rejected every fixture
       frozen `FaceId` alive with an identical `faceVertices` ring); the interface `EdgeId`
       set unchanged **at 4× density** — the test that actually pins the SplitPass guard, since
       a low-density run passes with or without it.
-- [ ] 9.2 The index identity holds on every fixture. NOT DONE — `interiorIndexBudget` is
-      computed and reported but nothing asserts it yet; it needs the task-7 report tier to be
-      meaningful.
+- [~] 9.2 The index identity is now COMPUTED and reported as `indexResidual` (task 7's report
+      tier) and surfaced through `cyber_mesh_region_report`. Still not ASSERTED to be zero on
+      every fixture — a multi-loop or pinched region legitimately does not balance, so the
+      assertion needs the disk-region precondition (part of 5.3a's scope) to be meaningful.
 - [x] 9.3 The region walk returns the correct ring where `boundaryChain` returns empty
       (see 2.2 — same test).
 - [x] 9.4 Added to `tests/CMakeLists.txt`. NOTE: `scripts/build_engine.sh:198-199`
@@ -310,8 +311,14 @@ unachievable by any local pass). Refusing on irregularity rejected every fixture
       ARE owned by patch 0003**, so their hunks are diffed against the 0001-0005 baseline, not
       against HEAD; everything else has no owner and is diffed against HEAD directly. Getting
       this wrong would have silently folded 0003's guide-steering into 0006. Re-verified from a
-      pristine tree: 0001→0006 apply cleanly, engine rebuilds, full suite green at **280 cases /
-      127 231 assertions / 0 failures**. Extend again as tasks 8-9 land. ORIGINAL NOTE retained:
+      pristine tree: 0001→0006 apply cleanly, engine rebuilds, full suite green at **281 cases /
+      127 262 assertions / 0 failures**.
+      **Generation method changed after a near-miss.** 0006 now touches four files owned by
+      0002/0003/0004 (`capi.cpp`, `cyber_capi.h`, `field_quadrangulator.{hpp,cpp}`), so a plain
+      `git diff HEAD` would fold their changes into it. It is generated as a TREE-TO-TREE diff:
+      snapshot the 0001-0005 tree with `git write-tree`, snapshot the working tree, diff the two.
+      That needs no per-file ownership reasoning and cannot silently absorb an earlier patch.
+      Now 19 files, +2026/-13. ORIGINAL NOTE retained:
       against the FULLY PATCHED tree. 0002/0003/0004 own `capi.cpp`/`cyber_capi.h`; 0003 owns
       `field_quadrangulator.{cpp,hpp}`. `pipeline.{cpp,hpp}`, `isotropic.{cpp,hpp}`,
       `remesh_params.{hpp,cpp}`, `boundary.hpp` and the new files are owned by no existing patch.

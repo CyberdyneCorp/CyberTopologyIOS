@@ -1,3 +1,328 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index 501e542..4b1c3bc 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -310,6 +310,69 @@ CyberStatus cyber_mesh_set_tagged_edges(CyberMesh* mesh, const uint32_t* edges,
+ const uint32_t* cyber_mesh_tagged_edge_indices_ptr(const CyberMesh* mesh,
+                                                    size_t* out_count);
+ 
++/* ---- Regional prescribed-boundary solve (add-weave-regional-solve) ------- */
++
++/* Selects a REGION for the next cyber_remesh: only these faces are rewritten,
++ * every other face keeps its exact geometry, ring and element id, and the
++ * solved patch meets the frozen cage on a prescribed boundary.
++ *
++ * Rides the handle, exactly like the orientation guides. `count == 0` clears.
++ * Face ids must be alive and free of repeats; the mesh is untouched on failure.
++ *
++ * A region solve skips triangulate/weld/orient, islands, hole-fill and
++ * pure-quads, so it is NOT equivalent to a whole-mesh solve even when the
++ * region names every face -- that case is REFUSED rather than aliased. It also
++ * forces the field-aligned quadrangulator, the only vertex-preserving path.
++ *
++ * What it guarantees: prescribed vertices survive with the same id at a bitwise
++ * identical position, and the prescribed interface edge set is preserved.
++ * What it does NOT guarantee: that the interface is free of singularities. That
++ * is measured and reported (cyber_mesh_region_report), never enforced. */
++CyberStatus cyber_mesh_set_solve_region(CyberMesh* mesh, const uint32_t* face_ids, size_t count);
++
++/* Per-vertex prescribed TOTAL valence overrides for the next region solve, so a
++ * deliberately authored pole on the interface is not reported as irregular.
++ * Parallel arrays; count == 0 clears. */
++CyberStatus cyber_mesh_set_region_valence(CyberMesh* mesh, const uint32_t* vertex_ids,
++                                          const int32_t* valences, size_t count);
++
++/* Faces the last region solve produced (live minus frozen). Writes at most
++ * `capacity` ids and always reports the true count via out_count. */
++CyberStatus cyber_mesh_solved_faces(const CyberMesh* mesh, uint32_t* out_ids, size_t capacity,
++                                    size_t* out_count);
++
++/* Interface vertices of the last region solve, ascending. */
++CyberStatus cyber_mesh_interface_vertices(const CyberMesh* mesh, uint32_t* out_ids,
++                                          size_t capacity, size_t* out_count);
++
++/* Interface vertices whose valence differs from the prescription. Reported, not
++ * refused -- see cyber_mesh_set_solve_region. */
++CyberStatus cyber_mesh_interface_irregular(const CyberMesh* mesh, uint32_t* out_ids,
++                                           size_t capacity, size_t* out_count);
++
++typedef struct CyberRegionReport {
++    uint32_t interface_vertex_count;
++    uint32_t interface_irregular_count;
++    uint32_t interface_triangles;
++    int32_t interior_index_budget;
++    int32_t index_residual;
++} CyberRegionReport;
++
++/* Summary of the last region solve on this handle. CYBER_ERR_INVALID_ARG when
++ * the handle did not come from a region solve. */
++CyberStatus cyber_mesh_region_report(const CyberMesh* mesh, CyberRegionReport* out);
++
++/* Number of live faces incident to a vertex. The valence primitive the region
++ * guarantees are asserted with -- absent from this header until now. */
++CyberStatus cyber_mesh_vertex_face_count(const CyberMesh* mesh, uint32_t vertex_id,
++                                         uint32_t* out_count);
++
++/* ID-PRESERVING deep copy. The only other cross-ABI mesh copy is a payload
++ * (OBJ) round-trip, which renumbers every element -- so it cannot be used to
++ * snapshot a mesh for an id-based comparison. Side-channel state (hidden faces,
++ * tagged edges, guides, solve region) is copied too. */
++CyberStatus cyber_mesh_duplicate(const CyberMesh* mesh, CyberMesh** out);
++
+ /* World-space orientation guides that steer the NEXT cyber_remesh on this
+  * handle (add-weave-guide-field-steering): each of `count` samples has a
+  * world point (points_xyz, 3 floats) and a world tangent direction (dirs_xyz,
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index 2765f57..a3196d6 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -25,6 +25,7 @@
+ #include "cyber/core/io.hpp"
+ #include "cyber/core/mesh.hpp"
+ #include "cyber/core/pipeline.hpp"
++#include "cyber/core/region_solve.hpp"
+ #include "cyber/quadrangulate/field_quadrangulator.hpp"
+ #include "cyber/quadrangulate/quadcover_extractor.hpp"
+ #include "cyber/quadrangulate/position_field.hpp"
+@@ -98,6 +99,13 @@ struct CyberMesh {
+     // cross field. Do not affect rendering, so they never invalidate the cache.
+     std::vector<float> guidePoints;
+     std::vector<float> guideDirs;
++    // Region solve (add-weave-regional-solve): the face subset the next
++    // cyber_remesh rewrites, optional per-vertex valence prescriptions, and the
++    // report the last region solve produced. Same handle side-channel precedent
++    // as the guides above; none of it affects rendering.
++    std::vector<std::uint32_t> solveRegionFaces;
++    std::unordered_map<std::uint32_t, int> regionValence;
++    std::optional<cyber::remesh::RegionReport> regionReport;
+     mutable CyberRenderCache render;  // lazy; see ensureRenderCache
+ };
+ 
+@@ -307,6 +315,18 @@ CyberStatus cyber_remesh(const CyberMesh* in, const CyberRemeshParams* params,
+         if (!guides.empty()) {
+             quadMethod = CYBER_QUAD_FIELD_ALIGNED;
+         }
++        // A region solve forces the field-aligned path too: it is the only
++        // vertex-PRESERVING extractor. quad-cover, instant-meshes and integer
++        // all end in `mesh = std::move(quads)`, so no input vertex survives and
++        // the prescribed boundary could not be preserved by construction.
++        std::vector<cyber::FaceId> regionFaces;
++        regionFaces.reserve(in->solveRegionFaces.size());
++        for (const std::uint32_t id : in->solveRegionFaces) {
++            regionFaces.push_back(cyber::FaceId{id});
++        }
++        if (!regionFaces.empty()) {
++            quadMethod = CYBER_QUAD_FIELD_ALIGNED;
++        }
+         // quad-cover closes holes DURING extraction, so the pipeline's post-pass
+         // never sees them; the run's hole-fill policy has to reach the extractor
+         // itself or the parameter is silently ignored (remeshing-pipeline spec,
+@@ -343,7 +363,8 @@ CyberStatus cyber_remesh(const CyberMesh* in, const CyberRemeshParams* params,
+         }
+         cyber::remesh::PipelineResult result = cyber::remesh::remesh(
+             in->mesh, cppParams, &sink, &token,
+-            [quadMethod, makeQuad]() { return makeQuad(quadMethod); }, fallback);
++            [quadMethod, makeQuad]() { return makeQuad(quadMethod); }, fallback, regionFaces,
++            in->regionValence.empty() ? nullptr : &in->regionValence);
+ 
+         switch (result.status) {
+             case cyber::remesh::RunStatus::Success:
+@@ -351,6 +372,9 @@ CyberStatus cyber_remesh(const CyberMesh* in, const CyberRemeshParams* params,
+                 auto handle = std::make_unique<CyberMesh>();
+                 handle->mesh = std::move(result.mesh);
+                 handle->stats = result.stats;
++                if (!regionFaces.empty()) {
++                    handle->regionReport = std::move(result.region);
++                }
+                 clearError();
+                 *out = handle.release();
+                 return CYBER_OK;
+@@ -937,6 +961,185 @@ CyberStatus cyber_mesh_set_tagged_edges(CyberMesh* mesh, const uint32_t* edges,
+     }
+ }
+ 
++/* ---- Regional prescribed-boundary solve (add-weave-regional-solve) ------- */
++
++namespace {
++
++// Shared shape for the region readback getters: report the true count always,
++// fill up to `capacity`. Mirrors the id-array contract cyber_retopo_patch_clone
++// established (alive ids, no repeats, handle untouched on failure).
++template <typename Container, typename Project>
++CyberStatus copyIds(const Container& src, Project project, uint32_t* out_ids, size_t capacity,
++                    size_t* out_count, const char* what) {
++    if (out_count == nullptr) {
++        setError(std::string(what) + ": null out_count");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    *out_count = src.size();
++    if (out_ids != nullptr) {
++        size_t n = 0;
++        for (const auto& v : src) {
++            if (n >= capacity) {
++                break;
++            }
++            out_ids[n++] = project(v);
++        }
++    }
++    clearError();
++    return CYBER_OK;
++}
++
++}  // namespace
++
++CyberStatus cyber_mesh_set_solve_region(CyberMesh* mesh, const uint32_t* face_ids, size_t count) {
++    if (mesh == nullptr || (face_ids == nullptr && count > 0)) {
++        setError("cyber_mesh_set_solve_region: null argument");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        if (count == 0) {
++            mesh->solveRegionFaces.clear();
++            clearError();
++            return CYBER_OK;
++        }
++        // Validate fully BEFORE mutating, so a rejected call leaves the handle
++        // exactly as it was.
++        std::unordered_set<std::uint32_t> seen;
++        seen.reserve(count * 2);
++        for (size_t i = 0; i < count; ++i) {
++            const cyber::FaceId f{face_ids[i]};
++            if (!mesh->mesh.isAlive(f)) {
++                setError("cyber_mesh_set_solve_region: face id is not alive");
++                return CYBER_ERR_INVALID_ARG;
++            }
++            if (!seen.insert(face_ids[i]).second) {
++                setError("cyber_mesh_set_solve_region: repeated face id");
++                return CYBER_ERR_INVALID_ARG;
++            }
++        }
++        mesh->solveRegionFaces.assign(face_ids, face_ids + count);
++        clearError();
++        return CYBER_OK;
++    } catch (...) {
++        setError("cyber_mesh_set_solve_region: allocation failure");
++        return CYBER_ERR_RUNTIME;
++    }
++}
++
++CyberStatus cyber_mesh_set_region_valence(CyberMesh* mesh, const uint32_t* vertex_ids,
++                                          const int32_t* valences, size_t count) {
++    if (mesh == nullptr || ((vertex_ids == nullptr || valences == nullptr) && count > 0)) {
++        setError("cyber_mesh_set_region_valence: null argument");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        mesh->regionValence.clear();
++        for (size_t i = 0; i < count; ++i) {
++            mesh->regionValence[vertex_ids[i]] = valences[i];
++        }
++        clearError();
++        return CYBER_OK;
++    } catch (...) {
++        setError("cyber_mesh_set_region_valence: allocation failure");
++        return CYBER_ERR_RUNTIME;
++    }
++}
++
++CyberStatus cyber_mesh_solved_faces(const CyberMesh* mesh, uint32_t* out_ids, size_t capacity,
++                                    size_t* out_count) {
++    if (mesh == nullptr || !mesh->regionReport.has_value()) {
++        setError("cyber_mesh_solved_faces: handle is not from a region solve");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    return copyIds(
++        mesh->regionReport->solvedFaces, [](cyber::FaceId f) { return f.value; }, out_ids,
++        capacity, out_count, "cyber_mesh_solved_faces");
++}
++
++CyberStatus cyber_mesh_interface_vertices(const CyberMesh* mesh, uint32_t* out_ids,
++                                          size_t capacity, size_t* out_count) {
++    if (mesh == nullptr || !mesh->regionReport.has_value()) {
++        setError("cyber_mesh_interface_vertices: handle is not from a region solve");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    return copyIds(
++        mesh->regionReport->interfaceVertices, [](cyber::VertexId v) { return v.value; }, out_ids,
++        capacity, out_count, "cyber_mesh_interface_vertices");
++}
++
++CyberStatus cyber_mesh_interface_irregular(const CyberMesh* mesh, uint32_t* out_ids,
++                                           size_t capacity, size_t* out_count) {
++    if (mesh == nullptr || !mesh->regionReport.has_value()) {
++        setError("cyber_mesh_interface_irregular: handle is not from a region solve");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    return copyIds(
++        mesh->regionReport->interfaceIrregular, [](cyber::VertexId v) { return v.value; }, out_ids,
++        capacity, out_count, "cyber_mesh_interface_irregular");
++}
++
++CyberStatus cyber_mesh_region_report(const CyberMesh* mesh, CyberRegionReport* out) {
++    if (mesh == nullptr || out == nullptr) {
++        setError("cyber_mesh_region_report: null argument");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    if (!mesh->regionReport.has_value()) {
++        setError("cyber_mesh_region_report: handle is not from a region solve");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    const auto& r = *mesh->regionReport;
++    out->interface_vertex_count = static_cast<uint32_t>(r.interfaceVertices.size());
++    out->interface_irregular_count = static_cast<uint32_t>(r.interfaceIrregular.size());
++    out->interface_triangles = static_cast<uint32_t>(r.interfaceTriangles);
++    out->interior_index_budget = r.interiorIndexBudget;
++    out->index_residual = r.indexResidual;
++    clearError();
++    return CYBER_OK;
++}
++
++CyberStatus cyber_mesh_vertex_face_count(const CyberMesh* mesh, uint32_t vertex_id,
++                                         uint32_t* out_count) {
++    if (mesh == nullptr || out_count == nullptr) {
++        setError("cyber_mesh_vertex_face_count: null argument");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    const cyber::VertexId v{vertex_id};
++    if (!mesh->mesh.isAlive(v)) {
++        setError("cyber_mesh_vertex_face_count: vertex id is not alive");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    *out_count = static_cast<uint32_t>(mesh->mesh.vertexFaces(v).size());
++    clearError();
++    return CYBER_OK;
++}
++
++CyberStatus cyber_mesh_duplicate(const CyberMesh* mesh, CyberMesh** out) {
++    if (mesh == nullptr || out == nullptr) {
++        setError("cyber_mesh_duplicate: null argument");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    *out = nullptr;
++    try {
++        auto handle = std::make_unique<CyberMesh>();
++        handle->mesh = mesh->mesh;  // value copy: every element id is preserved
++        handle->stats = mesh->stats;
++        handle->hiddenFaces = mesh->hiddenFaces;
++        handle->taggedEdges = mesh->taggedEdges;
++        handle->guidePoints = mesh->guidePoints;
++        handle->guideDirs = mesh->guideDirs;
++        handle->solveRegionFaces = mesh->solveRegionFaces;
++        handle->regionValence = mesh->regionValence;
++        handle->regionReport = mesh->regionReport;
++        // render cache is lazy and deliberately not copied
++        clearError();
++        *out = handle.release();
++        return CYBER_OK;
++    } catch (...) {
++        setError("cyber_mesh_duplicate: allocation failure");
++        return CYBER_ERR_RUNTIME;
++    }
++}
++
+ CyberStatus cyber_mesh_set_orientation_guides(CyberMesh* mesh, const float* points_xyz,
+                                               const float* dirs_xyz, size_t count) {
+     if (mesh == nullptr || ((points_xyz == nullptr || dirs_xyz == nullptr) && count > 0)) {
 diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
 index ae157a1..cb83bdc 100644
 --- a/src/core/CMakeLists.txt
@@ -120,7 +445,7 @@ index bddbb20..94011e0 100644
  
  enum class IsotropicStatus { Success, Cancelled, InvalidInput };
 diff --git a/src/core/include/cyber/core/pipeline.hpp b/src/core/include/cyber/core/pipeline.hpp
-index 0eb614c..ab1fe9d 100644
+index 0eb614c..a310f68 100644
 --- a/src/core/include/cyber/core/pipeline.hpp
 +++ b/src/core/include/cyber/core/pipeline.hpp
 @@ -5,9 +5,13 @@
@@ -137,7 +462,7 @@ index 0eb614c..ab1fe9d 100644
  #include "cyber/core/remesh_params.hpp"
  
  namespace cyber::remesh {
-@@ -37,6 +41,22 @@ struct Statistics {
+@@ -37,6 +41,23 @@ struct Statistics {
      float targetEdgeLength = 0.0f;
  };
  
@@ -152,15 +477,16 @@ index 0eb614c..ab1fe9d 100644
 +    std::vector<FaceId> solvedFaces;         // live minus frozen
 +    std::vector<VertexId> interfaceVertices;  // pinned, with an active incident face
 +    std::vector<VertexId> interfaceIrregular;  // valence != prescription
-+    int interiorIndexBudget = 0;
-+    std::size_t interfaceTriangles = 0;  // triangles incident to an interface edge
++    int interiorIndexBudget = 0;   // predicted before the solve
++    int indexResidual = 0;         // measured after: 0 means the identity balances
++    std::size_t interfaceTriangles = 0;  // non-quads incident to the interface
 +    [[nodiscard]] bool empty() const { return solvedFaces.empty() && interfaceVertices.empty(); }
 +};
 +
  struct PipelineResult {
      RunStatus status = RunStatus::Error;
      Mesh mesh;
-@@ -44,6 +64,7 @@ struct PipelineResult {
+@@ -44,6 +65,7 @@ struct PipelineResult {
      std::vector<IslandDiagnostic> failedIslands;  // reported, never swallowed (spec)
      std::vector<ParameterIssue> parameterIssues;  // clamp warnings from validation
      std::string error;                            // set when status == Error
@@ -168,7 +494,7 @@ index 0eb614c..ab1fe9d 100644
  };
  
  // Progress mapping across stages: isotropic 0.0-0.3, quadrangulation
-@@ -62,12 +83,26 @@ struct PipelineResult {
+@@ -62,12 +84,26 @@ struct PipelineResult {
  // fallback quadrangulator, so making quad-cover the default never sacrifices the
  // always-produces-output robustness of the field-aligned path. Ignored for other
  // methods; nullptr disables recovery (the island is simply reported failed).
@@ -593,7 +919,7 @@ index 1bd1196..024f5af 100644
                  m_options.targetEdgeLength * 0.5f * (scaleOf(scales, a) + scaleOf(scales, b));
              if (edgeLength(e) <= target * kLongFactor) {
 diff --git a/src/core/src/pipeline.cpp b/src/core/src/pipeline.cpp
-index 0256f36..1ad4593 100644
+index 0256f36..4853d3a 100644
 --- a/src/core/src/pipeline.cpp
 +++ b/src/core/src/pipeline.cpp
 @@ -11,6 +11,7 @@
@@ -631,7 +957,7 @@ index 0256f36..1ad4593 100644
  // Extracts one island into a standalone mesh (local vertex indexing).
  Mesh extractIsland(const Mesh& source, const std::vector<FaceId>& faces) {
      std::vector<Vec3> positions;
-@@ -464,6 +485,159 @@ void countFaces(const Mesh& mesh, Statistics& stats) {
+@@ -464,6 +485,160 @@ void countFaces(const Mesh& mesh, Statistics& stats) {
      }
  }
  
@@ -759,6 +1085,7 @@ index 0256f36..1ad4593 100644
 +    }
 +    result.region.interfaceIrregular = conformance.irregularInterface;
 +    result.region.interfaceTriangles = conformance.interfaceTriangles;
++    result.region.indexResidual = conformance.indexResidual;
 +
 +    for (Index i = 0; i < work.faceCapacity(); ++i) {
 +        const FaceId f{i};
@@ -791,7 +1118,7 @@ index 0256f36..1ad4593 100644
  }  // namespace
  
  void applySmallPatchPolicy(Mesh& mesh, SmallPatchPolicy policy, int minFaces) {
-@@ -495,11 +669,15 @@ void applySmallPatchPolicy(Mesh& mesh, SmallPatchPolicy policy, int minFaces) {
+@@ -495,11 +670,15 @@ void applySmallPatchPolicy(Mesh& mesh, SmallPatchPolicy policy, int minFaces) {
  
  PipelineResult remesh(const Mesh& input, const Parameters& rawParams, ProgressSink* progress,
                        const CancelToken* cancel, const QuadrangulatorFactory& quadrangulator,
@@ -810,7 +1137,7 @@ index 0256f36..1ad4593 100644
      result.parameterIssues = validated.issues;
      if (!validated.ok()) {
          result.status = RunStatus::Error;
-@@ -522,6 +700,13 @@ PipelineResult remesh(const Mesh& input, const Parameters& rawParams, ProgressSi
+@@ -522,6 +701,13 @@ PipelineResult remesh(const Mesh& input, const Parameters& rawParams, ProgressSi
      const int effectiveQuads =
          params.pureQuads ? std::max(25, params.targetQuadCount / 4) : params.targetQuadCount;
  
@@ -1231,6 +1558,107 @@ index 30571cd..22caa71 100644
      clampInt(p.targetQuadCount, 100, 2'000'000, "targetQuadCount", out.issues);
      clampFloat(p.edgeScale, 0.5f, 4.0f, "edgeScale", out.issues);
      clampFloat(p.sharpEdgeDegrees, 30.0f, 180.0f, "sharpEdgeDegrees", out.issues);
+diff --git a/src/quadrangulate/include/cyber/quadrangulate/field_quadrangulator.hpp b/src/quadrangulate/include/cyber/quadrangulate/field_quadrangulator.hpp
+index dba3992..c885dd6 100644
+--- a/src/quadrangulate/include/cyber/quadrangulate/field_quadrangulator.hpp
++++ b/src/quadrangulate/include/cyber/quadrangulate/field_quadrangulator.hpp
+@@ -4,6 +4,7 @@
+ #include <memory>
+ 
+ #include "cyber/core/quadrangulate.hpp"
++#include "cyber/core/region_solve.hpp"
+ #include "cyber/quadrangulate/crossfield.hpp"
+ 
+ namespace cyber::remesh {
+@@ -27,6 +28,28 @@ std::unique_ptr<IQuadrangulator> makeFieldAlignedQuadrangulator(int fieldIterati
+ std::unique_ptr<IQuadrangulator> makeFieldAlignedQuadrangulator(int fieldIterations,
+                                                                 OrientationGuides guides);
+ 
++// Region-aware variant (add-weave-regional-solve). `region` must outlive the
++// returned quadrangulator; null is exactly the call above.
++//
++// What it changes: PRECEDENCE. crossfield.cpp already pins a feature/boundary
++// face's field as an exact Dirichlet condition (:83 seeds it, :186-189 never
++// writes a constrained face back), and a region solve feature-tags its whole
++// interface — so the interface field is already hard-pinned. But the external
++// guide loop (:102-119) runs AFTER the feature loop and does not check
++// `constrained`, deliberately, so "the user's intent wins" on free surface.
++// On an interface face that is wrong: it erases the prescription the region
++// solve depends on. The fix is to filter the guides, not to add a constraint
++// tier to crossfield.hpp — which patch 0003 owns, and enlarging its conflict
++// surface buys no behavioural difference.
++//
++// Deliberately NOT included: an interface-first triangle-pairing pass. It was
++// built and measured during the task-0 spike and changed interface conformance
++// by exactly zero, because pairing decides WHICH triangles merge, not how many
++// quads meet a given vertex. See the change's design.md ADDENDUM 2.
++std::unique_ptr<IQuadrangulator> makeFieldAlignedQuadrangulator(int fieldIterations,
++                                                                OrientationGuides guides,
++                                                                const RegionSolve* region);
++
+ // Post-quadrangulation valence cleanup (roadmap 5.4/5.5 depth — NOT a seamless
+ // MIQ port). After pairing and doublet removal, rotates the diagonal shared by
+ // two quads whenever the rotation strictly lowers the total |valence - 4| over
+diff --git a/src/quadrangulate/src/field_quadrangulator.cpp b/src/quadrangulate/src/field_quadrangulator.cpp
+index 7f496cc..521f5f3 100644
+--- a/src/quadrangulate/src/field_quadrangulator.cpp
++++ b/src/quadrangulate/src/field_quadrangulator.cpp
+@@ -457,8 +457,9 @@ void mopUpTriangles(Mesh& mesh) {
+ 
+ class FieldAlignedQuadrangulator final : public IQuadrangulator {
+ public:
+-    explicit FieldAlignedQuadrangulator(int iterations, OrientationGuides guides = {})
+-        : m_iterations(iterations), m_guides(std::move(guides)) {}
++    explicit FieldAlignedQuadrangulator(int iterations, OrientationGuides guides = {},
++                                        const RegionSolve* region = nullptr)
++        : m_iterations(iterations), m_guides(std::move(guides)), m_region(region) {}
+ 
+     Outcome quadrangulate(Mesh& mesh, float /*targetEdgeLength*/, ProgressSink* progress,
+                           const CancelToken* cancel) override {
+@@ -545,6 +546,23 @@ private:
+                     best = f;
+                 }
+             }
++            // Region solve: never let a guide overwrite an interface field pin.
++            // The interface is already an exact Dirichlet condition, and the
++            // guide loop in crossfield.cpp runs after the feature loop without
++            // checking `constrained`, so an unfiltered guide landing here would
++            // silently replace the prescription. Two or more pinned corners
++            // means the face straddles the interface, not merely touches it.
++            if (best.valid() && m_region != nullptr) {
++                int pinnedCorners = 0;
++                for (const VertexId v : mesh.faceVertices(best)) {
++                    if (m_region->pinned(v)) {
++                        ++pinnedCorners;
++                    }
++                }
++                if (pinnedCorners >= 2) {
++                    continue;
++                }
++            }
+             if (best.valid()) {
+                 out.push_back(CrossFieldConstraint{best, m_guides.dirs[i]});
+             }
+@@ -554,6 +572,7 @@ private:
+ 
+     int m_iterations;
+     OrientationGuides m_guides;
++    const RegionSolve* m_region = nullptr;
+ };
+ 
+ }  // namespace
+@@ -600,4 +619,11 @@ std::unique_ptr<IQuadrangulator> makeFieldAlignedQuadrangulator(int fieldIterati
+     return std::make_unique<FieldAlignedQuadrangulator>(fieldIterations, std::move(guides));
+ }
+ 
++std::unique_ptr<IQuadrangulator> makeFieldAlignedQuadrangulator(int fieldIterations,
++                                                                OrientationGuides guides,
++                                                                const RegionSolve* region) {
++    return std::make_unique<FieldAlignedQuadrangulator>(fieldIterations, std::move(guides),
++                                                        region);
++}
++
+ }  // namespace cyber::remesh
 diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
 index 61e1d6f..a05b9c8 100644
 --- a/tests/CMakeLists.txt
@@ -1243,6 +1671,124 @@ index 61e1d6f..a05b9c8 100644
      core/test_reference_surface.cpp
      core/test_remesh_params.cpp
      core/test_mesh.cpp
+diff --git a/tests/capi/test_capi.cpp b/tests/capi/test_capi.cpp
+index dc9a63a..a191fd5 100644
+--- a/tests/capi/test_capi.cpp
++++ b/tests/capi/test_capi.cpp
+@@ -175,3 +175,113 @@ TEST_CASE("capi bakes a normal map onto a UV plane") {
+     std::filesystem::remove(objPath, ec);
+     std::filesystem::remove(pngPath, ec);
+ }
++
++// --- regional prescribed-boundary solve C API (add-weave-regional-solve) -----
++
++namespace {
++
++// 6x6 quad grid written as an OBJ; capi meshes are created by loading, and the
++// loader numbers faces in file order, so grid cell (i,j) is face i*6 + j.
++std::string writeGridObj() {
++    const int n = 6;
++    std::string obj;
++    for (int i = 0; i <= n; ++i) {
++        for (int j = 0; j <= n; ++j) {
++            obj += "v " + std::to_string(i) + " " + std::to_string(j) + " 0\n";
++        }
++    }
++    const auto vid = [](int i, int j) { return i * 7 + j + 1; };  // OBJ is 1-based
++    for (int i = 0; i < n; ++i) {
++        for (int j = 0; j < n; ++j) {
++            obj += "f " + std::to_string(vid(i, j)) + " " + std::to_string(vid(i + 1, j)) + " " +
++                   std::to_string(vid(i + 1, j + 1)) + " " + std::to_string(vid(i, j + 1)) + "\n";
++        }
++    }
++    const std::string path =
++        std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/cyber_region_grid.obj";
++    std::ofstream out(path);
++    out << obj;
++    return path;
++}
++
++std::vector<uint32_t> centreRegion() {
++    std::vector<uint32_t> region;
++    for (int i = 1; i <= 4; ++i) {
++        for (int j = 1; j <= 4; ++j) {
++            region.push_back(static_cast<uint32_t>(i * 6 + j));
++        }
++    }
++    return region;
++}
++
++}  // namespace
++
++TEST_CASE("capi region solve: ids survive, report is readable") {
++    const std::string path = writeGridObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(path.c_str(), &mesh) == CYBER_OK);
++    REQUIRE(mesh != nullptr);
++    const std::vector<uint32_t> region = centreRegion();
++
++    SUBCASE("a repeated face id is rejected and the handle is untouched") {
++        std::vector<uint32_t> bad{region[0], region[0]};
++        CHECK(cyber_mesh_set_solve_region(mesh, bad.data(), bad.size()) == CYBER_ERR_INVALID_ARG);
++        CHECK(cyber_mesh_set_solve_region(mesh, region.data(), region.size()) == CYBER_OK);
++    }
++
++    SUBCASE("readback before a region solve is refused, not silently empty") {
++        size_t count = 12345;
++        CHECK(cyber_mesh_solved_faces(mesh, nullptr, 0, &count) == CYBER_ERR_INVALID_ARG);
++        CyberRegionReport report{};
++        CHECK(cyber_mesh_region_report(mesh, &report) == CYBER_ERR_INVALID_ARG);
++    }
++
++    SUBCASE("duplicate preserves ids where a payload round-trip would not") {
++        CyberMesh* copy = nullptr;
++        REQUIRE(cyber_mesh_duplicate(mesh, &copy) == CYBER_OK);
++        REQUIRE(copy != nullptr);
++        uint32_t a = 0, b = 0;
++        REQUIRE(cyber_mesh_vertex_face_count(mesh, 24, &a) == CYBER_OK);  // interior vertex (3,3)
++        REQUIRE(cyber_mesh_vertex_face_count(copy, 24, &b) == CYBER_OK);
++        CHECK(a == b);
++        CHECK(a == 4);
++        cyber_mesh_destroy(copy);
++    }
++
++    SUBCASE("a region solve keeps frozen ids and reports the interface") {
++        REQUIRE(cyber_mesh_set_solve_region(mesh, region.data(), region.size()) == CYBER_OK);
++        CyberRemeshParams params;
++        cyber_remesh_params_default(&params);
++        params.targetQuads = 400;
++
++        CyberMesh* out = nullptr;
++        REQUIRE(cyber_remesh(mesh, &params, nullptr, nullptr, nullptr, &out) == CYBER_OK);
++        REQUIRE(out != nullptr);
++
++        CyberRegionReport report{};
++        REQUIRE(cyber_mesh_region_report(out, &report) == CYBER_OK);
++        CHECK(report.interface_vertex_count == 16);
++
++        size_t ifaceCount = 0;
++        REQUIRE(cyber_mesh_interface_vertices(out, nullptr, 0, &ifaceCount) == CYBER_OK);
++        CHECK(ifaceCount == 16);
++        std::vector<uint32_t> iface(ifaceCount);
++        REQUIRE(cyber_mesh_interface_vertices(out, iface.data(), iface.size(), &ifaceCount) ==
++                CYBER_OK);
++        CHECK(std::is_sorted(iface.begin(), iface.end()));
++
++        size_t solved = 0;
++        REQUIRE(cyber_mesh_solved_faces(out, nullptr, 0, &solved) == CYBER_OK);
++        CHECK(solved > 0);
++
++        // Irregularity is REPORTED, and reporting it must not have blocked the
++        // solve. Undoing that rescope breaks this test.
++        size_t irregular = 0;
++        REQUIRE(cyber_mesh_interface_irregular(out, nullptr, 0, &irregular) == CYBER_OK);
++        CHECK(irregular == report.interface_irregular_count);
++
++        cyber_mesh_destroy(out);
++    }
++
++    cyber_mesh_destroy(mesh);
++}
 diff --git a/tests/core/test_region_solve.cpp b/tests/core/test_region_solve.cpp
 new file mode 100644
 index 0000000..7eb0bc4
@@ -1807,101 +2353,3 @@ index b10be23..c857de2 100644
 +    cyber::remesh::Parameters defaults;
 +    CHECK(cyber::remesh::validate(defaults, true).ok());
 +}
---- a/src/quadrangulate/include/cyber/quadrangulate/field_quadrangulator.hpp
-+++ b/src/quadrangulate/include/cyber/quadrangulate/field_quadrangulator.hpp
-@@ -4,6 +4,7 @@
- #include <memory>
- 
- #include "cyber/core/quadrangulate.hpp"
-+#include "cyber/core/region_solve.hpp"
- #include "cyber/quadrangulate/crossfield.hpp"
- 
- namespace cyber::remesh {
-@@ -27,6 +28,28 @@
- std::unique_ptr<IQuadrangulator> makeFieldAlignedQuadrangulator(int fieldIterations,
-                                                                 OrientationGuides guides);
- 
-+// Region-aware variant (add-weave-regional-solve). `region` must outlive the
-+// returned quadrangulator; null is exactly the call above.
-+//
-+// What it changes: PRECEDENCE. crossfield.cpp already pins a feature/boundary
-+// face's field as an exact Dirichlet condition (:83 seeds it, :186-189 never
-+// writes a constrained face back), and a region solve feature-tags its whole
-+// interface — so the interface field is already hard-pinned. But the external
-+// guide loop (:102-119) runs AFTER the feature loop and does not check
-+// `constrained`, deliberately, so "the user's intent wins" on free surface.
-+// On an interface face that is wrong: it erases the prescription the region
-+// solve depends on. The fix is to filter the guides, not to add a constraint
-+// tier to crossfield.hpp — which patch 0003 owns, and enlarging its conflict
-+// surface buys no behavioural difference.
-+//
-+// Deliberately NOT included: an interface-first triangle-pairing pass. It was
-+// built and measured during the task-0 spike and changed interface conformance
-+// by exactly zero, because pairing decides WHICH triangles merge, not how many
-+// quads meet a given vertex. See the change's design.md ADDENDUM 2.
-+std::unique_ptr<IQuadrangulator> makeFieldAlignedQuadrangulator(int fieldIterations,
-+                                                                OrientationGuides guides,
-+                                                                const RegionSolve* region);
-+
- // Post-quadrangulation valence cleanup (roadmap 5.4/5.5 depth — NOT a seamless
- // MIQ port). After pairing and doublet removal, rotates the diagonal shared by
- // two quads whenever the rotation strictly lowers the total |valence - 4| over
---- a/src/quadrangulate/src/field_quadrangulator.cpp
-+++ b/src/quadrangulate/src/field_quadrangulator.cpp
-@@ -457,8 +457,9 @@
- 
- class FieldAlignedQuadrangulator final : public IQuadrangulator {
- public:
--    explicit FieldAlignedQuadrangulator(int iterations, OrientationGuides guides = {})
--        : m_iterations(iterations), m_guides(std::move(guides)) {}
-+    explicit FieldAlignedQuadrangulator(int iterations, OrientationGuides guides = {},
-+                                        const RegionSolve* region = nullptr)
-+        : m_iterations(iterations), m_guides(std::move(guides)), m_region(region) {}
- 
-     Outcome quadrangulate(Mesh& mesh, float /*targetEdgeLength*/, ProgressSink* progress,
-                           const CancelToken* cancel) override {
-@@ -543,7 +544,24 @@
-                 if (d < bestDist) {
-                     bestDist = d;
-                     best = f;
-+                }
-+            }
-+            // Region solve: never let a guide overwrite an interface field pin.
-+            // The interface is already an exact Dirichlet condition, and the
-+            // guide loop in crossfield.cpp runs after the feature loop without
-+            // checking `constrained`, so an unfiltered guide landing here would
-+            // silently replace the prescription. Two or more pinned corners
-+            // means the face straddles the interface, not merely touches it.
-+            if (best.valid() && m_region != nullptr) {
-+                int pinnedCorners = 0;
-+                for (const VertexId v : mesh.faceVertices(best)) {
-+                    if (m_region->pinned(v)) {
-+                        ++pinnedCorners;
-+                    }
-                 }
-+                if (pinnedCorners >= 2) {
-+                    continue;
-+                }
-             }
-             if (best.valid()) {
-                 out.push_back(CrossFieldConstraint{best, m_guides.dirs[i]});
-@@ -554,6 +572,7 @@
- 
-     int m_iterations;
-     OrientationGuides m_guides;
-+    const RegionSolve* m_region = nullptr;
- };
- 
- }  // namespace
-@@ -600,4 +619,11 @@
-     return std::make_unique<FieldAlignedQuadrangulator>(fieldIterations, std::move(guides));
- }
- 
-+std::unique_ptr<IQuadrangulator> makeFieldAlignedQuadrangulator(int fieldIterations,
-+                                                                OrientationGuides guides,
-+                                                                const RegionSolve* region) {
-+    return std::make_unique<FieldAlignedQuadrangulator>(fieldIterations, std::move(guides),
-+                                                        region);
-+}
-+
- }  // namespace cyber::remesh
