@@ -6,18 +6,35 @@ this needs already ships (`cyber_mesh_boundary_loop`,
 `cyber_retopo_extend_boundary_grid` with a Target snapper, `cyber_mesh_set_solve_region`).
 If a task here turns out to need one, it is out of scope and belongs in 5.4b.
 
-## 0. Feasibility spike (FIRST — this project's pattern, and it has paid twice)
+## 0. Feasibility spike — RUN 2026-07-26. **GROWING WORKS. The falsifier did not fire.**
 
-- [ ] 0.1 Headless, in `CyberKitTests`: take a cage that partially covers a domed
-      Target, walk its open boundary, `extendBoundary` two rows with the Target
-      snapper, then region-solve exactly those new faces with the cage frozen.
-- [ ] 0.2 Report: (a) do the cage's boundary vertices survive bitwise, (b) is the
-      result manifold across the seam, (c) how many interface vertices come out
-      irregular, (d) does the filled band actually lie on the Target (max deviation).
-- [ ] 0.3 **(d) is the falsifier.** The seed is snapped, but the region solve
-      reprojects onto a ReferenceSurface built from cage+seed, not the Target — if
-      deviation is large at a coarse seed, 5.4b stops being a quality improvement and
-      becomes a prerequisite, and the rest of this change waits on it.
+- [x] 0.1 `WeaveFillSpikeTests`: a 4x2 quad cage covering the lower band of a domed
+      24x24 triangle Target; walk its free edge; `extendBoundary` 2 rows with the
+      Target snapper; region-solve exactly those 8 seed faces with the cage frozen.
+- [x] 0.2 Measured, after the density fix below:
+
+      (a) cage vertices moved 0/15, cage face rings changed 0/8
+      (b) orphaned interface vertices 0 — manifold across the seam
+      (c) irregular interface vertices 0/5, seam triangles 1
+      (d) seed deviation from Target 7.5e-09; SOLVED deviation 0.0126 = 0.031 quads
+
+- [x] 0.3 **(d) does not fire.** The solved band sits 3% of a quad off the Target, so
+      building the `ReferenceSurface` from cage+seed rather than from the Target is a
+      quality detail, not a blocker. **5.4b stays a follow-up** — and that downgrade is
+      now measured rather than assumed, which was the point of asking.
+- [x] 0.4 **The spike found a real bug, and it was load-bearing.** `validate()` floored
+      `targetQuadCount` at 100 — a whole-mesh assumption. The prescribed budget for the
+      seed band was 7 quads, silently clamped to 100, and the solve produced **77 faces,
+      11x too fine**, with **4 of 5 interface vertices irregular**. That floor defeated
+      `prescribedQuadBudget` outright, i.e. the spec's "auto-filled regions match manual
+      scale with no dials". Fixed in patch 0006: the floor is 4 when a region is present,
+      100 otherwise. After the fix the same solve produces 5 faces and **0/5 irregular**.
+      A 6x-too-dense patch welded onto a coarse cage is wrong output however clean its
+      seam, so this is the right trade — but it is a trade: the coarser solve leaves
+      residual SEAM TRIANGLES the quadrangulator cannot pair (4 on the 6x6 proof
+      fixture, 1 here). They are reported via `interfaceTriangles`; reducing them belongs
+      with 5.3a. The `add-weave-regional-solve` interface goldens were regenerated —
+      they had been recorded at the clamped density.
 
 ## 1. Domain construction (CyberKit)
 
