@@ -54,14 +54,57 @@ a plain squareness metric rather than the engine's `quadQuality` × field-diagon
 weight. So this refutes the MECHANISM (greedy interface pairing), not the exact code task
 6.3 specifies. Given the count argument above, the exact variant is not expected to differ.
 
-- [ ] 0.4 **DECISION REQUIRED before tasks 1-17.** Per design risk 1, "C's lattice becomes
-      the right answer and this decision should be revisited rather than defended."
-      Options: (i) re-spine on the boundary-staircase lattice (construct-correct, narrower
-      — B = 0 only); (ii) keep this spine but make the interface fan a CONSTRAINT of the
-      isotropic stage rather than something checked afterwards; (iii) relax 5.3 to
-      positional landing only, dropping the interior-singularity guarantee and with it the
-      differentiator. **Tasks 1-3 below are validated by the spike and survive any of the
-      three; tasks 4-17 are on hold.**
+- [x] 0.4 **Round 2 — "constrain it during generation" tested in three cheap forms. All
+      three refuted, and the root cause is now understood exactly.**
+
+First, the fan-size hypothesis was WRONG, which is good news buried in a bad result. The
+post-isotropic fan is 1-2 triangles short of `2·q_in` on 10-11 of 16 interface vertices,
+but a fan of `n` triangles can reach `q` faces whenever `q ≤ n ≤ 2q`, and **every measured
+fan satisfies that.** `sphere_cap` proves it directly: 10 "wrong" fans, zero wrong valence.
+So the isotropic stage is not the culprit and does not need constraining.
+
+The defect is that no pass ever TARGETS a per-vertex merge count. The face count at an
+interface vertex `b` is `n(b) − k(b)`, where `k(b)` is the number of merges across edges
+INCIDENT to `b`; conformance needs `k(b) = n(b) − q_in(b)` exactly. So a degree-constrained
+pass was implemented (`pairInterfaceByDegree`: per-vertex target, best-quality legal merge,
+refusing any merge that would push the far endpoint below ITS target, iterated to a fixed
+point), plus a variant that then FREEZES the achieved fan by feature-tagging every edge
+incident to an interface vertex so the global pass cannot undo it.
+
+Wrong-valence at prescribed (1×) density, all three fixtures:
+
+| pass | grid66 | lshape | sphere_cap |
+|---|---|---|---|
+| none (baseline) | 3/16 | 4/16 | 0/16 |
+| greedy ring-first | 3/16 | 4/16 | 0/16 |
+| degree-constrained | 4/16 | 4/16 | 0/16 |
+| degree + fan lock | 3/16 | 3/16 | **3/16** |
+
+**Nothing reaches zero, so the gate rejects every fixture.** Note the last row: locking made
+`sphere_cap` WORSE (0 → 3), because its baseline zero was the global pass accidentally
+repairing what the interface pass had left — luck, not mechanism.
+
+The decisive measurement is the degree pass judged against its OWN target, before the global
+pass runs: **unresolved 3/16 on all three fixtures at 1×, and 15-16/16 at 4×.** It cannot hit
+the prescription it is explicitly aiming at.
+
+**Root cause.** Merging across edge `(b,x)` decrements the face count at BOTH endpoints. The
+interface vertices are therefore coupled around the ring, and a sequential greedy resolution
+deadlocks: at the failing vertices every candidate edge is a feature edge, an interface edge,
+or would push a neighbour below its own target. Interface conformance is a **coupled
+degree-constrained matching (b-matching) over the interface ring** — a global combinatorial
+problem. The engine's matching is blossom-free (`maximumTrianglePairing`,
+field_quadrangulator.cpp:195), which the design already noted without drawing this
+consequence.
+
+**Revised options.** Option (ii) is refuted in every cheap form. What remains:
+      (a) implement a real constrained matching over the interface ring — correct, but a
+      substantial new solver and the largest engineering item in the change;
+      (b) re-spine on the boundary-staircase lattice (design C), which sidesteps the matching
+      entirely by construction, at the cost of a narrower domain;
+      (c) relax 5.3 to positional landing only (G1 is proven and nearly free), rewriting the
+      spec's interior-singularity requirement rather than deferring it.
+**Tasks 1-3 remain validated. Tasks 4-17 stay on hold.**
 
 ## 1. Engine: RegionSolve core (new files, zero patch conflict)
 

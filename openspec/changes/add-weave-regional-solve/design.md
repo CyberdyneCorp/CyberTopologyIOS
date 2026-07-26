@@ -190,3 +190,47 @@ Three ways forward, in the order they should be considered:
 
 Option 3 would require rewriting the spec delta's "Singularities are interior to the solved
 region" requirement, not merely deferring it.
+
+---
+
+# ADDENDUM 2 — "constrain during generation" also refuted, 2026-07-26
+
+Round 2 tested the option the round-1 addendum recommended. It does not work either, but
+it produced the precise characterisation the change had been missing.
+
+**The fan-size hypothesis was wrong.** The post-isotropic triangle fan is 1-2 short of
+`2·q_in` on most interface vertices, but the reachable face counts from a fan of `n` are
+`[ceil(n/2), n]`, so any `n` with `q ≤ n ≤ 2q` can reach `q`. Every measured fan satisfies
+that. The isotropic stage is exonerated; constraining it would have been wasted work.
+
+**The real invariant.** The face count at interface vertex `b` is `n(b) − k(b)`, with `k(b)`
+the merges across edges incident to `b`. Conformance requires `k(b) = n(b) − q_in(b)`.
+
+**Why local passes cannot deliver it.** A merge across `(b,x)` decrements the count at BOTH
+endpoints. Interface vertices are therefore coupled around the ring. A degree-constrained
+greedy pass — per-vertex target, best legal merge, refusing merges that would push a
+neighbour below its own target, iterated to a fixed point — deadlocks at 3 of 16 vertices on
+every fixture at prescribed density, and 15-16 of 16 at 4×. Freezing the achieved fan
+afterwards does not help, and on `sphere_cap` actively hurts (0 → 3 wrong), because that
+fixture's clean baseline was the global pass accidentally repairing the interface, not the
+interface pass succeeding.
+
+So the problem is a **coupled degree-constrained matching (b-matching) over the interface
+ring**, not a quality-of-pairing problem and not a mesh-density problem. It needs a global
+combinatorial solver. `maximumTrianglePairing` (field_quadrangulator.cpp:195) is blossom-free
+— the design noted this and did not draw the consequence.
+
+**What this does to the three options.**
+
+- Constrain-during-generation, cheap forms: refuted. Any fix here is a real matching solver.
+- Design C's lattice now looks better than it did, not worse: it avoids the matching problem
+  by construction rather than solving it. Its narrowness (B = 0, translation closure,
+  injectivity, disk-only) is the price of not needing a b-matching solver on device.
+- Relaxing 5.3 to positional landing only is now the cheapest path to shipping regional
+  solve, and G1 is fully proven — but it is a spec rewrite, not a deferral, and it costs the
+  differentiator.
+
+**Method note.** All three rounds cost one session because the spike harness is reusable —
+fixtures, masks, and every measurement (positions, frozen rings, interface edges, fans,
+valence deltas) are in `spike/test_region_solve_spike.cpp`. Whatever spine is chosen, its
+first question — "does the interface conform?" — is already instrumented.

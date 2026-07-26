@@ -1,25 +1,85 @@
-[spike] grid66_center    density=1.0x guard=on  ring1st=off | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=3/16 | iface edges lost=0 residual tris=0 merges=0
+[spike] grid66_center    density=1.0x guard=on  pair=off      | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=3/16 | iface edges lost=0 residual tris=0 merges=0
+[spike]     fan after isotropic: odd=9 wrong=11/16  n-2q=-2 x2  n-2q=-1 x9
 [spike]     mismatch (expected->actual):  2->3 x3
-[spike] grid66_center    density=4.0x guard=on  ring1st=off | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=7 merges=0
+[spike] grid66_center    density=4.0x guard=on  pair=off      | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=7 merges=0
+[spike]     fan after isotropic: odd=9 wrong=15/16  n-2q=+1 x2  n-2q=+2 x4  n-2q=+3 x5  n-2q=+4 x2  n-2q=+5 x2
 [spike]     mismatch (expected->actual):  1->2 x1  1->3 x1  1->4 x2  2->4 x4  2->5 x6  2->6 x2
-[spike] grid66_center    density=4.0x guard=off ring1st=off | (a) moved=0 (b) rings=20 (c) WRONG VALENCE=16/16 | iface edges lost=16 residual tris=16 merges=0
+[spike] grid66_center    density=4.0x guard=off pair=off      | (a) moved=0 (b) rings=20 (c) WRONG VALENCE=16/16 | iface edges lost=16 residual tris=16 merges=0
+[spike]     fan after isotropic: odd=8 wrong=16/16  n-2q=+3 x4  n-2q=+4 x5  n-2q=+5 x3  n-2q=+6 x1  n-2q=+8 x1  n-2q=+9 x1  n-2q=+10 x1
 [spike]     mismatch (expected->actual):  1->4 x1  1->6 x1  1->7 x1  1->8 x1  2->4 x3  2->5 x5  2->6 x4
 [spike] guard witness: edges lost with guard=0, without=16
-[spike] grid66_center    density=1.0x guard=on  ring1st=on  | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=3/16 | iface edges lost=0 residual tris=0 merges=12
+[spike] grid66_center    density=1.0x guard=on  pair=ring     | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=3/16 | iface edges lost=0 residual tris=0 merges=12
+[spike]     fan after isotropic: odd=9 wrong=11/16  n-2q=-2 x2  n-2q=-1 x9
 [spike]     mismatch (expected->actual):  2->3 x3
-[spike] grid66_center    density=4.0x guard=on  ring1st=on  | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=6 merges=16
+[spike] grid66_center    density=4.0x guard=on  pair=ring     | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=6 merges=16
+[spike]     fan after isotropic: odd=9 wrong=15/16  n-2q=+1 x2  n-2q=+2 x4  n-2q=+3 x5  n-2q=+4 x2  n-2q=+5 x2
 [spike]     mismatch (expected->actual):  1->2 x3  1->5 x1  2->4 x4  2->5 x5  2->6 x3
-[spike] lshape           density=1.0x guard=on  ring1st=off | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=4/16 | iface edges lost=0 residual tris=0 merges=0
+[spike] grid66_center    density=1.0x guard=on  pair=DEG      | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=4/16 | iface edges lost=0 residual tris=1 merges=12
+[spike]     degree pass itself: unresolved=3/16 (before the global pass ran)
+[spike]     fan after isotropic: odd=9 wrong=11/16  n-2q=-2 x2  n-2q=-1 x9
+[spike]     mismatch (expected->actual):  1->2 x2  2->1 x1  2->3 x1
+[spike] grid66_center    density=4.0x guard=on  pair=DEG      | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=5 merges=38
+[spike]     degree pass itself: unresolved=16/16 (before the global pass ran)
+[spike]     fan after isotropic: odd=9 wrong=15/16  n-2q=+1 x2  n-2q=+2 x4  n-2q=+3 x5  n-2q=+4 x2  n-2q=+5 x2
+[spike]     mismatch (expected->actual):  1->2 x2  1->3 x1  1->4 x1  2->3 x2  2->4 x7  2->5 x2  2->6 x1
+[spike] grid66_center    density=1.0x guard=on  pair=DEG+LOCK | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=3/16 | iface edges lost=0 residual tris=3 merges=12
+[spike]     degree pass itself: unresolved=3/16 (before the global pass ran)
+[spike]     fan after isotropic: odd=9 wrong=11/16  n-2q=-2 x2  n-2q=-1 x9
+[spike]     mismatch (expected->actual):  1->2 x2  2->3 x1
+[spike] grid66_center    density=4.0x guard=on  pair=DEG+LOCK | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=5 merges=38
+[spike]     degree pass itself: unresolved=16/16 (before the global pass ran)
+[spike]     fan after isotropic: odd=9 wrong=15/16  n-2q=+1 x2  n-2q=+2 x4  n-2q=+3 x5  n-2q=+4 x2  n-2q=+5 x2
+[spike]     mismatch (expected->actual):  1->2 x2  1->3 x1  1->4 x1  2->3 x2  2->4 x7  2->5 x2  2->6 x1
+[spike] lshape           density=1.0x guard=on  pair=off      | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=4/16 | iface edges lost=0 residual tris=0 merges=0
+[spike]     fan after isotropic: odd=7 wrong=10/16  n-2q=-2 x3  n-2q=-1 x7
 [spike]     mismatch (expected->actual):  2->3 x4
-[spike] lshape           density=4.0x guard=on  ring1st=off | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=15/16 | iface edges lost=0 residual tris=9 merges=0
+[spike] lshape           density=4.0x guard=on  pair=off      | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=15/16 | iface edges lost=0 residual tris=9 merges=0
+[spike]     fan after isotropic: odd=8 wrong=14/16  n-2q=+1 x2  n-2q=+3 x4  n-2q=+4 x6  n-2q=+5 x2
 [spike]     mismatch (expected->actual):  1->3 x2  1->4 x1  1->5 x1  2->4 x3  2->5 x4  2->6 x2  2->7 x1  3->6 x1
-[spike] lshape           density=1.0x guard=on  ring1st=on  | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=4/16 | iface edges lost=0 residual tris=0 merges=11
+[spike] lshape           density=1.0x guard=on  pair=ring     | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=4/16 | iface edges lost=0 residual tris=0 merges=11
+[spike]     fan after isotropic: odd=7 wrong=10/16  n-2q=-2 x3  n-2q=-1 x7
 [spike]     mismatch (expected->actual):  2->3 x4
-[spike] lshape           density=4.0x guard=on  ring1st=on  | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=9 merges=16
+[spike] lshape           density=4.0x guard=on  pair=ring     | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=9 merges=16
+[spike]     fan after isotropic: odd=8 wrong=14/16  n-2q=+1 x2  n-2q=+3 x4  n-2q=+4 x6  n-2q=+5 x2
 [spike]     mismatch (expected->actual):  1->2 x2  1->3 x1  1->4 x1  1->5 x1  2->3 x2  2->4 x2  2->5 x4  2->6 x2  3->7 x1
-[spike] sphere_cap       density=1.0x guard=on  ring1st=off | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=0/16 | iface edges lost=0 residual tris=0 merges=0
-[spike] sphere_cap       density=4.0x guard=on  ring1st=off | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=8 merges=0
+[spike] lshape           density=1.0x guard=on  pair=DEG      | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=4/16 | iface edges lost=0 residual tris=1 merges=12
+[spike]     degree pass itself: unresolved=3/16 (before the global pass ran)
+[spike]     fan after isotropic: odd=7 wrong=10/16  n-2q=-2 x3  n-2q=-1 x7
+[spike]     mismatch (expected->actual):  1->2 x3  2->1 x1
+[spike] lshape           density=4.0x guard=on  pair=DEG      | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=15/16 | iface edges lost=0 residual tris=1 merges=41
+[spike]     degree pass itself: unresolved=15/16 (before the global pass ran)
+[spike]     fan after isotropic: odd=8 wrong=14/16  n-2q=+1 x2  n-2q=+3 x4  n-2q=+4 x6  n-2q=+5 x2
+[spike]     mismatch (expected->actual):  1->2 x2  1->3 x1  1->4 x2  2->4 x4  2->5 x5  3->5 x1
+[spike] lshape           density=1.0x guard=on  pair=DEG+LOCK | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=3/16 | iface edges lost=0 residual tris=3 merges=12
+[spike]     degree pass itself: unresolved=3/16 (before the global pass ran)
+[spike]     fan after isotropic: odd=7 wrong=10/16  n-2q=-2 x3  n-2q=-1 x7
+[spike]     mismatch (expected->actual):  1->2 x3
+[spike] lshape           density=4.0x guard=on  pair=DEG+LOCK | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=15/16 | iface edges lost=0 residual tris=1 merges=41
+[spike]     degree pass itself: unresolved=15/16 (before the global pass ran)
+[spike]     fan after isotropic: odd=8 wrong=14/16  n-2q=+1 x2  n-2q=+3 x4  n-2q=+4 x6  n-2q=+5 x2
+[spike]     mismatch (expected->actual):  1->2 x2  1->3 x1  1->4 x2  2->4 x4  2->5 x5  3->5 x1
+[spike] sphere_cap       density=1.0x guard=on  pair=off      | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=0/16 | iface edges lost=0 residual tris=0 merges=0
+[spike]     fan after isotropic: odd=10 wrong=10/16  n-2q=-1 x10
+[spike] sphere_cap       density=4.0x guard=on  pair=off      | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=8 merges=0
+[spike]     fan after isotropic: odd=7 wrong=13/16  n-2q=+1 x2  n-2q=+2 x5  n-2q=+3 x4  n-2q=+4 x1  n-2q=+5 x1
 [spike]     mismatch (expected->actual):  1->2 x2  1->3 x1  1->6 x1  2->3 x2  2->4 x7  2->5 x3
-[spike] sphere_cap       density=1.0x guard=on  ring1st=on  | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=0/16 | iface edges lost=0 residual tris=0 merges=12
-[spike] sphere_cap       density=4.0x guard=on  ring1st=on  | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=6 merges=16
+[spike] sphere_cap       density=1.0x guard=on  pair=ring     | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=0/16 | iface edges lost=0 residual tris=0 merges=12
+[spike]     fan after isotropic: odd=10 wrong=10/16  n-2q=-1 x10
+[spike] sphere_cap       density=4.0x guard=on  pair=ring     | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=6 merges=16
+[spike]     fan after isotropic: odd=7 wrong=13/16  n-2q=+1 x2  n-2q=+2 x5  n-2q=+3 x4  n-2q=+4 x1  n-2q=+5 x1
 [spike]     mismatch (expected->actual):  1->2 x3  1->5 x1  2->3 x4  2->4 x4  2->5 x3  2->6 x1
+[spike] sphere_cap       density=1.0x guard=on  pair=DEG      | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=0/16 | iface edges lost=0 residual tris=0 merges=13
+[spike]     degree pass itself: unresolved=3/16 (before the global pass ran)
+[spike]     fan after isotropic: odd=10 wrong=10/16  n-2q=-1 x10
+[spike] sphere_cap       density=4.0x guard=on  pair=DEG      | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=6 merges=31
+[spike]     degree pass itself: unresolved=16/16 (before the global pass ran)
+[spike]     fan after isotropic: odd=7 wrong=13/16  n-2q=+1 x2  n-2q=+2 x5  n-2q=+3 x4  n-2q=+4 x1  n-2q=+5 x1
+[spike]     mismatch (expected->actual):  1->2 x2  1->3 x1  1->4 x1  2->3 x3  2->4 x7  2->5 x2
+[spike] sphere_cap       density=1.0x guard=on  pair=DEG+LOCK | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=3/16 | iface edges lost=0 residual tris=0 merges=13
+[spike]     degree pass itself: unresolved=3/16 (before the global pass ran)
+[spike]     fan after isotropic: odd=10 wrong=10/16  n-2q=-1 x10
+[spike]     mismatch (expected->actual):  1->2 x1  2->3 x2
+[spike] sphere_cap       density=4.0x guard=on  pair=DEG+LOCK | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=6 merges=31
+[spike]     degree pass itself: unresolved=16/16 (before the global pass ran)
+[spike]     fan after isotropic: odd=7 wrong=13/16  n-2q=+1 x2  n-2q=+2 x5  n-2q=+3 x4  n-2q=+4 x1  n-2q=+5 x1
+[spike]     mismatch (expected->actual):  1->2 x2  1->3 x1  1->4 x1  2->3 x3  2->4 x7  2->5 x2

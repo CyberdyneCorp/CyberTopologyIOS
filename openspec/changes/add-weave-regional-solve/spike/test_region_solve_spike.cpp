@@ -91,6 +91,10 @@ struct SpikeResult {
     int interfaceEdgesLost = 0; // the SplitPass-guard witness
     int residualTriangles = 0;
     int ringMerges = 0;
+    int degreeUnresolved = -1;
+    int fanOdd = 0;          // interface vertices whose post-isotropic fan is ODD
+    int fanWrong = 0;        // fan != 2*q_in
+    std::map<int, int> fanDelta;  // (n - 2*q_in) -> count
     std::map<std::pair<int, int>, int> mismatch;  // (expected, actual) -> count
 };
 
@@ -237,8 +241,102 @@ std::size_t pairInterfaceRingFirst(Mesh& mesh, const remesh::RegionSolve& region
     return merged;
 }
 
+
+// --- pairInterfaceByDegree: the DEGREE-CONSTRAINED alternative ---------------
+// The greedy ring-first pass merges each interface triangle with its best
+// neighbour and never counts. But the face count at an interface vertex b is
+// n(b) - k(b), where k(b) is the number of merges across edges INCIDENT to b.
+// Reaching the prescription needs k(b) = n(b) - q_in(b) exactly, which is
+// feasible whenever q_in <= n <= 2*q_in. So target k(b) per vertex instead of
+// pairing per triangle.
+std::size_t pairInterfaceByDegree(Mesh& mesh, const remesh::RegionSolve& region,
+                                  const std::map<Index, int>& qIn, int& unresolved) {
+    auto activeFaceCount = [&](VertexId v) {
+        int n = 0;
+        for (const FaceId f : mesh.vertexFaces(v)) {
+            if (!region.frozen(f)) {
+                ++n;
+            }
+        }
+        return n;
+    };
+    auto isInterfaceEdge = [&](EdgeId e) {
+        const auto faces = mesh.edgeFaces(e);
+        if (faces.size() != 2) {
+            return false;
+        }
+        return region.frozen(faces[0]) != region.frozen(faces[1]);
+    };
+
+    std::size_t merged = 0;
+    for (int pass = 0; pass < 8; ++pass) {
+        bool changed = false;
+        for (const auto& [idx, target] : qIn) {
+            const VertexId b{idx};
+            if (!mesh.isAlive(b)) {
+                continue;
+            }
+            int need = activeFaceCount(b) - target;
+            while (need > 0) {
+                float bestScore = -1.0f;
+                EdgeId bestEdge{};
+                FaceId bestF0{}, bestF1{};
+                for (const EdgeId e : mesh.vertexEdges(b)) {
+                    if (!mesh.isAlive(e) || mesh.isFeatureEdge(e) || isInterfaceEdge(e)) {
+                        continue;
+                    }
+                    const auto faces = mesh.edgeFaces(e);
+                    if (faces.size() != 2) {
+                        continue;
+                    }
+                    const FaceId f0 = faces[0], f1 = faces[1];
+                    if (region.frozen(f0) || region.frozen(f1) || !mesh.isAlive(f0) ||
+                        !mesh.isAlive(f1) || mesh.faceSize(f0) != 3 || mesh.faceSize(f1) != 3) {
+                        continue;
+                    }
+                    // The far endpoint also loses one face; never push another
+                    // interface vertex below ITS prescription.
+                    const auto [ea, eb] = mesh.edgeVertices(e);
+                    const VertexId x = (ea.value == b.value) ? eb : ea;
+                    const auto itX = qIn.find(x.value);
+                    if (itX != qIn.end() && activeFaceCount(x) - 1 < itX->second) {
+                        continue;
+                    }
+                    const VertexId c = oppositeOf(mesh, f0, ea, eb);
+                    const VertexId d = oppositeOf(mesh, f1, ea, eb);
+                    const float score = quadSquareness(mesh, ea, d, eb, c);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestEdge = e;
+                        bestF0 = f0;
+                        bestF1 = f1;
+                    }
+                }
+                if (bestScore < 0.0f) {
+                    break;  // nothing legal left at b this pass
+                }
+                mergePairSpike(mesh, bestEdge, bestF0, bestF1);
+                ++merged;
+                changed = true;
+                --need;
+            }
+        }
+        if (!changed) {
+            break;
+        }
+    }
+    unresolved = 0;
+    for (const auto& [idx, target] : qIn) {
+        const VertexId b{idx};
+        if (!mesh.isAlive(b) || activeFaceCount(b) != target) {
+            ++unresolved;
+        }
+    }
+    return merged;
+}
+
 SpikeResult runSpike(const char* label, Mesh mesh, const std::vector<FaceId>& regionFaces,
-                     float densityFactor, bool enableSplitGuard, bool ringFirst = false) {
+                     float densityFactor, bool enableSplitGuard, bool ringFirst = false, bool degreePair = false, bool lockFan = false) {
     SpikeResult out;
 
     // Prescribed edge spacing, measured before anything mutates.
@@ -326,9 +424,59 @@ SpikeResult runSpike(const char* label, Mesh mesh, const std::vector<FaceId>& re
     const remesh::IsotropicStatus status = remesh::isotropicRemesh(mesh, reference, iso);
     REQUIRE(status == remesh::IsotropicStatus::Success);
 
+    // ROOT-CAUSE PROBE: the triangle fan the isotropic stage left around each
+    // interface vertex. A fan of n triangles can merge to at best ceil(n/2)
+    // faces, so reaching exactly q_in quads REQUIRES n == 2*q_in. An odd fan
+    // can never reach it, whatever the pairing does.
+    for (const auto& [idx, qout] : qOut) {
+        const VertexId v{idx};
+        if (!mesh.isAlive(v)) {
+            continue;
+        }
+        int fan = 0;
+        for (const FaceId f : mesh.vertexFaces(v)) {
+            if (!region.frozen(f)) {
+                ++fan;
+            }
+        }
+        const int wanted = 2 * (targetTotal[idx] - qout);
+        if (fan % 2 != 0) {
+            ++out.fanOdd;
+        }
+        if (fan != wanted) {
+            ++out.fanWrong;
+            ++out.fanDelta[fan - wanted];
+        }
+    }
+
     std::size_t ringMerges = 0;
     if (ringFirst) {
         ringMerges = pairInterfaceRingFirst(mesh, region);
+    }
+    if (degreePair) {
+        std::map<Index, int> qIn;
+        for (const auto& [idx, qout] : qOut) {
+            qIn[idx] = targetTotal[idx] - qout;
+        }
+        ringMerges = pairInterfaceByDegree(mesh, region, qIn, out.degreeUnresolved);
+        if (lockFan) {
+            // Freeze the achieved fan: make every edge INCIDENT to an interface
+            // vertex a feature edge, so the global pass cannot merge across it
+            // and change the count again. Edges OPPOSITE to b stay free, so a
+            // leftover triangle at b can still become a quad without moving b.
+            for (const auto& [idx, unusedTarget] : qIn) {
+                (void)unusedTarget;
+                const VertexId b{idx};
+                if (!mesh.isAlive(b)) {
+                    continue;
+                }
+                for (const EdgeId e : mesh.vertexEdges(b)) {
+                    if (mesh.isAlive(e)) {
+                        mesh.setFeatureEdge(e, true);
+                    }
+                }
+            }
+        }
     }
 
     auto quad = remesh::makeFieldAlignedQuadrangulator();
@@ -406,12 +554,22 @@ SpikeResult runSpike(const char* label, Mesh mesh, const std::vector<FaceId>& re
     }
 
     std::printf(
-        "[spike] %-16s density=%.1fx guard=%s ring1st=%s | (a) moved=%d (b) rings=%d "
+        "[spike] %-16s density=%.1fx guard=%s pair=%-8s | (a) moved=%d (b) rings=%d "
         "(c) WRONG VALENCE=%d/%d | iface edges lost=%d residual tris=%d merges=%d\n",
         label, static_cast<double>(densityFactor), enableSplitGuard ? "on " : "off",
-        ringFirst ? "on " : "off",
+        degreePair ? (lockFan ? "DEG+LOCK" : "DEG") : (ringFirst ? "ring" : "off "),
         out.pinnedMoved, out.frozenRingsChanged, out.wrongValence, out.interfaceVertices,
         out.interfaceEdgesLost, out.residualTriangles, out.ringMerges);
+    if (out.degreeUnresolved >= 0) {
+        std::printf("[spike]     degree pass itself: unresolved=%d/%d (before the global pass ran)\n",
+                    out.degreeUnresolved, out.interfaceVertices);
+    }
+    std::printf("[spike]     fan after isotropic: odd=%d wrong=%d/%d", out.fanOdd, out.fanWrong,
+                out.interfaceVertices);
+    for (const auto& [delta, count] : out.fanDelta) {
+        std::printf("  n-2q=%+d x%d", delta, count);
+    }
+    std::printf("\n");
     if (!out.mismatch.empty()) {
         std::printf("[spike]     mismatch (expected->actual):");
         for (const auto& [key, count] : out.mismatch) {
@@ -471,6 +629,10 @@ TEST_CASE("region-solve spike: flat grid, centre 4x4") {
     // Does the design's ring-first pairing actually close the ring?
     runSpike("grid66_center", makeGrid(kN, flat), centreBlock(kN, 1, 4), 1.0f, true, true);
     runSpike("grid66_center", makeGrid(kN, flat), centreBlock(kN, 1, 4), 4.0f, true, true);
+    runSpike("grid66_center", makeGrid(kN, flat), centreBlock(kN, 1, 4), 1.0f, true, false, true);
+    runSpike("grid66_center", makeGrid(kN, flat), centreBlock(kN, 1, 4), 4.0f, true, false, true);
+    runSpike("grid66_center", makeGrid(kN, flat), centreBlock(kN, 1, 4), 1.0f, true, false, true, true);
+    runSpike("grid66_center", makeGrid(kN, flat), centreBlock(kN, 1, 4), 4.0f, true, false, true, true);
 }
 
 TEST_CASE("region-solve spike: L-shaped region") {
@@ -481,6 +643,10 @@ TEST_CASE("region-solve spike: L-shaped region") {
     runSpike("lshape", makeGrid(kN, flat), lShape(kN), 4.0f, true);
     runSpike("lshape", makeGrid(kN, flat), lShape(kN), 1.0f, true, true);
     runSpike("lshape", makeGrid(kN, flat), lShape(kN), 4.0f, true, true);
+    runSpike("lshape", makeGrid(kN, flat), lShape(kN), 1.0f, true, false, true);
+    runSpike("lshape", makeGrid(kN, flat), lShape(kN), 4.0f, true, false, true);
+    runSpike("lshape", makeGrid(kN, flat), lShape(kN), 1.0f, true, false, true, true);
+    runSpike("lshape", makeGrid(kN, flat), lShape(kN), 4.0f, true, false, true, true);
 }
 
 TEST_CASE("region-solve spike: sphere cap (domed grid)") {
@@ -494,4 +660,8 @@ TEST_CASE("region-solve spike: sphere cap (domed grid)") {
     runSpike("sphere_cap", makeGrid(kN, dome), centreBlock(kN, 1, 4), 4.0f, true);
     runSpike("sphere_cap", makeGrid(kN, dome), centreBlock(kN, 1, 4), 1.0f, true, true);
     runSpike("sphere_cap", makeGrid(kN, dome), centreBlock(kN, 1, 4), 4.0f, true, true);
+    runSpike("sphere_cap", makeGrid(kN, dome), centreBlock(kN, 1, 4), 1.0f, true, false, true);
+    runSpike("sphere_cap", makeGrid(kN, dome), centreBlock(kN, 1, 4), 4.0f, true, false, true);
+    runSpike("sphere_cap", makeGrid(kN, dome), centreBlock(kN, 1, 4), 1.0f, true, false, true, true);
+    runSpike("sphere_cap", makeGrid(kN, dome), centreBlock(kN, 1, 4), 4.0f, true, false, true, true);
 }
