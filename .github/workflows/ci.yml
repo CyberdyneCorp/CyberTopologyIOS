@@ -17,6 +17,31 @@ jobs:
       - run: npm install -g @fission-ai/openspec@latest
       - run: openspec validate --all --strict
 
+  engine-tests:
+    name: Engine C++ suite (host)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Select latest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE"
+      - name: Install Ninja
+        run: brew install ninja
+      # The iOS slices build with CYBER_BUILD_TESTS=OFF because the engine's C++
+      # suite is a HOST executable and cannot run inside an iOS static framework.
+      # It therefore needs its own configure — which is why 281 cases and ~127k
+      # assertions ran only by hand, with nothing watching the app's local engine
+      # patches (Engine/patches/*.patch). This job builds from the same patched
+      # tree the iOS slices use, so a patch that breaks the engine fails here
+      # rather than at the next submodule bump.
+      #
+      # Deliberately NOT cached: the whole point is to compile the patch stack.
+      - name: Build and run the engine C++ suite
+        run: scripts/build_engine.sh --host-tests
+
   build:
     name: Build (iOS Simulator)
     runs-on: macos-latest

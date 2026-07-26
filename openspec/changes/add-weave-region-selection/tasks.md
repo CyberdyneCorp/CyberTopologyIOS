@@ -236,8 +236,17 @@ If a task here turns out to need one, it is out of scope and belongs in 5.4b.
       those harnesses (`IsolatedViewportModel`); device suite now **821/81 green**.
       Recorded on 9.6, including the 38 other harness sites that still carry the same
       latent dependency.
-- [ ] 6.5 **NOT DONE — engine C++ tests are still absent from CI.**
-      `scripts/build_engine.sh` sets `CYBER_BUILD_TESTS=OFF`, so the engine suite only
-      ever runs by hand. This change did not add engine code, so it did not widen the
-      gap — but it did not close it either, and the region-solve work it builds on lives
-      entirely behind that gate.
+- [x] 6.5 **DONE — the engine C++ suite now runs in CI.** `build_engine.sh --host-tests`
+      configures a HOST build with `CYBER_BUILD_TESTS=ON` (the iOS slices cannot run it:
+      it is a host executable), builds `cyber_tests` and runs it, from the SAME patched
+      tree the iOS slices build from — so a patch that breaks the engine fails in CI
+      rather than at the next submodule bump. Added as an `engine-tests` job, deliberately
+      uncached since compiling the patch stack is the point.
+      **Two things worth recording.** (1) `CYBER_BUILD_NET` had to be set EXPLICITLY: with
+      it off, `tests/CMakeLists.txt` skips `net/test_bridge.cpp` and the suite runs 274
+      cases instead of 281 — a CI job quietly smaller than what developers run by hand.
+      (2) A `MINIMUM_ENGINE_TEST_CASES` floor asserts the count, and it earned its place
+      immediately: it caught the 274 while this was being written, when merely deleting
+      the `-DCYBER_BUILD_NET=OFF` flag changed nothing because CMake had cached the
+      earlier value. The floor was then verified to actually fail (raised to 999, exit 1)
+      rather than assumed to work.

@@ -14,7 +14,9 @@
 #
 # Idempotent: skips everything when the packaged xcframework is newer than
 # the submodule checkout; `--force` rebuilds, `--sim-only` skips the device
-# slice (what CI uses). Requires CMake >= 3.24, Ninja, Xcode 26.
+# slice (what CI uses). `--host-tests` instead builds and RUNS the engine's C++
+# suite for the host and exits — the iOS slices cannot run it, since it is a
+# host executable. Requires CMake >= 3.24, Ninja, Xcode 26.
 #
 # The submodule is pinned at the CyberRemesherAndUV v0.2.4 RELEASE, which now
 # ships the manual-retopology C API NATIVELY. That layer grew out of the one
@@ -81,11 +83,16 @@ DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-18.0}"
 
 FORCE=0
 SIM_ONLY=0
+HOST_TESTS=0
+# Floor for the engine C++ suite, so a build-configuration change that silently
+# stops compiling a module's tests fails instead of reporting a green, smaller run.
+MINIMUM_ENGINE_TEST_CASES=281
 for arg in "$@"; do
     case "$arg" in
         --force) FORCE=1 ;;
         --sim-only) SIM_ONLY=1 ;;
-        *) echo "usage: $0 [--force] [--sim-only]" >&2; exit 2 ;;
+        --host-tests) HOST_TESTS=1 ;;
+        *) echo "usage: $0 [--force] [--sim-only] [--host-tests]" >&2; exit 2 ;;
     esac
 done
 
@@ -114,7 +121,9 @@ PATCH_STACK_HASH="$(
 )"
 STAMP_VALUE="$ENGINE_COMMIT patches:$PATCH_STACK_HASH"
 STAMP="$BUILD_ROOT/.engine-commit"
-if [[ $FORCE -eq 0 && -d "$XCFRAMEWORK" && -d "$PACKAGE_COPY" \
+# --host-tests has nothing to do with the xcframework, so the artifact stamp
+# must not short-circuit it: the tests can be stale while the framework is fresh.
+if [[ $HOST_TESTS -eq 0 && $FORCE -eq 0 && -d "$XCFRAMEWORK" && -d "$PACKAGE_COPY" \
       && -f "$STAMP" && "$(cat "$STAMP")" == "$STAMP_VALUE" ]]; then
     echo "build_engine: up to date ($STAMP_VALUE); use --force to rebuild"
     exit 0
@@ -200,6 +209,48 @@ if ! apply_patch_stack; then
         echo "build_engine:       git -C Engine/CyberRemesherAndUV checkout -- ." >&2
         exit 1
     fi
+fi
+
+# ---- host test build ---------------------------------------------------
+# The iOS slices below deliberately set CYBER_BUILD_TESTS=OFF: the engine's C++
+# suite is a host executable and cannot run inside an iOS static framework. So
+# it needs its own HOST configure, which is why it went unrun by CI for so long
+# — 281 cases and ~127k assertions that only ever executed by hand, guarding the
+# app's local engine patches (Engine/patches/*.patch) with nothing watching them.
+#
+# Runs on the same patched tree the iOS slices build from, so a patch that
+# breaks the engine fails here rather than at the next submodule bump.
+if [[ $HOST_TESTS -eq 1 ]]; then
+    HOST_DIR="$BUILD_ROOT/engine-host-tests"
+    echo "build_engine: configuring host test build"
+    # NET is set EXPLICITLY, not left to the default: tests/CMakeLists.txt gates
+    # net/test_bridge.cpp on `TARGET cyber_net`, so without it the suite quietly
+    # runs 274 cases instead of 281. A CI job running a smaller suite than
+    # developers run by hand is worse than no job — hence both the explicit flag
+    # and the count floor below, which is what caught this while it was being
+    # written (CMake had cached an earlier OFF, so merely deleting the flag did
+    # nothing).
+    cmake -S "$ENGINE_SRC" -B "$HOST_DIR" \
+        -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCYBER_BUILD_TESTS=ON \
+        -DCYBER_BUILD_CLI=OFF \
+        -DCYBER_BUILD_NET=ON
+    cmake --build "$HOST_DIR" --target cyber_tests
+    echo "build_engine: running the engine C++ suite"
+    # Capture the run so the CASE COUNT can be floored. Without this, a
+    # configuration change that drops a whole module's tests still shows green.
+    HOST_LOG="$HOST_DIR/cyber_tests.log"
+    "$HOST_DIR/tests/cyber_tests" | tee "$HOST_LOG"
+    CASES=$(sed -n 's/.*test cases: *\([0-9]*\).*/\1/p' "$HOST_LOG" | tail -1)
+    : "${CASES:=0}"
+    if [[ "$CASES" -lt "$MINIMUM_ENGINE_TEST_CASES" ]]; then
+        echo "build_engine: engine suite ran only $CASES cases, expected at least" \
+             "$MINIMUM_ENGINE_TEST_CASES — a module's tests were probably not built" >&2
+        exit 1
+    fi
+    echo "build_engine: engine C++ suite passed ($CASES cases)"
+    exit 0
 fi
 
 # ---- per-slice CMake builds --------------------------------------------
