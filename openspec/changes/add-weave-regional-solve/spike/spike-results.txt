@@ -1,0 +1,25 @@
+[spike] grid66_center    density=1.0x guard=on  ring1st=off | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=3/16 | iface edges lost=0 residual tris=0 merges=0
+[spike]     mismatch (expected->actual):  2->3 x3
+[spike] grid66_center    density=4.0x guard=on  ring1st=off | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=7 merges=0
+[spike]     mismatch (expected->actual):  1->2 x1  1->3 x1  1->4 x2  2->4 x4  2->5 x6  2->6 x2
+[spike] grid66_center    density=4.0x guard=off ring1st=off | (a) moved=0 (b) rings=20 (c) WRONG VALENCE=16/16 | iface edges lost=16 residual tris=16 merges=0
+[spike]     mismatch (expected->actual):  1->4 x1  1->6 x1  1->7 x1  1->8 x1  2->4 x3  2->5 x5  2->6 x4
+[spike] guard witness: edges lost with guard=0, without=16
+[spike] grid66_center    density=1.0x guard=on  ring1st=on  | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=3/16 | iface edges lost=0 residual tris=0 merges=12
+[spike]     mismatch (expected->actual):  2->3 x3
+[spike] grid66_center    density=4.0x guard=on  ring1st=on  | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=6 merges=16
+[spike]     mismatch (expected->actual):  1->2 x3  1->5 x1  2->4 x4  2->5 x5  2->6 x3
+[spike] lshape           density=1.0x guard=on  ring1st=off | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=4/16 | iface edges lost=0 residual tris=0 merges=0
+[spike]     mismatch (expected->actual):  2->3 x4
+[spike] lshape           density=4.0x guard=on  ring1st=off | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=15/16 | iface edges lost=0 residual tris=9 merges=0
+[spike]     mismatch (expected->actual):  1->3 x2  1->4 x1  1->5 x1  2->4 x3  2->5 x4  2->6 x2  2->7 x1  3->6 x1
+[spike] lshape           density=1.0x guard=on  ring1st=on  | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=4/16 | iface edges lost=0 residual tris=0 merges=11
+[spike]     mismatch (expected->actual):  2->3 x4
+[spike] lshape           density=4.0x guard=on  ring1st=on  | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=9 merges=16
+[spike]     mismatch (expected->actual):  1->2 x2  1->3 x1  1->4 x1  1->5 x1  2->3 x2  2->4 x2  2->5 x4  2->6 x2  3->7 x1
+[spike] sphere_cap       density=1.0x guard=on  ring1st=off | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=0/16 | iface edges lost=0 residual tris=0 merges=0
+[spike] sphere_cap       density=4.0x guard=on  ring1st=off | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=8 merges=0
+[spike]     mismatch (expected->actual):  1->2 x2  1->3 x1  1->6 x1  2->3 x2  2->4 x7  2->5 x3
+[spike] sphere_cap       density=1.0x guard=on  ring1st=on  | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=0/16 | iface edges lost=0 residual tris=0 merges=12
+[spike] sphere_cap       density=4.0x guard=on  ring1st=on  | (a) moved=0 (b) rings=0 (c) WRONG VALENCE=16/16 | iface edges lost=0 residual tris=6 merges=16
+[spike]     mismatch (expected->actual):  1->2 x3  1->5 x1  2->3 x4  2->4 x4  2->5 x3  2->6 x1

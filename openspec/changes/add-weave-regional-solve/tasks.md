@@ -3,18 +3,65 @@
 Ordered. **Task 0 is a falsification spike and gates everything after task 3** — do not
 author patch 0006 until its number (c) is measured on three fixtures.
 
-## 0. Falsification spike (FIRST — throwaway branch, nothing committed)
+## 0. Falsification spike — RUN 2026-07-26. **THE FALSIFIER FIRED. STOP.**
 
-- [ ] 0.1 On a throwaway branch against the fully-patched engine tree, implement ONLY
-      the `frozenFace`/`vertexPinned` masks, the `setFeatureEdge` interface tagging, and
-      the 4-line `SplitPass` guard. No gate, no capi, no Swift.
-- [ ] 0.2 Temporary C++ test solving the centre 4×4 block of a 6×6 quad grid through the
-      existing pipeline with islands/merge/fillHoles/pureQuads bypassed.
-- [ ] 0.3 Report three numbers: (a) are all pinned positions bitwise identical, (b) are
-      all frozen face rings identical, (c) **how many interface vertices end with the
-      wrong incident-solved-face count**. (c) is the falsifier — measure it on the flat
-      grid, an L-shape and a sphere cap. If (c) is routinely nonzero on the FLAT grid,
-      stop and reconsider before building tasks 4-15 (see design, "G2").
+- [x] 0.1 Implemented against the fully-patched engine tree: `frozenFace`/`vertexPinned`
+      masks, `setFeatureEdge` interface tagging, the 4-line `SplitPass` guard. No gate, no
+      capi, no Swift. Engine tree since reverted to HEAD + 0001..0005 (verified `+1087 -169`,
+      matching the patch sum exactly); spike artifacts kept out of the repo.
+- [x] 0.2 C++ test over three fixtures — flat 6×6 grid / centre 4×4 region, L-shaped
+      region (reflex ring vertex), domed grid ("sphere cap") — solved via `isotropicRemesh`
+      + the field-aligned quadrangulator directly, so islands / merge / fillHoles /
+      pureQuads are bypassed by construction. Run at 1× (prescribed spacing) and 4× density.
+- [x] 0.3 Results.
+
+**(a) and (b) PASS, and the SplitPass guard is load-bearing.** Prescribed positions are
+bitwise identical in every configuration — including with the guard OFF, confirming
+Invariant P. Frozen face rings are identical with the guard ON. With the guard OFF at 4×:
+**20 frozen rings corrupted and 16 interface edges lost.** The four-line patch is
+justified by measurement, and G1 (exact landing) holds as designed.
+
+**(c) FAILS on the flat grid, which is the documented stopping condition.**
+
+| fixture | 1× wrong / 16 | 4× wrong / 16 |
+|---|---|---|
+| grid66_center | **3** | 16 |
+| lshape | **4** | 15 |
+| sphere_cap | 0 | 16 |
+
+Every 1× failure is the pattern `expected 2 → actual 3`: a mid-side interface vertex ends
+with one MORE solved quad than prescribed, total valence 5 — **a new singularity on the
+interface.** This reproduces the correctness judge's predicted counterexample exactly,
+including the fixture and the number (design.md, "Spine choice").
+
+**The proposed remedy does not work.** A minimal `pairInterfaceRingFirst` (design Stage 5)
+was implemented and measured: it performs 11-16 merges and changes the failure count by
+**zero** (grid66 3→3, lshape 4→4 at 1×; 16→16 and 15→16 at 4×). The reason is structural,
+not an artefact of the spike's simpler scoring: greedy pairing changes WHICH triangles
+merge, not how many quads are incident to a given interface vertex. The fan size around a
+pinned vertex is fixed by the isotropic stage, and nothing in this design constrains it to
+`q_in(b)`. No amount of pairing quality repairs a count.
+
+**Consequence for the gate.** It refuses the whole solve if ANY interface vertex is
+non-conforming, so a 3-of-16 per-vertex rate is a **100% solve-rejection rate** on the
+simplest possible fixture. Two of three fixtures reject at prescribed density; all three
+reject at 4×. That is design risk 1 realised: "this design collapses to the same
+narrowness as Design C but with more machinery."
+
+**Caveat, stated honestly.** The spike's ring-first pass runs BEFORE the quadrangulator
+rather than inside it between `computeCrossField` and `collectPairEdges`, and scores with
+a plain squareness metric rather than the engine's `quadQuality` × field-diagonalness
+weight. So this refutes the MECHANISM (greedy interface pairing), not the exact code task
+6.3 specifies. Given the count argument above, the exact variant is not expected to differ.
+
+- [ ] 0.4 **DECISION REQUIRED before tasks 1-17.** Per design risk 1, "C's lattice becomes
+      the right answer and this decision should be revisited rather than defended."
+      Options: (i) re-spine on the boundary-staircase lattice (construct-correct, narrower
+      — B = 0 only); (ii) keep this spine but make the interface fan a CONSTRAINT of the
+      isotropic stage rather than something checked afterwards; (iii) relax 5.3 to
+      positional landing only, dropping the interior-singularity guarantee and with it the
+      differentiator. **Tasks 1-3 below are validated by the spike and survive any of the
+      three; tasks 4-17 are on hold.**
 
 ## 1. Engine: RegionSolve core (new files, zero patch conflict)
 

@@ -121,3 +121,72 @@ Mechanism, as a chain of verified facts:
 Every interface vertex ends with total valence exactly `T(v)`, its prescription derived from the frozen side (or a caller override). Because the total index is fixed by the surface's topology, forcing every interface vertex regular pushes the residual index strictly interior. The output reports `interiorIndexBudget`, and the index identity is asserted at runtime.
 
 The strength, stated honestly: **this is enforce-or-fail, not construct-correct.** A ghost that violates it cannot exist, at the cost that some regions produce no ghost. The construct-correct alternative is C's lattice, which is strictly narrower (B = 0 only, plus translation closure, plus injectivity, plus disk-only, plus no density control) and is the right follow-on if the gate's rejection rate turns out to be high — see the spike in risks.
+
+---
+
+# ADDENDUM — spike result, 2026-07-26
+
+The falsification spike (tasks.md task 0) ran. **G1 holds; G2 does not, and the proposed
+remedy for G2 does not move the number.** Full data in tasks.md §0; the argument is here.
+
+## What survived
+
+The exactness mechanism is confirmed by measurement, not by audit:
+
+- Prescribed positions were bitwise identical in every configuration, including with the
+  SplitPass guard disabled — Invariant P (a pinned vertex is a feature vertex, hence never
+  collapsed / smoothed / dissolved) does the work claimed of it.
+- The SplitPass guard is load-bearing and cheaply justified: without it, 4× density
+  corrupted **20 frozen face rings and lost 16 interface edges**; with it, zero and zero.
+  This also confirms the "positional assertion passes while vertex identity fails" hazard
+  is real — the unguarded run kept every prescribed POSITION while destroying the
+  prescribed EDGE SET, exactly as predicted.
+
+Tasks 1, 2 and 3 are therefore validated as written, whatever spine is chosen next.
+
+## What failed, and why it is structural
+
+Every prescribed-density failure was `expected 2 → actual 3`: one extra solved quad at a
+mid-side interface vertex, total valence 5, a singularity ON the interface.
+
+`pairInterfaceRingFirst` was then implemented and measured. It performed 11-16 merges per
+fixture and changed the failure count by **zero**.
+
+The reason it cannot help:
+
+> The number of solved quads incident to an interface vertex `b` is determined by the size
+> of the triangle fan the ISOTROPIC stage leaves around `b`. Pairing merges triangles into
+> quads; merging two triangles that both touch `b` reduces `b`'s incident count by one, but
+> the pairing pass chooses merges by local quad quality and has no term for `b`'s target
+> count. Changing which triangles pair redistributes quality, not valence.
+
+So the design's error is one level up from the pairing: it treats the interface fan as
+something to *verify after the fact* when it is something that must be *constrained during
+generation*. The gate then converts a generation problem into a refusal.
+
+## Where that leaves the three designs
+
+The correctness judge ranked this spine last (5/10) on precisely this point and supplied
+precisely this counterexample. The spike confirms the judge and disconfirms the synthesis's
+resolution ("B's spine plus C's identity as a hard gate"), because the gate can only refuse
+what the spine keeps producing.
+
+Three ways forward, in the order they should be considered:
+
+1. **Constrain the fan during the isotropic stage** (new option, cheapest if it works):
+   give `SplitPass`/`CollapsePass` a per-pinned-vertex target fan size and let the existing
+   passes converge to it, the way they already converge edge length to a target. This keeps
+   the whole B spine — masks, feature tagging, in-place ids, null-object safety — and moves
+   the guarantee from enforce-or-fail to converge-or-fail. Unvalidated; would need its own
+   spike, and the spike harness now exists.
+2. **Re-spine on the boundary-staircase lattice** (design C): construct-correct, and its
+   two identities were re-derived and hold. Strictly narrower — interior index budget B = 0
+   only, plus translation closure, plus injectivity, plus disk-only, plus no density
+   control — so it ships a guarantee over a smaller domain.
+3. **Relax 5.3 to positional landing only.** G1 is proven and cheap; drop the
+   interior-singularity clause. This closes 5.1a and part of 5.3 quickly, but it gives up
+   the property that distinguishes Weave from "run Quadriflow on a sub-mesh and stitch",
+   so it should not be chosen silently.
+
+Option 3 would require rewriting the spec delta's "Singularities are interior to the solved
+region" requirement, not merely deferring it.

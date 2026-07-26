@@ -1,0 +1,56 @@
+diff --git a/src/core/include/cyber/core/isotropic.hpp b/src/core/include/cyber/core/isotropic.hpp
+index bddbb20..94011e0 100644
+--- a/src/core/include/cyber/core/isotropic.hpp
++++ b/src/core/include/cyber/core/isotropic.hpp
+@@ -3,6 +3,7 @@
+ #include "cyber/core/mesh.hpp"
+ #include "cyber/core/progress.hpp"
+ #include "cyber/core/reference_surface.hpp"
++#include "cyber/core/region_solve.hpp"
+ 
+ namespace cyber::remesh {
+ 
+@@ -16,11 +17,20 @@ namespace cyber::remesh {
+ // collapsed, never smoothed off the feature and never projected; edge flips
+ // never flip a feature edge. Tag features (Mesh::tagFeatureEdges) before
+ // calling.
++//
++// Feature tagging does NOT, however, stop a SPLIT: SplitPass is the only pass
++// here that inserts a vertex, and it has no feature or boundary guard. That is
++// harmless for a sharp crease (the inserted vertex stays on the crease) but not
++// for a region solve, where the prescribed boundary's EDGE SET is part of the
++// contract. `region` is what makes splits respect it — see region_solve.hpp.
+ struct IsotropicOptions {
+     float targetEdgeLength = 0.0f;  // required, > 0
+     int iterations = 3;
+     float adaptivity = 0.0f;           // 0 = uniform; curvature-adaptive otherwise
+     float smoothNormalDegrees = 0.0f;  // 0 = flat projection; > 0 = PN-triangle smoothing
++    // Null (the default) = whole-mesh remesh, byte-for-byte the previous
++    // behaviour. Non-null = region solve; only SplitPass consults it.
++    const RegionSolve* region = nullptr;
+ };
+ 
+ enum class IsotropicStatus { Success, Cancelled, InvalidInput };
+diff --git a/src/core/src/isotropic.cpp b/src/core/src/isotropic.cpp
+index 1bd1196..024f5af 100644
+--- a/src/core/src/isotropic.cpp
++++ b/src/core/src/isotropic.cpp
+@@ -149,6 +149,18 @@ public:
+                 continue;
+             }
+             const auto [a, b] = m_mesh.edgeVertices(e);
++            // Region solve: never insert a vertex into a prescribed boundary
++            // polyline. This is the ONLY vertex-inserting pass in the engine
++            // without a feature/boundary guard, so without this the interface
++            // vertices survive but the interface EDGE SET does not — and the
++            // boundary still lies geometrically on the prescribed polyline, so
++            // a positional or Hausdorff assertion passes while vertex identity
++            // fails. Keyed on the pin mask rather than on edgeFaceCount == 1 so
++            // it works for an interface interior to the mesh.
++            if (m_options.region != nullptr && m_options.region->pinned(a) &&
++                m_options.region->pinned(b)) {
++                continue;
++            }
+             const float target =
+                 m_options.targetEdgeLength * 0.5f * (scaleOf(scales, a) + scaleOf(scales, b));
+             if (edgeLength(e) <= target * kLongFactor) {
