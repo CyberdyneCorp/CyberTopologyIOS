@@ -145,7 +145,10 @@ struct MetalViewport: UIViewRepresentable {
         /// The overlay EditMesh's document payload bytes: mesh edits change
         /// them (the reload signal), and a cancelled verb stroke restores
         /// the live mesh from them (task 3.3).
-        private var overlayPayload: Data?
+        /// Internal (not private) so the Weave Fill session can pin the cage a
+        /// proposal was derived from — the staleness check that stops a stale fill
+        /// from resurrecting pre-undo geometry.
+        private(set) var overlayPayload: Data?
         /// Manifest entry of the overlay EditMesh (verb transactions).
         /// Invariant: `editObject`/`overlayObjectID`/`overlayPayload`/
         /// `recognizerEditMesh` always describe ONE consistent snapshot —
@@ -189,9 +192,20 @@ struct MetalViewport: UIViewRepresentable {
         /// Mutated only through `beginAutoRetopo`/`acceptAutoRetopo`/
         /// `discardAutoRetopo` (in AutoRetopoSession.swift).
         var autoRetopoGhost: SolverGhost?
+        /// The EditMesh payload a pending WEAVE FILL proposal was derived from
+        /// (add-weave-region-selection). nil for a whole-Target proposal, which does
+        /// not contain the cage. A fill ghost DOES contain it, so accepting a stale
+        /// one would resurrect pre-undo geometry — hence the staleness check.
+        var weaveFillBasePayload: Data?
         /// The Weave solver backend — the engine auto-remesher now, the
         /// constraint-aware solver later. `var` so tests can inject a stub.
-        var weaveSolver: WeaveSolving = EngineRemeshSolver()
+        /// The Weave solver. `CompositeWeaveSolver` routes `.wholeMesh` to the
+        /// auto-remesher and `.faces` to the region backend, so Auto-Retopo is
+        /// byte-for-byte unchanged while Weave Fill becomes possible at all.
+        /// **Was `EngineRemeshSolver()`, which throws on `.faces`** — task 12 built the
+        /// composite and described it as the solver an app should inject, but nothing
+        /// injected it, so every region solve failed the guard rather than running.
+        var weaveSolver: WeaveSolving = CompositeWeaveSolver()
         /// Verb layer (task 3.3): applies the five verbs to the live mesh
         /// and journals every mutation through `onCommit`.
         let meshEditor = MeshEditController()
@@ -762,6 +776,10 @@ struct MetalViewport: UIViewRepresentable {
             // rebound below either way, so no separate discard is needed.
             if object?.id != overlayObjectID || payload != overlayPayload {
                 meshEditor.editMeshSnapshotWillChange(payload: payload)
+                // A pending Weave Fill proposal CONTAINS the cage, so an external
+                // change (undo, redo, conflict revert) makes it dangerous rather than
+                // merely stale: accepting it would put the pre-change cage back.
+                discardWeaveFillIfStale(newPayload: payload)
             }
             guard let object, let payload else {
                 overlayObjectID = nil

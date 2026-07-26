@@ -175,6 +175,7 @@ extension MetalViewport.Coordinator {
             for: ghost.mesh, name: "EditMesh", role: .editMesh, verb: "autoRetopo.accept"
         ) else { return false }
         autoRetopoGhost = nil
+        weaveFillBasePayload = nil
         syncAutoRetopoGhostState()
         onCommit?(command)
         return true
@@ -184,13 +185,17 @@ extension MetalViewport.Coordinator {
     /// byte-unchanged. Drawing over the ghost routes here.
     func discardAutoRetopo() {
         autoRetopoGhost = nil
+        weaveFillBasePayload = nil
         syncAutoRetopoGhostState()
     }
 
     /// Reflects the pending ghost into the renderer (amber Weave proposal) and
     /// the input model (the accept/discard bar observes it). No-ops on the
     /// renderer headless (tests have no renderer); the state still updates.
-    private func syncAutoRetopoGhostState() {
+    /// Internal (not private) so the Weave Fill session in
+    /// `WeaveFillSession.swift` can publish through the same path — a fill
+    /// proposal IS an Auto-Retopo proposal as far as presentation goes.
+    func syncAutoRetopoGhostState() {
         inputModel.autoRetopoGhostPending = autoRetopoGhost != nil
         // The notice belongs to the pending ghost. Clearing it HERE rather than
         // at each call site means every teardown path — accept, discard,

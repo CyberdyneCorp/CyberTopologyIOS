@@ -86,17 +86,44 @@ If a task here turns out to need one, it is out of scope and belongs in 5.4b.
       accept into the probe — at that point the exemption becomes a hole rather than a
       fact. Recorded rather than silently widened.
 
-## 3. Session and solve
+## 3. Session and solve — DONE
 
-- [ ] 3.1 `WeaveFillSession` on `MeshEditController`: painted extent, row count,
-      density, pending ghost. Not journaled, not persisted.
-- [ ] 3.2 Solve off the main thread reusing `solveOffMain`'s payload+report shape,
-      through `CompositeWeaveSolver` with `.faces(seedFaces)`.
-- [ ] 3.3 Present through the amber ghost + Accept/Discard bar; verify task 13.3's
-      region notice appears on this path.
-- [ ] 3.4 Accept commits ONE journal entry; one undo restores the pre-accept bytes.
-- [ ] 3.5 Teardown on external snapshot change (the Patch Clone precedent): an undo
-      underneath must not leave a session pointing at dead ids.
+- [x] 3.1 `beginWeaveFill()` on the Coordinator (not `MeshEditController` — the
+      proposal slot and the accept path live on the Coordinator). It **reuses the
+      Auto-Retopo proposal slot**, so the amber ghost, the Accept/Discard bar, the
+      13.3 notice, one-entry accept and byte-exact undo all come for free, and the
+      user can only review one proposal at a time anyway.
+- [x] 3.2 **Runs ON the main actor, deliberately — the plan was wrong to say off.**
+      `beginAutoRetopoAsync` crosses the actor boundary by serialising meshes to
+      payload `Data`, and that payload is OBJ at DEFAULT OSTREAM PRECISION — six
+      significant digits — which also renumbers every element. A whole-Target solve
+      does not care: nothing of its input survives into the output. **A fill does**:
+      the cage is frozen and must come back BITWISE identical, because it is the
+      artist's hand-authored geometry. Round-tripping it would quantise every cage
+      vertex, silently degrading work done by hand. Affordable because a fill solves
+      the coarse CAGE plus a small seed band, never the multi-million-triangle Target
+      (only touched through the already-built snapper while growing). If a fill ever
+      needs to be async, the fix is a `Sendable` id-preserving transfer, not a payload
+      round-trip.
+- [x] 3.3 Presents through the existing amber ghost + bar; the 13.3 notice carries the
+      region report, and a REFUSAL reuses the same line with its own message per
+      `WeaveFillDomain.Failure` case (asserted distinct).
+- [x] 3.4 Accept is one journal entry and one undo restores the pre-accept bytes —
+      asserted end to end on a domed Target with a partial cage.
+- [x] 3.5 **The teardown was a genuine hazard, not a formality.** A fill ghost CONTAINS
+      the cage, so a stale one is dangerous rather than merely outdated: accepting it
+      after an undo would put the pre-undo cage back. `weaveFillBasePayload` pins the
+      cage a proposal was derived from and `discardWeaveFillIfStale` drops the proposal
+      AND the captured request on any external snapshot change, hooked next to the
+      existing `editMeshSnapshotWillChange`. A whole-Target proposal has no base payload
+      and is deliberately unaffected. Both directions asserted (stale drops, unchanged
+      keeps).
+- [x] 3.6 **Integration miss found by the tests: the app still injected
+      `EngineRemeshSolver()`.** Task 12 built `CompositeWeaveSolver` and described it as
+      "the solver an app should inject" — and nothing injected it, so every `.faces`
+      solve hit the whole-mesh guard and failed. Every fill test failed identically
+      until it was wired. Auto-Retopo is unaffected (the composite routes `.wholeMesh`
+      to the same backend), which the existing suite confirms.
 
 ## 4. Live re-solve
 
