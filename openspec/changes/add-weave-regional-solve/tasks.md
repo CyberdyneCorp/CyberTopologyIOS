@@ -138,14 +138,18 @@ be quietly forgotten.
 
 ## 1. Engine: RegionSolve core (new files, zero patch conflict)
 
-- [ ] 1.1 `src/core/include/cyber/core/region_solve.hpp` — `struct RegionSolve` with
+- [x] 1.1 `src/core/include/cyber/core/region_solve.hpp` — `struct RegionSolve` with
       `frozenFace`, `vertexPinned`, `interfaceLoops`, `targetValence`, `indexBudget`,
       `empty()`, `active(FaceId)`, `pinned(VertexId)`. Document Invariants F and P
       inline, citing `mesh.cpp:44-46`/`86-90` and `isotropic.cpp:31-38`.
-- [ ] 1.2 `src/core/src/region_solve.cpp` — `buildRegionSolve()` per design Stage 2
+- [x] 1.2 `src/core/src/region_solve.cpp` — `buildRegionSolve()` per design Stage 2
       (a)-(g), in that exact order; `tagFeatureEdges` BEFORE `setFeatureEdge`
       (`mesh_diagnostics.cpp:182-203` overwrites every alive edge's flag).
-- [ ] 1.3 Add both to `src/core/CMakeLists.txt`.
+- [x] 1.3 Add both to `src/core/CMakeLists.txt`.
+- [x] 1.4 Up-front refusals shipped as `RegionSolveStatus` with a distinct reason each:
+      `EmptyRegion`, `InvalidFace` (dead / out-of-range / repeated), `WholeMesh` (refused,
+      never aliased to the whole-mesh path), `Disconnected`, `CoincidentVertices`,
+      `InconsistentWinding`. A refused build leaves the mesh byte-untouched — asserted.
 
 ## 2. Engine: region-scoped boundary walk (header-only, read-only)
 
@@ -159,10 +163,10 @@ be quietly forgotten.
 
 ## 3. Engine: the SplitPass guard
 
-- [ ] 3.1 `isotropic.hpp` — add `const RegionSolve* region = nullptr;` to
+- [x] 3.1 `isotropic.hpp` — add `const RegionSolve* region = nullptr;` to
       `IsotropicOptions`, and extend the feature-preservation paragraph at `:16-18`
       (which promises collapse/smooth/flip protection but is silent on splits).
-- [ ] 3.2 `isotropic.cpp` — immediately after `const auto [a, b] = m_mesh.edgeVertices(e);`
+- [x] 3.2 `isotropic.cpp` — immediately after `const auto [a, b] = m_mesh.edgeVertices(e);`
       at `:147`, insert `if (m_options.region && m_options.region->pinned(a) &&
       m_options.region->pinned(b)) { continue; }`, commented as the only vertex-inserting
       pass without a boundary guard. No change to CollapsePass/FlipPass/SmoothAndProjectPass.
@@ -250,11 +254,15 @@ unachievable by any local pass). Refusing on irregularity rejected every fixture
       `-DCYBER_BUILD_TESTS=ON` — document the command in design.md. Without this, patch
       0006 ships with the same zero-engine-test posture patch 0003 did.
 
-## 10. Patch 0006
+## 10. Patch 0006 — PARTIAL (tasks 1-3 only; extend as 4-9 land)
 
-- [ ] 10.1 Confirm the submodule worktree equals HEAD + 0001..0005 before starting
-      (`git -C Engine/CyberRemesherAndUV status` currently shows it dirty).
-- [ ] 10.2 Author `Engine/patches/0006-cybertopology-regional-prescribed-boundary-solve.patch`
+- [x] 10.1 Confirmed the submodule worktree equals HEAD + 0001..0005 before starting
+      — verified `+1087 -169` across 13 files, matching the patch stack's own numstat sum
+      exactly, so the tree held no stray edits before authoring.
+- [x] 10.2 Authored `Engine/patches/0006-cybertopology-regional-prescribed-boundary-solve.patch`
+      (tasks 1-3: +845 across 7 files). Verified it touches NO file owned by 0001-0005, so a
+      plain `git diff HEAD` over its own files is exactly its delta.
+- [ ] 10.2b Extend 0006 as tasks 4-9 land. ORIGINAL NOTE retained:
       against the FULLY PATCHED tree. 0002/0003/0004 own `capi.cpp`/`cyber_capi.h`; 0003 owns
       `field_quadrangulator.{cpp,hpp}`. `pipeline.{cpp,hpp}`, `isotropic.{cpp,hpp}`,
       `remesh_params.{hpp,cpp}`, `boundary.hpp` and the new files are owned by no existing patch.

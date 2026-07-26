@@ -53,6 +53,22 @@
 #         patch's silhouette is preserved and its quads even out instead of the
 #         patch collapsing into a star. relax.hpp + neighbors.hpp.
 #         TODO(upstream): PR the boundary-aware relax.
+#   0006  cybertopology regional prescribed-boundary solve (tasks 1-3 of
+#         add-weave-regional-solve): core/region_solve.{hpp,cpp} - the frozen-
+#         face / pinned-vertex mask pair a REGION solve is scoped by, the
+#         region-scoped interface walk (an interface edge has TWO incident
+#         faces, so retopo::boundaryChain cannot see it), the cage-derived
+#         per-vertex valence prescription, and up-front refusal of inputs the
+#         region path cannot repair (disconnected, whole-mesh, coincident
+#         duplicates, inconsistent winding - weldCoincidentVertices and
+#         orientFacesConsistently both renumber, so they cannot run here).
+#         Plus the ONE behavioural change: a 4-line guard in SplitPass, the
+#         only vertex-inserting pass without a feature/boundary guard, so a
+#         prescribed boundary polyline is never resampled. IsotropicOptions
+#         gains a defaulted `region` pointer; null = today's behaviour
+#         byte-for-byte, which is what keeps the whole-mesh path unchanged.
+#         Touches no file owned by 0001-0005. Phase 5.
+#         TODO(upstream): PR the region mask + the SplitPass guard.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
