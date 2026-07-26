@@ -181,24 +181,52 @@ A retopo-level wrapper can be added later if 5.4a needs one for interface render
 
 ## 4. Engine: the pipeline region branch
 
-- [ ] 4.1 `pipeline.hpp` — `remesh()` gains a trailing `const RegionSolve& region = {}`;
+**DEVIATION.** 4.1 said `remesh()` takes a prebuilt `const RegionSolve&`. It cannot:
+`buildRegionSolve` MUTATES the mesh (region-scoped triangulation + feature tagging) while
+`remesh()` takes `const Mesh&` and works on a copy, so a region built by the caller would
+be keyed to the wrong mesh. `remesh()` takes `std::span<const FaceId> regionFaces` plus an
+optional valence-override map and builds the `RegionSolve` on its own working copy — which
+is safe because `Mesh work = input` preserves element ids.
+
+- [x] 4.1 `pipeline.hpp` — `remesh()` gains trailing `regionFaces` / `regionValenceOverrides`,
+      both defaulted so every existing call site compiles unchanged; `PipelineResult` gains a
+      `RegionReport` (`solvedFaces`, `interfaceVertices`, `interfaceIrregular`,
+      `interiorIndexBudget`, `interfaceTriangles`), empty on a whole-mesh run. ORIGINAL:
       `PipelineResult` gains `solvedFaces`, `interfaceVertices`, `interfaceIssues`,
       `interiorIndexBudget`. Defaulted, so every existing call site compiles unchanged.
-- [ ] 4.2 `pipeline.cpp`, all behind `if (!region.empty())`: skip `:527-529`; scope
+- [x] 4.2 `pipeline.cpp` — `remeshRegion()` behind `if (!regionFaces.empty())`, skipping
+      triangulate/weld/orient, islands/extractIsland/applySmallPatchPolicy, the stage-3
+      fromIndexed merge, fillHoles and the pureQuads block; `activeSurfaceArea` scopes the
+      target edge length to the region; one whole-mesh `ReferenceSurface` (its thin-shell
+      caveat is documented inline); `result.mesh = std::move(work)`. ORIGINAL: skip `:527-529`; scope
       `totalSurfaceArea` to active faces before `:530-531`; bypass `:540-687` in favour of
       one `ReferenceSurface` + `isotropicRemesh(work, ..., iso.region = &region)` +
       `quad->quadrangulate(work, ...)`; skip `:690-715`, `:719-722` and `:723-816`;
       `result.mesh = std::move(work)`.
-- [ ] 4.3 Fill `solvedFaces` = live minus frozen, `interfaceVertices` = pinned with an
-      active incident face.
+- [x] 4.3 `solvedFaces` = live minus frozen; `interfaceVertices` = the prescribed set, sorted
+      by id for determinism; `interiorIndexBudget` carried through.
+- [x] 4.4 **Inapplicable parameters: refuse the conflict, report the defaults.** `pureQuads`
+      is FATAL (it rewrites geometry wholesale and reaches an unguarded whole-vertex
+      reprojection). `holeFillMaxBoundary` and `smallPatchPolicy` are NOT — they are the
+      DEFAULTS (64 and `KeepLargest`), so refusing on them would reject every ordinary call,
+      and both are meaningless for one connected region bounded by frozen topology. They are
+      skipped and recorded as non-fatal `ParameterIssue`s, so the caller is told rather than
+      silently given a different operation. **This supersedes task 5.1, which specified all
+      three as fatal — that was written without checking the defaults.**
+- [x] 4.5 Covered by `tests/core/test_region_solve.cpp`: the region is rewritten while every
+      frozen face keeps its id and ring and every frozen vertex is bitwise unmoved; an empty
+      region reproduces the whole-mesh result vertex-for-vertex; `pureQuads` refuses;
+      the two inapplicable defaults are reported; a disconnected region reports why.
 
 ## 5. Engine: fatal parameter issues (loud refusal, not silent override)
 
-- [ ] 5.1 `remesh_params.cpp validate()` — with a region present, emit a FATAL
-      `ParameterIssue` for each of `pureQuads == true`, `holeFillMaxBoundary >= 3`,
-      `smallPatchPolicy != KeepAll`.
+- [ ] 5.1 **REVISED by 4.4 — only `pureQuads` is fatal.** Move that one check from
+      `remeshRegion` into `remesh_params.cpp validate()` as a fatal `ParameterIssue` so a
+      direct C++ caller of `cyber::remesh::remesh` is stopped by validation rather than by the
+      region branch. The other two stay non-fatal issues raised where they are ignored.
 - [ ] 5.2 Verify `pipeline.cpp:502-509` turns each into `RunStatus::Error`.
-- [ ] 5.3 Extend `tests/core/test_remesh_params.cpp` with the three cases.
+- [ ] 5.3 Extend `tests/core/test_remesh_params.cpp` with the `pureQuads` case (the other two
+      are already covered as non-fatal issues in `test_region_solve.cpp`).
 
 ## 6. Engine: field-aligned quadrangulator additions
 
@@ -273,7 +301,9 @@ unachievable by any local pass). Refusing on irregularity rejected every fixture
 - [x] 10.2 Authored `Engine/patches/0006-cybertopology-regional-prescribed-boundary-solve.patch`
       (tasks 1-3: +845 across 7 files). Verified it touches NO file owned by 0001-0005, so a
       plain `git diff HEAD` over its own files is exactly its delta.
-- [ ] 10.2b Extend 0006 as tasks 4-9 land. ORIGINAL NOTE retained:
+- [x] 10.2b Extended 0006 with task 4 (now +1174/-6 across 9 files); re-verified from a
+      pristine tree — 0001→0006 apply cleanly, engine rebuilds, full suite green at **277
+      cases / 127 196 assertions / 0 failures**. Extend again as tasks 5-9 land. ORIGINAL NOTE retained:
       against the FULLY PATCHED tree. 0002/0003/0004 own `capi.cpp`/`cyber_capi.h`; 0003 owns
       `field_quadrangulator.{cpp,hpp}`. `pipeline.{cpp,hpp}`, `isotropic.{cpp,hpp}`,
       `remesh_params.{hpp,cpp}`, `boundary.hpp` and the new files are owned by no existing patch.

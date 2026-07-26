@@ -43,6 +43,87 @@ index bddbb20..94011e0 100644
  };
  
  enum class IsotropicStatus { Success, Cancelled, InvalidInput };
+diff --git a/src/core/include/cyber/core/pipeline.hpp b/src/core/include/cyber/core/pipeline.hpp
+index 0eb614c..ab1fe9d 100644
+--- a/src/core/include/cyber/core/pipeline.hpp
++++ b/src/core/include/cyber/core/pipeline.hpp
+@@ -5,9 +5,13 @@
+ #include <string>
+ #include <vector>
+ 
++#include <span>
++#include <unordered_map>
++
+ #include "cyber/core/mesh.hpp"
+ #include "cyber/core/progress.hpp"
+ #include "cyber/core/quadrangulate.hpp"
++#include "cyber/core/region_solve.hpp"
+ #include "cyber/core/remesh_params.hpp"
+ 
+ namespace cyber::remesh {
+@@ -37,6 +41,22 @@ struct Statistics {
+     float targetEdgeLength = 0.0f;
+ };
+ 
++// Region-solve report (add-weave-regional-solve). Empty on a whole-mesh run.
++//
++// `interfaceIrregular` is MEASURED AND REPORTED, never enforced: forcing it to
++// zero is a coupled degree-constrained matching over the interface ring, which
++// no local pass solves (three were built and measured — see the change's
++// design.md ADDENDUM 2). A non-empty list is information for the caller, not a
++// failure. Refusing on it was measured to reject every fixture.
++struct RegionReport {
++    std::vector<FaceId> solvedFaces;         // live minus frozen
++    std::vector<VertexId> interfaceVertices;  // pinned, with an active incident face
++    std::vector<VertexId> interfaceIrregular;  // valence != prescription
++    int interiorIndexBudget = 0;
++    std::size_t interfaceTriangles = 0;  // triangles incident to an interface edge
++    [[nodiscard]] bool empty() const { return solvedFaces.empty() && interfaceVertices.empty(); }
++};
++
+ struct PipelineResult {
+     RunStatus status = RunStatus::Error;
+     Mesh mesh;
+@@ -44,6 +64,7 @@ struct PipelineResult {
+     std::vector<IslandDiagnostic> failedIslands;  // reported, never swallowed (spec)
+     std::vector<ParameterIssue> parameterIssues;  // clamp warnings from validation
+     std::string error;                            // set when status == Error
++    RegionReport region;                          // region solves only
+ };
+ 
+ // Progress mapping across stages: isotropic 0.0-0.3, quadrangulation
+@@ -62,12 +83,26 @@ struct PipelineResult {
+ // fallback quadrangulator, so making quad-cover the default never sacrifices the
+ // always-produces-output robustness of the field-aligned path. Ignored for other
+ // methods; nullptr disables recovery (the island is simply reported failed).
++// `regionFaces` selects a REGION solve (add-weave-regional-solve): only those
++// faces are rewritten, everything else keeps its exact geometry, topology and
++// element ids, and the solved patch meets the frozen cage on a prescribed
++// boundary. Empty (the default) is the whole-mesh pipeline, byte-for-byte
++// unchanged — the region branch is entirely behind `if (!regionFaces.empty())`.
++//
++// The ids index `input`; the pipeline's working copy preserves them. A region
++// solve deliberately skips triangulate / weld / orient / islands / hole-fill /
++// pure-quads, so it is NOT equivalent to a whole-mesh solve even when the
++// region names every face — that case is refused rather than aliased.
++//
++// `regionValenceOverrides` maps a VertexId::value to a caller-prescribed total
++// valence so an authored pole on the interface is not reported as irregular.
+ using QuadrangulatorFactory = std::function<std::unique_ptr<IQuadrangulator>()>;
+-[[nodiscard]] PipelineResult remesh(const Mesh& input, const Parameters& rawParams,
+-                                    ProgressSink* progress = nullptr,
+-                                    const CancelToken* cancel = nullptr,
+-                                    const QuadrangulatorFactory& quadrangulator = {},
+-                                    const QuadrangulatorFactory& fallbackQuadrangulator = {});
++[[nodiscard]] PipelineResult remesh(
++    const Mesh& input, const Parameters& rawParams, ProgressSink* progress = nullptr,
++    const CancelToken* cancel = nullptr, const QuadrangulatorFactory& quadrangulator = {},
++    const QuadrangulatorFactory& fallbackQuadrangulator = {},
++    std::span<const FaceId> regionFaces = {},
++    const std::unordered_map<Index, int>* regionValenceOverrides = nullptr);
+ 
+ // Cleanup policy from the canonical parameters, applied per island result:
+ // KeepLargest keeps only the biggest connected patch, KeepAll keeps
 diff --git a/src/core/include/cyber/core/region_solve.hpp b/src/core/include/cyber/core/region_solve.hpp
 new file mode 100644
 index 0000000..000b89b
@@ -184,6 +265,208 @@ index 1bd1196..024f5af 100644
              const float target =
                  m_options.targetEdgeLength * 0.5f * (scaleOf(scales, a) + scaleOf(scales, b));
              if (edgeLength(e) <= target * kLongFactor) {
+diff --git a/src/core/src/pipeline.cpp b/src/core/src/pipeline.cpp
+index 0256f36..92fb28f 100644
+--- a/src/core/src/pipeline.cpp
++++ b/src/core/src/pipeline.cpp
+@@ -37,6 +37,26 @@ double totalSurfaceArea(const Mesh& mesh) {
+     return area;
+ }
+ 
++// Surface area of the ACTIVE (region) faces only, so a region solve's target
++// edge length is derived from the region rather than the whole document.
++double activeSurfaceArea(const Mesh& mesh, const RegionSolve& region) {
++    double area = 0.0;
++    for (Index fi = 0; fi < mesh.faceCapacity(); ++fi) {
++        const FaceId f{fi};
++        if (!mesh.isAlive(f) || region.frozen(f)) {
++            continue;
++        }
++        const auto verts = mesh.faceVertices(f);
++        for (std::size_t i = 2; i < verts.size(); ++i) {
++            const Vec3 a = mesh.position(verts[0]);
++            const Vec3 b = mesh.position(verts[i - 1]);
++            const Vec3 c = mesh.position(verts[i]);
++            area += 0.5 * static_cast<double>(length(cross(b - a, c - a)));
++        }
++    }
++    return area;
++}
++
+ // Extracts one island into a standalone mesh (local vertex indexing).
+ Mesh extractIsland(const Mesh& source, const std::vector<FaceId>& faces) {
+     std::vector<Vec3> positions;
+@@ -464,6 +484,145 @@ void countFaces(const Mesh& mesh, Statistics& stats) {
+     }
+ }
+ 
++// Region solve: rewrite only the named faces, in place, keeping every other
++// face's geometry, ring and id. Deliberately skips, and here is why each one
++// cannot run:
++//   - triangulate / weldCoincidentVertices / orientFacesConsistently: all three
++//     round-trip through Mesh::fromIndexed and would renumber the ids the whole
++//     guarantee rests on. buildRegionSolve triangulates the ACTIVE faces only,
++//     and refuses up front on the inputs the other two exist to repair.
++//   - islands / extractIsland / applySmallPatchPolicy: extractIsland renumbers
++//     per island (fromIndexed again), and a region is one connected patch by
++//     construction, so islands are meaningless here.
++//   - the stage-3 toIndexed/fromIndexed merge: renumbers everything.
++//   - fillHoles and the pureQuads block: both rewrite geometry wholesale, and
++//     pureQuads additionally reaches an unguarded whole-vertex reprojection.
++// The last two are REFUSED as parameter errors rather than silently ignored, so
++// a caller never gets a quietly different operation than the one it asked for.
++PipelineResult remeshRegion(const Mesh& input, const Parameters& params, int effectiveQuads,
++                            std::span<const FaceId> regionFaces,
++                            const std::unordered_map<Index, int>* valenceOverrides,
++                            ProgressSink* progress, const CancelToken* cancel,
++                            const QuadrangulatorFactory& quadrangulator, PipelineResult result) {
++    const auto fail = [&result](std::string message) {
++        result.status = RunStatus::Error;
++        result.error = std::move(message);
++        return result;
++    };
++
++    // Parameters the region path cannot honour. pureQuads is a genuine semantic
++    // conflict — it rewrites geometry wholesale and reaches an unguarded
++    // whole-vertex reprojection — so it is FATAL. hole-filling and the
++    // small-patch policy are DEFAULTS (holeFillMaxBoundary = 64,
++    // smallPatchPolicy = KeepLargest), and both are meaningless for a single
++    // connected region bounded by frozen topology: there is no hole to fill and
++    // no patch to drop. Refusing on a default would make the API unusable, and
++    // skipping in silence would hide a difference from what the caller asked
++    // for — so they are skipped and REPORTED as non-fatal issues.
++    if (params.pureQuads) {
++        return fail("region solve does not support pureQuads");
++    }
++    if (params.holeFillMaxBoundary >= 3) {
++        result.parameterIssues.push_back(
++            {"holeFillMaxBoundary", "ignored by a region solve: the region is bounded by "
++                                    "frozen topology, so there is no hole to fill",
++             false});
++    }
++    if (params.smallPatchPolicy != SmallPatchPolicy::KeepAll) {
++        result.parameterIssues.push_back(
++            {"smallPatchPolicy", "ignored by a region solve: the region is one connected "
++                                 "patch by construction",
++             false});
++    }
++
++    Mesh work = input;  // value copy: element ids are preserved
++    RegionSolveResult built =
++        buildRegionSolve(work, regionFaces, params.sharpEdgeDegrees, valenceOverrides);
++    if (!built.ok()) {
++        return fail(std::string("region solve refused: ") + std::string(describe(built.status)));
++    }
++    const RegionSolve& region = built.region;
++
++    const double area = activeSurfaceArea(work, region);
++    const EdgeLengthResult lengthResult = targetEdgeLength(area, effectiveQuads, params.edgeScale);
++    if (!lengthResult.ok()) {
++        return fail(lengthResult.error);
++    }
++    result.stats.targetEdgeLength = lengthResult.edgeLength;
++    result.stats.islandCount = 1;
++
++    if (cancel && cancel->isCancelled()) {
++        result.status = RunStatus::Cancelled;
++        return result;
++    }
++
++    // One reference surface over the WHOLE working mesh, built before mutation.
++    // Whole-mesh rather than region-local: the per-island path gets a local
++    // surface for free, this does not, so on thin or self-close geometry an
++    // interior region vertex can snap to the wrong sheet. Interface vertices are
++    // immune (never smoothed, Invariant P), so it degrades interior quality
++    // rather than the landing guarantee.
++    const ReferenceSurface reference(work, params.smoothNormalDegrees);
++    IsotropicOptions iso;
++    iso.targetEdgeLength = lengthResult.edgeLength;
++    iso.adaptivity = params.adaptivity;
++    iso.smoothNormalDegrees = params.smoothNormalDegrees;
++    iso.region = &region;
++    ProgressSink isoSink = progress ? progress->subrange(0.0f, 0.3f, "isotropic") : ProgressSink{};
++    const IsotropicStatus isoStatus =
++        isotropicRemesh(work, reference, iso, progress ? &isoSink : nullptr, cancel);
++    if (isoStatus == IsotropicStatus::Cancelled) {
++        result.status = RunStatus::Cancelled;
++        return result;
++    }
++    if (isoStatus != IsotropicStatus::Success) {
++        return fail("region isotropic remesh failed");
++    }
++
++    std::unique_ptr<IQuadrangulator> quad =
++        quadrangulator ? quadrangulator() : makeGreedyPairingQuadrangulator();
++    ProgressSink quadSink =
++        progress ? progress->subrange(0.3f, 0.95f, "quadrangulate") : ProgressSink{};
++    const auto quadOutcome =
++        quad->quadrangulate(work, lengthResult.edgeLength, progress ? &quadSink : nullptr, cancel);
++    if (quadOutcome.cancelled) {
++        result.status = RunStatus::Cancelled;
++        return result;
++    }
++    if (!quadOutcome.success) {
++        return fail("region quadrangulation failed: " + quadOutcome.failureReason);
++    }
++
++    // Report. Note what is NOT here: any verification that the interface is
++    // REGULAR. That is task 7's report tier, and it is reported, never enforced.
++    for (Index i = 0; i < work.faceCapacity(); ++i) {
++        const FaceId f{i};
++        if (work.isAlive(f) && !region.frozen(f)) {
++            result.region.solvedFaces.push_back(f);
++        }
++    }
++    for (const auto& entry : region.requiredInRegion) {
++        const VertexId v{entry.first};
++        if (work.isAlive(v)) {
++            result.region.interfaceVertices.push_back(v);
++        }
++    }
++    std::sort(result.region.interfaceVertices.begin(), result.region.interfaceVertices.end(),
++              [](VertexId a, VertexId b) { return a.value < b.value; });
++    result.region.interiorIndexBudget = region.interiorIndexBudget;
++
++    result.mesh = std::move(work);
++    countFaces(result.mesh, result.stats);
++    if (result.mesh.faceCount() == 0) {
++        return fail("region remeshing produced no result");
++    }
++    result.status = RunStatus::Success;
++    if (progress) {
++        progress->report(1.0f, "done");
++    }
++    return result;
++}
++
+ }  // namespace
+ 
+ void applySmallPatchPolicy(Mesh& mesh, SmallPatchPolicy policy, int minFaces) {
+@@ -495,7 +654,9 @@ void applySmallPatchPolicy(Mesh& mesh, SmallPatchPolicy policy, int minFaces) {
+ 
+ PipelineResult remesh(const Mesh& input, const Parameters& rawParams, ProgressSink* progress,
+                       const CancelToken* cancel, const QuadrangulatorFactory& quadrangulator,
+-                      const QuadrangulatorFactory& fallbackQuadrangulator) {
++                      const QuadrangulatorFactory& fallbackQuadrangulator,
++                      std::span<const FaceId> regionFaces,
++                      const std::unordered_map<Index, int>* regionValenceOverrides) {
+     PipelineResult result;
+ 
+     // Stage 0: parameters (validated at every entry point — spec).
+@@ -522,6 +683,13 @@ PipelineResult remesh(const Mesh& input, const Parameters& rawParams, ProgressSi
+     const int effectiveQuads =
+         params.pureQuads ? std::max(25, params.targetQuadCount / 4) : params.targetQuadCount;
+ 
++    // ---- Region solve (add-weave-regional-solve, task 4) --------------------
++    // Entirely behind this guard, so the whole-mesh path below is untouched.
++    if (!regionFaces.empty()) {
++        return remeshRegion(input, params, effectiveQuads, regionFaces, regionValenceOverrides,
++                            progress, cancel, quadrangulator, result);
++    }
++
+     // Stage 1: guarded target edge length.
+     Mesh work = input;
+     work.triangulate();
 diff --git a/src/core/src/region_solve.cpp b/src/core/src/region_solve.cpp
 new file mode 100644
 index 0000000..7121041
@@ -580,10 +863,10 @@ index 61e1d6f..a05b9c8 100644
      core/test_mesh.cpp
 diff --git a/tests/core/test_region_solve.cpp b/tests/core/test_region_solve.cpp
 new file mode 100644
-index 0000000..790d858
+index 0000000..d896190
 --- /dev/null
 +++ b/tests/core/test_region_solve.cpp
-@@ -0,0 +1,333 @@
+@@ -0,0 +1,453 @@
 +// Regional prescribed-boundary solve — tasks 1-3 (openspec add-weave-regional-solve).
 +//
 +// These assert the EXACT-LANDING properties (G1), which the task-0 spike measured
@@ -602,6 +885,7 @@ index 0000000..790d858
 +
 +#include "cyber/core/isotropic.hpp"
 +#include "cyber/core/mesh.hpp"
++#include "cyber/core/pipeline.hpp"
 +#include "cyber/core/quadrangulate.hpp"
 +#include "cyber/core/reference_surface.hpp"
 +#include "cyber/core/region_solve.hpp"
@@ -916,4 +1200,123 @@ index 0000000..790d858
 +    CHECK(none.active(FaceId{0}));
 +    CHECK(none.active(FaceId{12345}));
 +    CHECK_FALSE(none.pinned(VertexId{0}));
++}
++
++// --- task 4: the pipeline region branch -------------------------------------
++
++TEST_CASE("pipeline region solve rewrites only the region and keeps frozen ids") {
++    Mesh mesh = flatGrid();
++    const auto faces = centreBlock();
++
++    std::map<Index, std::vector<Index>> frozenBefore;
++    std::map<Index, Vec3> posBefore;
++    {
++        // Recompute the frozen set independently of the pipeline: every live
++        // face not named, and every vertex on one.
++        std::set<Index> named;
++        for (const FaceId f : faces) {
++            named.insert(f.value);
++        }
++        for (Index i = 0; i < mesh.faceCapacity(); ++i) {
++            const FaceId f{i};
++            if (!mesh.isAlive(f) || named.count(i) != 0) {
++                continue;
++            }
++            std::vector<Index> ring;
++            for (const VertexId v : mesh.faceVertices(f)) {
++                ring.push_back(v.value);
++                posBefore[v.value] = mesh.position(v);
++            }
++            frozenBefore[i] = ring;
++        }
++    }
++
++    remesh::Parameters params;
++    params.targetQuadCount = 400;
++    const remesh::PipelineResult out = remesh::remesh(mesh, params, nullptr, nullptr, {}, {}, faces);
++
++    REQUIRE(out.status == remesh::RunStatus::Success);
++    CHECK(out.region.solvedFaces.size() > 0);
++    CHECK(out.region.interfaceVertices.size() == 16);
++
++    // Every frozen face survives under its own id, with its ring intact...
++    for (const auto& [idx, ring] : frozenBefore) {
++        const FaceId f{idx};
++        CAPTURE(idx);
++        REQUIRE(out.mesh.isAlive(f));
++        std::vector<Index> now;
++        for (const VertexId v : out.mesh.faceVertices(f)) {
++            now.push_back(v.value);
++        }
++        CHECK(now == ring);
++    }
++    // ...and every one of its vertices is bitwise where it was.
++    for (const auto& [idx, p] : posBefore) {
++        const VertexId v{idx};
++        CAPTURE(idx);
++        REQUIRE(out.mesh.isAlive(v));
++        CHECK(bitwiseEqual(out.mesh.position(v), p));
++    }
++    // The region itself really was rewritten, not merely preserved.
++    CHECK(out.mesh.faceCount() != mesh.faceCount());
++    CHECK(out.stats.targetEdgeLength > 0.0f);
++}
++
++TEST_CASE("an empty region runs the whole-mesh pipeline unchanged") {
++    Mesh mesh = flatGrid();
++    remesh::Parameters params;
++    params.targetQuadCount = 400;
++
++    const remesh::PipelineResult plain = remesh::remesh(mesh, params);
++    const remesh::PipelineResult empty =
++        remesh::remesh(mesh, params, nullptr, nullptr, {}, {}, {});
++
++    REQUIRE(plain.status == empty.status);
++    REQUIRE(plain.mesh.faceCount() == empty.mesh.faceCount());
++    REQUIRE(plain.mesh.vertexCapacity() == empty.mesh.vertexCapacity());
++    for (Index i = 0; i < plain.mesh.vertexCapacity(); ++i) {
++        const VertexId v{i};
++        if (plain.mesh.isAlive(v)) {
++            REQUIRE(empty.mesh.isAlive(v));
++            CHECK(bitwiseEqual(plain.mesh.position(v), empty.mesh.position(v)));
++        }
++    }
++    CHECK(empty.region.empty());  // no region report on a whole-mesh run
++}
++
++TEST_CASE("region solve refuses parameters it cannot honour, rather than ignoring them") {
++    Mesh mesh = flatGrid();
++    const auto faces = centreBlock();
++
++    SUBCASE("pureQuads") {
++        remesh::Parameters params;
++        params.pureQuads = true;
++        const auto out = remesh::remesh(mesh, params, nullptr, nullptr, {}, {}, faces);
++        CHECK(out.status == remesh::RunStatus::Error);
++        CHECK(out.error.find("pureQuads") != std::string::npos);
++    }
++    SUBCASE("inapplicable defaults are skipped but REPORTED, not silently dropped") {
++        // holeFillMaxBoundary (64) and smallPatchPolicy (KeepLargest) are the
++        // DEFAULTS, so refusing on them would reject every ordinary call. Both
++        // are meaningless for one connected region bounded by frozen topology.
++        remesh::Parameters params;
++        params.targetQuadCount = 400;
++        const auto out = remesh::remesh(mesh, params, nullptr, nullptr, {}, {}, faces);
++        REQUIRE(out.status == remesh::RunStatus::Success);
++        const auto named = [&](const char* which) {
++            return std::any_of(out.parameterIssues.begin(), out.parameterIssues.end(),
++                               [&](const remesh::ParameterIssue& i) {
++                                   return i.parameter == which && !i.fatal;
++                               });
++        };
++        CHECK(named("holeFillMaxBoundary"));
++        CHECK(named("smallPatchPolicy"));
++    }
++    SUBCASE("a refused region reports why") {
++        remesh::Parameters params;
++        const std::vector<FaceId> disconnected{cell(0, 0), cell(5, 5)};
++        const auto out = remesh::remesh(mesh, params, nullptr, nullptr, {}, {}, disconnected);
++        CHECK(out.status == remesh::RunStatus::Error);
++        CHECK(out.error.find("face-connected") != std::string::npos);
++    }
 +}
