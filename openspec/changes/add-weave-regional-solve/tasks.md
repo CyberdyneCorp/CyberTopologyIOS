@@ -455,7 +455,13 @@ provably cannot distinguish "never touched the vertex" from "snapped to within 1
 ## 17. Validation
 
 - [x] 17.1 `openspec validate --changes --strict` — all 7 changes pass.
-- [ ] 17.2 **NOT DONE — the device half is outstanding.** Marking this partial made the whole change read "Complete", which is false while a stated gate has never run. Simulator: **771 tests in 73 suites green** on iPad Pro 11-inch (M4) after task 11,
+- [x] 17.2 **DONE — device half completed 2026-07-26.** iPad Air 13-inch (M3), iOS
+      26.5.2, with the device slice of the xcframework built for the first time. All
+      region-solve suites pass on device. Whole app-hosted suite: 823 passed / 3 failed /
+      6 skipped; the 3 failures are pre-existing device-only Phase 4 issues, verified by
+      re-running them at the session-start commit with the engine built from patches
+      0001-0005 only (identical numbers) — see `add-weave-region-selection` 6.6.
+      ORIGINAL NOTE: Marking this partial made the whole change read "Complete", which is false while a stated gate has never run. Simulator: **771 tests in 73 suites green** on iPad Pro 11-inch (M4) after task 11,
       no golden regenerated — that is the CyberKit half of 16.1's null-object evidence. Engine +
       CyberKit link confirmed (xcframework rebuilt with `--sim-only`, all 8 new symbols exported).
       DEVICE run still outstanding, and the device slice of the xcframework has not been built.

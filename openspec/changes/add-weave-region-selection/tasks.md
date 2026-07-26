@@ -205,9 +205,31 @@ If a task here turns out to need one, it is out of scope and belongs in 5.4b.
       a blocker, plus the un-growable case (bare Target touching no cage boundary) that
       needs the carve path; **5.6 annotated** with what tap-to-fill already delivers and
       what genuinely remains (solving speculatively on hover — a decision, not wiring).
-- [ ] 6.4 **NOT DONE — device run.** Everything here is simulator-only, and the device
-      slice of the xcframework has never been built (`--sim-only` throughout). Carried
-      over from `add-weave-regional-solve` 17.2; it is the same gap, not a new one.
+- [x] 6.4 **DEVICE RUN DONE** — iPad Air 13-inch (M3), iOS 26.5.2. The device slice of
+      the xcframework was built for the FIRST time (all eight new C symbols verified
+      exported from `ios-arm64`, not only the simulator slice).
+      **All 49 new Weave tests pass on device** across 7 suites (region primitives, region
+      backend, the 5.3 proof, fill domain, fill session, re-solve, fill spike). Whole
+      app-hosted suite on device: **823 passed, 3 failed, 6 skipped** — the 3 are
+      PRE-EXISTING and device-only, see 6.6.
+- [x] 6.6 **Three device-only failures found — verified NOT caused by this work.**
+      All three pass on the simulator and fail on the iPad, and none is in Weave or
+      regional-solve code. Attribution was CHECKED rather than asserted: the
+      session-start commit (`cb0f4dd`) was checked out, the engine rebuilt from patches
+      0001-0005 only, and the same three failed with identical numbers.
+
+      1. `Center-line vertices weld exactly onto the symmetry plane` (task 4.4) —
+         `position.x` is `9.53674e-07` (exactly 2^-20), not `0`. The "in-tolerance vertex
+         sits EXACTLY on the plane" claim is device-false.
+      2. `committedMergePairFixtureCollapsesVerticesAtMidpoint` (task 4.1) — no vertex
+         within `1e-3` of the expected midpoint `(0.7, 0, 0)`.
+      3. `Curved-Target seam welds by provenance` (task 4.4b) — `seam.count` is 0, not 2:
+         the provenance weld welds NOTHING on device, so the crack 4.4b exists to close
+         is still open there.
+
+      These matter: 4.4 and 4.4b both assert exact-landing-style guarantees that hold on
+      the simulator and do NOT hold on device. They belong to those tasks rather than to
+      this change, and are recorded on 9.6 (the device gate) so they are not lost.
 - [ ] 6.5 **NOT DONE — engine C++ tests are still absent from CI.**
       `scripts/build_engine.sh` sets `CYBER_BUILD_TESTS=OFF`, so the engine suite only
       ever runs by hand. This change did not add engine code, so it did not widen the
