@@ -120,8 +120,32 @@ machinery for an outcome A problem.
       cutoff > 0.99, a back-to-back pair declares itself uncullable, and clusters are
       REBUILT after an edit rather than served stale (the compacted vertex order moves,
       so a stale cluster would draw scrambled geometry).
-- [ ] 3.3 `MeshletRenderPath: TargetRenderPath` — object/mesh shader pair, per-meshlet
-      frustum and normal-cone culling, pooled buffers, no per-frame allocation.
+- [ ] 3.3 `MeshletRenderPath: TargetRenderPath` — object/mesh shader pair, pooled
+      buffers, no per-frame allocation.
+      **BLOCKED ON A PRODUCT DECISION, found before writing any shader.** The Target is
+      currently rendered DOUBLE-SIDED: `ViewportRenderer.swift:894` sets
+      `encoder.setCullMode(.none)` and the fragment shader uses `abs(dot(n, -light))`,
+      with the comment "double-sided shading, consistent with cull mode none". Someone
+      chose this deliberately.
+      So **normal-cone backface culling — the biggest expected win — is not currently a
+      free optimisation, it is a visible behaviour change.** A back-facing triangle today
+      contributes pixels, and for an open shell, a scan with holes, or the inside of a
+      concave region seen through an opening, that back face IS the visible surface.
+      Culling it would leave a hole in the render.
+      What remains safe and unconditional: **vertex reuse** (fewer vertex-shader
+      invocations for the same triangles) and **frustum culling** (rejecting clusters
+      wholly outside the view). Neither changes a pixel. For a Target filling the
+      viewport, though, frustum culling buys little — so the safe subset may not close
+      the measured ~20-25% gap on its own.
+      Options, in increasing cost to the product:
+      **(1)** vertex reuse + frustum culling only — measure, and stop here if it suffices;
+      **(2)** additionally backface-cull only when the mesh is WATERTIGHT (no boundary
+      edges), which is invisible on a closed scan and simply yields no win on an open one
+      — needs a closedness query, which the C API does not have yet;
+      **(3)** switch the Target to single-sided rendering — the biggest win, and a
+      deliberate change to how open shells look.
+      **3.5 (pixel parity) is what would catch any of this going wrong**, which is why it
+      runs alongside 3.3 rather than after it.
 - [ ] 3.4 `TargetRenderPathSelection.availableKind` returns `.meshlet` when capabilities
       allow AND the pipeline built; a shader-compile failure must fall back rather than
       render nothing.
