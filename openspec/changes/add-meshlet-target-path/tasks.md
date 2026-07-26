@@ -20,12 +20,44 @@ machinery for an outcome A problem.
       16.667 ms budget is met, `supportsMeshShaders`, and the preferred vs available
       render path — so a budget met on the FALLBACK path cannot be misread as a meshlet
       pipeline existing.
-- [ ] 0.5 Record the numbers in this file and pick the outcome:
-      **A** budget met → task 2. **B** missed by a modest margin → task 3.
-      **C** badly missed → task 4.
-      BLOCKED at time of writing: the iPad Air 13-inch (M3) is not attached, and the
-      harness skips on the simulator by design (GPU timing there is not representative,
-      design D9). Do not substitute a simulator number.
+- [x] 0.5 **MEASURED 2026-07-26, iPad Air 13-inch (M3), iOS 26.5.2. OUTCOME B.**
+
+      | geometry | res | avg | fps | worst frame | avg vs budget |
+      |---|---|---|---|---|---|
+      | synthetic tiles, 5,242,880 tris | 1280×960 | 10.62 ms | 94.2 | 12.06 ms | MET |
+      | synthetic tiles, 5,242,880 tris | 2732×2048 | 11.66 ms | 85.8 | 13.36 ms | MET |
+      | **armadillo ×3, 4,798,848 tris** | 1280×960 | 14.64 ms | 68.3 | **18.79 ms** | met |
+      | **armadillo ×3, 4,798,848 tris** | **2732×2048** | **16.54 ms** | **60.5** | **19.90 ms** | met by 0.13 ms |
+
+      All on the INDEXED-VERTEX fallback path; `supportsMeshShaders` is true and
+      `availableKind` still resolves to `.indexedVertex`, so none of this involved a
+      meshlet pipeline.
+
+      **Design decision 1 was right, and it changed the answer.** The synthetic tiles
+      said 11.66 ms at full resolution; the real asset said 16.54 ms for FEWER triangles
+      — the uniform grid overstated throughput by ~42%. Judging the acceptance on the
+      synthetic number alone would have closed 2.2a on a measurement that does not
+      describe a scan.
+
+      **Why this is B and not A**, despite every row reading "met":
+      - the real-asset average clears the 16.667 ms budget by **0.13 ms — 0.8%**, which
+        is inside measurement noise, not headroom;
+      - the WORST frame is **19.90 ms** at full resolution, i.e. ~50 fps. At 60 Hz that
+        is a dropped frame, so "runs at 60fps" would be a claim the user can see is
+        false;
+      - it is **4.80M triangles, under the 5M target** — the gate asks for at least 5M;
+      - there is no budget left for anything else the GPU must do in a real session
+        (EditMesh overlay, ghost proposals, subdivision preview) let alone the UV and
+        bake stages that will share it.
+
+      → proceed to **task 3** (meshlets WITHOUT cluster LOD). Task 4 is not indicated:
+      the gap is ~20-25%, which per-meshlet culling and vertex reuse can plausibly
+      cover, and nothing here suggests needing simplification or LOD.
+- [ ] 0.6 **Revise the acceptance criterion before asserting it.** The existing perf
+      tests assert on the AVERAGE frame time. For a 60fps claim that is too weak: the
+      real-asset run has a compliant average and a 19.90 ms worst frame. Task 1.1 should
+      assert a high percentile (or the max over a sustained window), because a hitch the
+      user sees is a failed 60fps claim however good the mean is.
 
 ## 1. Common (whatever the outcome)
 

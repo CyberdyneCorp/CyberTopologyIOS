@@ -156,4 +156,87 @@ final class ViewportPerfTests: XCTestCase {
             )
         #endif
     }
+
+    /// MEASUREMENT for task 2.2a: what does the EXISTING indexed-vertex path
+    /// actually do at 5M triangles on real hardware?
+    ///
+    /// The task assumes the 5M @60fps acceptance needs the meshlet/LOD path. That
+    /// assumption has never been measured — the largest device test is 2.1M. If the
+    /// fallback path already clears the budget at 5M, the acceptance gate can be met
+    /// without a mesh-shader pipeline, and meshlets become an optimisation rather
+    /// than a v0.1 blocker. Reports rather than asserts.
+    @MainActor
+    func testFiveMillionTriangleMeasurementOnDevice() throws {
+        #if targetEnvironment(simulator)
+            throw XCTSkip(Self.simulatorSkipReason)
+        #else
+            let renderer = try XCTUnwrap(ViewportRenderer(), "Metal unavailable")
+            // 40 tiles x 2 x 256^2 = 5,242,880 triangles.
+            let geometry = Self.replicatedGridGeometry(segments: 256, tiles: 40)
+            renderer.loadGeometry(
+                positions: geometry.positions, normals: geometry.normals,
+                colors: geometry.colors, indices: geometry.indices
+            )
+            XCTAssertTrue(renderer.hasMesh)
+            let triangles = geometry.indices.count / 3
+
+            let capabilities = RenderPathCapabilities(device: renderer.device)
+            for (label, w, h) in [("1280x960", 1280, 960), ("2732x2048 (full iPad)", 2732, 2048)] {
+                let stats = try measure(renderer: renderer, frames: 30, width: w, height: h)
+                let fps = 1.0 / stats.averageSeconds
+                print("""
+                [5M-measure] \(label)
+                  triangles        = \(triangles)
+                  avg frame        = \(String(format: "%.3f", stats.averageSeconds * 1000)) ms  (\(String(format: "%.1f", fps)) fps)
+                  max frame        = \(String(format: "%.3f", stats.maxSeconds * 1000)) ms
+                  60fps budget     = 16.667 ms  -> \(stats.averageSeconds < 1.0 / 60.0 ? "MET" : "MISSED")
+                  meshShaders      = \(capabilities.supportsMeshShaders)
+                  preferred path   = \(TargetRenderPathSelection.preferredKind(for: capabilities).rawValue)
+                  available path   = \(TargetRenderPathSelection.availableKind(for: capabilities).rawValue)
+                """)
+            }
+        #endif
+    }
+
+    /// The same measurement over a REAL asset, which is the number the acceptance
+    /// should actually be judged on.
+    ///
+    /// `replicatedGridGeometry` tiles identical grids: perfect cache locality, uniform
+    /// triangle size, uniform normals. That is a fair throughput test and an unfair
+    /// stand-in for a scan — it flatters any pipeline, and would flatter a meshlet
+    /// pipeline most, since culling and vertex reuse are exactly what irregular
+    /// geometry stresses. Armadillo (~100k tris) linearly subdivided three times is
+    /// ~6.4M triangles of genuinely irregular topology.
+    @MainActor
+    func testFiveMillionRealAssetMeasurementOnDevice() throws {
+        #if targetEnvironment(simulator)
+            throw XCTSkip(Self.simulatorSkipReason)
+        #else
+            let renderer = try XCTUnwrap(ViewportRenderer(), "Metal unavailable")
+            let url = try XCTUnwrap(
+                Bundle(for: type(of: self)).url(
+                    forResource: "armadillo", withExtension: "obj"
+                ),
+                "armadillo.obj not bundled in the test target"
+            )
+            let mesh = try Mesh.loadOBJ(at: url)
+            // 100k x 4^3 = ~6.4M triangles. No reprojection: raw density is the point.
+            for _ in 0..<3 { _ = try mesh.subdivide() }
+            renderer.load(mesh: mesh)
+            XCTAssertTrue(renderer.hasMesh)
+
+            let capabilities = RenderPathCapabilities(device: renderer.device)
+            for (label, w, h) in [("1280x960", 1280, 960), ("2732x2048 (full iPad)", 2732, 2048)] {
+                let stats = try measure(renderer: renderer, frames: 30, width: w, height: h)
+                print("""
+                [5M-real] \(label)
+                  faces            = \(mesh.faceCount)
+                  avg frame        = \(String(format: "%.3f", stats.averageSeconds * 1000)) ms  (\(String(format: "%.1f", 1.0 / stats.averageSeconds)) fps)
+                  max frame        = \(String(format: "%.3f", stats.maxSeconds * 1000)) ms
+                  60fps budget     = 16.667 ms  -> \(stats.averageSeconds < 1.0 / 60.0 ? "MET" : "MISSED")
+                  path             = \(TargetRenderPathSelection.availableKind(for: capabilities).rawValue)
+                """)
+            }
+        #endif
+    }
 }
