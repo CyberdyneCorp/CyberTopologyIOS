@@ -195,9 +195,21 @@ If a task here turns out to need one, it is out of scope and belongs in 5.4b.
 
 ## 6. Validation
 
-- [ ] 6.1 `openspec validate --changes --strict`.
-- [ ] 6.2 Full app-hosted suite green on the simulator; no golden regenerated.
-- [ ] 6.3 Update `add-cybertopology-app/tasks.md`: tick 5.4a's region-UX clause with
-      the painted/tap correction stated; add **5.4b** (external reference surface);
-      record on **5.6** what tap-to-fill already delivers and what remains (deciding
-      whether to solve speculatively on hover).
+- [x] 6.1 `openspec validate --changes --strict` — all 8 changes pass.
+- [x] 6.2 Full app-hosted suite green on the iPad Pro 11-inch (M4) simulator: **822 tests
+      in 81 suites**, plus the Weave Fill UI test. **No golden regenerated** (verified: no
+      golden file is modified in the working tree).
+- [x] 6.3 Master list updated: 5.4a ticked with the painted/tap correction stated and the
+      two moot clauses recorded; **5.4b created** for the external reference surface,
+      carrying the measured 0.031-quad deviation that makes it a quality item rather than
+      a blocker, plus the un-growable case (bare Target touching no cage boundary) that
+      needs the carve path; **5.6 annotated** with what tap-to-fill already delivers and
+      what genuinely remains (solving speculatively on hover — a decision, not wiring).
+- [ ] 6.4 **NOT DONE — device run.** Everything here is simulator-only, and the device
+      slice of the xcframework has never been built (`--sim-only` throughout). Carried
+      over from `add-weave-regional-solve` 17.2; it is the same gap, not a new one.
+- [ ] 6.5 **NOT DONE — engine C++ tests are still absent from CI.**
+      `scripts/build_engine.sh` sets `CYBER_BUILD_TESTS=OFF`, so the engine suite only
+      ever runs by hand. This change did not add engine code, so it did not widen the
+      gap — but it did not close it either, and the region-solve work it builds on lives
+      entirely behind that gate.
