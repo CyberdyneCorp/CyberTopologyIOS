@@ -1,104 +1,116 @@
 # Proposal: add-weave-region-selection
 
+> **Revised.** The first draft framed a region as "a patch of existing EditMesh faces
+> to re-weave". That is a real operation but it is the SECONDARY one, and it is not
+> what Weave is for. Corrected below; the painted-selection decision survives, the
+> rest is rewritten.
+
 ## Why
 
-`add-weave-regional-solve` built regional prescribed-boundary solve end to end —
-engine, C API, CyberKit, and `beginAutoRetopo(region:)` — and proved exact landing
-at 1× and 4× density on four fixtures. **It has no user.** Nothing in the app
-produces a face selection, so `region:` is only ever `.wholeMesh` and every line of
-that work is dormant.
+`add-weave-regional-solve` shipped regional prescribed-boundary solve end to end and
+proved exact landing. **It has no user** — nothing in the app produces a region, so
+`region:` is only ever `.wholeMesh` and the whole feature is dormant.
 
-This change gives it one, and in doing so turns Auto-Retopo from a one-shot
-whole-Target button into the interactive loop the weave-solver spec describes:
-select a patch, solve it against its frozen neighbours, adjust, re-solve.
+What Weave is for (`docs/COMPETITOR_IDEAS.md` §2): the artist hand-draws the ~10% of
+topology that needs judgment; the solver fills the boring ~90% **between and around
+it**, landing exactly on the hand-drawn patch boundaries. The Target is high-poly
+triangles and is never modified — it is only the surface everything snaps to. The
+EditMesh is the quad cage being authored.
+
+So the operation is: **grow new quads over BARE TARGET, meeting the existing cage's
+open boundary exactly.** Not re-weaving faces that already exist.
 
 ## What Changes
 
-- **A `weaveRegion` armed tool.** A Pencil stroke PAINTS over the faces to
-  re-weave; a second stroke adds to the selection; the banner shows the count and
-  the density the solve will use. Arming, selection and commit reuse the
-  `RetopoTool` + tool-session machinery Patch Clone already uses.
-- **Region solve runs on the EDITMESH, not the Target.** See Design Decision 1 —
-  this is the change's load-bearing choice and it is not what "Auto-Retopo" does
-  today.
-- **Solve, review, accept.** The armed selection solves through
-  `CompositeWeaveSolver` into the existing amber ghost + Accept/Discard bar, with
-  the region notice (irregular interface vertices, seam triangles) already wired in
-  task 13.3.
-- **Live re-solve on constraint edit.** While a region session is armed, changing
-  the density preset or the selection re-runs the solve and replaces the ghost,
-  debounced, without journaling anything.
+Two ways in, because they suit different moments and the machinery is shared:
+
+- **Tap to fill** — tap near an open cage boundary and the solver proposes the next
+  patch outward from it. No selection UI at all. This is also, verbatim, the spec's
+  ambient assist (task 5.6): *"when an EditMesh boundary is open, show the solver's
+  proposed next patch as ghost geometry."*
+- **Paint to bound** — paint over the bare Target to say how far to fill. The fill
+  grows from the cage boundary until it covers the painted extent.
+
+Both produce a ghost through the existing amber Accept/Discard bar, with the region
+notice from task 13.3 already surfacing irregular interface vertices.
 
 ## Impact
 
-- Affected specs: `weave-solver` (ADDED: region selection is an armed tool, region
-  solve targets the EditMesh, live re-solve, selection is not journaled).
-- Affected code: `RetopoTool.weaveRegion` + `EditorAction`; a `WeaveRegionSession`
-  on `MeshEditController`; `AutoRetopoSession` gains a region entry point;
-  `CameraToolBannerView` / `AutoRetopoBannerView` copy; `ActionCatalog` entry.
-- Affected tests: selection accumulation and clearing, solve-on-armed-selection,
-  re-solve on density change, accept journals exactly once and undoes byte-exactly,
-  discard journals nothing, and a UI test driving the real tool.
+- Affected specs: `weave-solver` (ADDED: fill grows from an open cage boundary over
+  bare Target; two entry gestures; extent bounding; live re-solve; selection is not
+  journaled).
+- Affected code: `RetopoTool.weaveFill` + `EditorAction`; a `WeaveFillSession` on
+  `MeshEditController`; domain construction in CyberKit over the EXISTING
+  `extendBoundary` facade; `AutoRetopoSession` gains the fill entry point; banner
+  copy; `ActionCatalog` entry.
+- **No engine change.** Verified: every primitive this needs already ships.
+- Affected tests: seeding, both entry modes, re-solve, accept/undo byte-exactness,
+  and the refusals.
+
+## Design Decision 1 — the solve domain is grown, not carved
+
+The region solver rewrites faces in place and freezes the complement. Bare Target
+has no EditMesh faces on it, so there is nothing to rewrite — the domain has to be
+built first. Two ways to build it:
+
+- **Carve** the Target: cut it along the cage's boundary polyline, extract the
+  triangles on the fill side, weld. Needs a curved surface cut, which is explicitly
+  a 4.1a remainder (the shipped knife is straight-only), plus a weld between cage
+  vertices and Target triangle interiors. Substantial new geometry work.
+- **Grow** from the boundary: `cyber_retopo_extend_boundary_grid` already appends
+  quad rows off an ordered boundary chain, **welded to that chain by construction**
+  and **snapped to the Target** (it takes a `CyberSnapper*`). Zero new engine ops.
+
+Growing wins outright. The seed rows do not need to be good — they only need to be a
+topologically correct, roughly-placed cover. The region solve then rewrites exactly
+those faces into clean quads with the cage frozen, so the interface lands exactly on
+the cage's boundary vertices and the density comes from that boundary's spacing via
+`prescribedQuadBudget`.
+
+Both entry gestures reduce to the same thing: **how many rows to grow before
+solving.** Tap uses a default band; paint grows until the painted extent is covered.
+
+## Design Decision 2 — painted, never lassoed
+
+Unchanged from the first draft, and the reason survives the rewrite.
+`simplify-gesture-grammar` cut the lasso from the Pencil grammar on measured device
+evidence: a closed quad stroke with a slight overshoot classified as `lasso` →
+`hideRegion`. The retired `ActionCatalog` entry records that the capability "returns
+as an armed tool".
+
+Paint is a stroke on an ARMED tool, so no shape classification is involved and there
+is nothing to misread. 5.4a's "lasso-region" wording should be read as "a way to
+bound a region", and 5.4a is updated to say so.
+
+## Design Decision 3 — the reference surface, downgraded
+
+The first draft called this fatal. It is not, because
+`cyber_retopo_extend_boundary_grid` snaps the seed rows to the Target, so the
+`ReferenceSurface` the region solve builds from cage+seed already approximates the
+Target at roughly the seed's density.
+
+It is still worth fixing: the solve refines the seed and reprojects onto that
+approximation rather than onto the Target itself, so fine Target detail inside a
+coarse seed band is lost. Referencing the Target directly needs the region path to
+accept an external reference surface — an engine change. Stays split out as
+**5.4b**, now a quality improvement rather than a blocker.
 
 ## Non-Goals (deferred)
 
-- **A lasso ENCLOSURE gesture.** Explicitly not this. See Design Decision 2.
-- **Target-snapping for a re-woven region.** See Design Decision 3 — a real
-  limitation this change does not fix, and the reason a re-woven patch follows the
-  cage rather than the Target.
-- **Frozen-patch AUTHORING** (5.2a's app half): the region's complement is frozen
-  implicitly by not being selected; there is no separate "freeze this" state yet.
+- **Filling bare Target NOT adjacent to an open cage boundary.** Growing needs
+  something to grow from. An island of bare surface away from the cage must be
+  REFUSED with a clear reason, not silently mis-filled. Carving (DD1) is what would
+  lift this.
+- **Filling with no EditMesh at all** — that is whole-mesh Auto-Retopo, already
+  shipped.
+- Frozen-patch authoring (5.2a's app half): the cage is frozen implicitly by being
+  the cage; there is no separate "freeze this" state.
 - In-viewport accept/discard gesture shortcuts, and a progress percentage — both
-  already deliberately deferred in 5.4a.
-
-## Design Decision 1 — the region is a region of the EditMesh
-
-Auto-Retopo today solves the **Target** (high-poly) into a **new EditMesh**. A
-region solve cannot work that way: the region path keeps the complement FROZEN and
-byte-identical, so region-solving a Target would return the whole multi-million-
-triangle Target with one patch quadrangulated inside it.
-
-The operation that makes sense — and the one the prescribed-boundary guarantee was
-built for — is **re-weaving a patch of the existing quad cage against its frozen
-neighbours**. That is also what makes the accept sane: the frozen part of the
-result is bitwise identical to the current EditMesh, so accepting changes only the
-patch the user selected.
-
-Consequence worth stating plainly: this change introduces an Auto-Retopo mode whose
-INPUT is the EditMesh. The whole-mesh mode still reads the Target. Two modes behind
-one action is a real UX cost, and the banner must make which one is running obvious.
-
-## Design Decision 2 — painted selection, not a lasso
-
-5.4a says "lasso-region solve UX". **Implementing that literally would reintroduce
-a gesture this project already removed on measured evidence.**
-`simplify-gesture-grammar` cut the lasso from the Pencil grammar because on-device
-testing showed a closed quad stroke with a slight overshoot classified as `lasso`
-→ `hideRegion`; the retired entry in `ActionCatalog` records that the capability
-"returns as an armed tool".
-
-So the selection is a PAINTED stroke over faces on an ARMED tool, resolved through
-the same `strokeSurfaceHits` path Patch Clone uses. No shape classification is
-involved, so there is nothing to misread. This also composes better: painting adds
-to a selection incrementally, where a lasso is all-or-nothing.
-
-The task wording should be read as "a way to select a region", not "the lasso
-shape". 5.4a is updated to say so.
-
-## Design Decision 3 — a re-woven region follows the CAGE, not the Target
-
-`remeshRegion` builds its `ReferenceSurface` from the working mesh, which under
-Decision 1 is the EditMesh. So the re-woven patch is projected back onto the cage's
-own surface, not onto the Target the cage approximates. On a coarse cage that loses
-surface fidelity exactly where the user asked for more topology.
-
-This is NOT fixed here, and it is the main reason to treat this change as the first
-usable slice rather than the finished feature. Fixing it needs the region path to
-accept an external reference surface — an engine change (the `ReferenceSurface` is
-constructed inside `remeshRegion`) plus a C API parameter. Split out as **5.4b**.
+  already deferred in 5.4a.
 
 ## Notes
 
-Nothing about the solver changes. This change is selection, session and
-presentation over the API `add-weave-regional-solve` already shipped, which is why
-its risk sits in UX and state lifetime rather than in geometry.
+Task 5.6 (ambient assist) is substantially delivered by tap-to-fill: the same
+proposal, shown on boundary hover instead of on tap. Whether to auto-show it is a
+separate call — it means solving speculatively — so 5.6 stays open and this change
+records what it inherits.
