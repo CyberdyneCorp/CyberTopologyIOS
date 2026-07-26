@@ -79,10 +79,25 @@ machinery for an outcome A problem.
 
 ## 3. Outcome B — meshlets WITHOUT cluster LOD
 
-- [ ] 3.1 Engine (patch 0007): meshlet build — cluster triangles into bounded meshlets
-      (vertex/primitive caps matching Metal's limits) with per-meshlet bounds and a
-      normal cone for backface culling. Engine-side per design rule D1 (no mesh
-      algorithms in Swift).
+- [x] 3.1 Engine patch **0007**: `core/meshlet.{hpp,cpp}` — deterministic clustering
+      (lowest unassigned seed, grow by most-shared-vertices, ties on lower index) with
+      64-vertex / 126-triangle caps, a bounding sphere and a normal cone.
+      **Operates on the RENDER STREAMS, not `Mesh` topology** — compacted positions plus
+      a flat triangle index buffer, i.e. exactly the buffers the renderer binds. That
+      way meshlet vertex indices address the same array the position/normal buffers use,
+      with no second mapping to keep in sync, and the builder is a pure function that
+      needs no half-edge structure.
+      **Conservativeness is the load-bearing property and is asserted directly**, not
+      inferred from the formulae: a sphere that is too small or a cone that is too tight
+      makes the GPU cull geometry the user can see, which shows up as holes. Tests check
+      every sphere CONTAINS its vertices and every cone CONTAINS its triangle normals.
+      A cluster whose normals span more than a hemisphere declares `coneCutoff = 0`,
+      meaning *never backface-cull me*, rather than claiming a cone it cannot honour.
+      Malformed input (out-of-range index, ragged count) yields an EMPTY set rather than
+      a partially valid one the renderer would draw; degenerate triangles are dropped so
+      they cannot widen a cone for no benefit.
+      8 tests; engine suite now **289 cases / 129 771 assertions**, and the CI floor was
+      raised 281 → 289 so the new tests are covered by the guard too.
 - [ ] 3.2 C API + CyberKit accessors for the meshlet buffers, following the zero-copy
       pointer-view lifetime contract the render buffers already use (Engine/patches/0002).
 - [ ] 3.3 `MeshletRenderPath: TargetRenderPath` — object/mesh shader pair, per-meshlet

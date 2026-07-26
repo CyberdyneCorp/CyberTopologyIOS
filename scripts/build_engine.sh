@@ -55,6 +55,17 @@
 #         patch's silhouette is preserved and its quads even out instead of the
 #         patch collapsing into a star. relax.hpp + neighbors.hpp.
 #         TODO(upstream): PR the boundary-aware relax.
+#   0007  cybertopology meshlet clustering: core/meshlet.{hpp,cpp} — clusters a
+#         mesh's RENDER STREAMS (compacted positions + flat triangle indices,
+#         i.e. exactly the buffers the renderer binds) into bounded meshlets for
+#         the Metal mesh-shader Target path, each with a conservative bounding
+#         sphere and a normal cone for backface rejection. Deterministic (lowest
+#         unassigned seed, grow by most-shared-vertices, ties on lower index).
+#         NO cluster LOD — no simplification, so no crack-free-boundary problem.
+#         Motivated by measurement: a 4.8M-tri real asset runs 14.64 ms at
+#         1280x960 and only 16.54 ms at 2732x2048, so the Target is geometry-
+#         bound rather than fill-bound. Phase 2 (add-meshlet-target-path).
+#         TODO(upstream): PR the meshlet builder.
 #   0006  cybertopology regional prescribed-boundary solve (tasks 1-3 of
 #         add-weave-regional-solve): core/region_solve.{hpp,cpp} - the frozen-
 #         face / pinned-vertex mask pair a REGION solve is scoped by, the
@@ -86,7 +97,7 @@ SIM_ONLY=0
 HOST_TESTS=0
 # Floor for the engine C++ suite, so a build-configuration change that silently
 # stops compiling a module's tests fails instead of reporting a green, smaller run.
-MINIMUM_ENGINE_TEST_CASES=281
+MINIMUM_ENGINE_TEST_CASES=289
 for arg in "$@"; do
     case "$arg" in
         --force) FORCE=1 ;;

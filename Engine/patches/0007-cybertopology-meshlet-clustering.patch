@@ -1,0 +1,581 @@
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index cb83bdc..d2f4510 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -8,6 +8,7 @@ add_library(cyber_core STATIC
+     src/io_stl.cpp
+     src/isotropic.cpp
+     src/mesh.cpp
++    src/meshlet.cpp
+     src/mesh_diagnostics.cpp
+     src/mesh_ops.cpp
+     src/pipeline.cpp
+diff --git a/src/core/include/cyber/core/meshlet.hpp b/src/core/include/cyber/core/meshlet.hpp
+new file mode 100644
+index 0000000..45f38b6
+--- /dev/null
++++ b/src/core/include/cyber/core/meshlet.hpp
+@@ -0,0 +1,99 @@
++#pragma once
++#include <cstdint>
++#include <span>
++#include <vector>
++
++#include "cyber/core/math.hpp"
++
++// Meshlet clustering for the mesh-shader Target render path
++// (openspec add-meshlet-target-path, task 3.1).
++//
++// A meshlet is a small bounded cluster of triangles that a Metal object/mesh
++// shader pair can emit in one threadgroup. Two things make that faster than the
++// plain indexed-vertex path on a multi-million-triangle Target:
++//
++//   * VERTEX REUSE — a cluster's vertices are deduplicated into a local list, so
++//     each is transformed once per cluster rather than relying on the hardware's
++//     post-transform cache across an unbounded index stream.
++//   * CLUSTER CULLING — a whole cluster can be rejected before rasterisation by
++//     its bounding sphere (frustum) and its NORMAL CONE (backfacing). On a closed
++//     mesh roughly half the clusters face away from any given camera.
++//
++// Measured motivation (iPad Air M3, 4.8M-triangle real asset): 14.64 ms at
++// 1280x960 rising only to 16.54 ms at 2732x2048 — 4.5x the pixels for +13% frame
++// time. The Target is geometry-bound, not fill-bound, which is precisely the case
++// these two mechanisms address.
++//
++// Deliberately NO cluster LOD (no simplification, no level selection, so no
++// crack-free-boundary problem). The measured gap was ~20-25%; LOD is a separate,
++// much larger change and is only justified if this is not enough.
++//
++// Operates on the RENDER STREAMS (compacted positions + a flat triangle index
++// buffer), not on `Mesh` topology, because those are exactly the buffers the
++// renderer binds — so meshlet vertex indices address the same array the position
++// and normal buffers use, with no second mapping to keep in sync.
++namespace cyber::remesh {
++
++/// Cluster size limits. The defaults (64 vertices / 126 triangles) are the
++/// conventional choice: 126 keeps the local index triple count at 378, which
++/// packs into a 128-primitive threadgroup while leaving room for the payload,
++/// and 64 vertices keeps the local index type at 8 bits.
++struct MeshletCaps {
++    std::uint32_t maxVertices = 64;
++    std::uint32_t maxTriangles = 126;
++};
++
++/// One cluster. `vertexOffset`/`triangleOffset` index into `MeshletSet`'s shared
++/// arrays, so the whole set is three flat buffers the GPU can bind directly.
++struct Meshlet {
++    std::uint32_t vertexOffset = 0;
++    std::uint32_t vertexCount = 0;
++    std::uint32_t triangleOffset = 0;  // in TRIANGLES, not indices
++    std::uint32_t triangleCount = 0;
++
++    /// Bounding sphere, for frustum rejection.
++    Vec3 center{};
++    float radius = 0.0f;
++
++    /// Normal cone for backface rejection: `axis` is the average triangle
++    /// normal, `cutoff` the minimum dot(axis, n_i) over the cluster — so every
++    /// triangle normal lies within acos(cutoff) of the axis.
++    ///
++    /// `cutoff <= 0` means the cluster's normals span more than a hemisphere and
++    /// it must NEVER be backface-culled. Culling something visible leaves a hole
++    /// in the model, so the degenerate case has to fail safe rather than clever.
++    Vec3 coneAxis{0.0f, 0.0f, 1.0f};
++    float coneCutoff = 0.0f;
++};
++
++/// A whole mesh's clusters plus their shared index arrays.
++struct MeshletSet {
++    std::vector<Meshlet> meshlets;
++    /// Global vertex indices, grouped per meshlet.
++    std::vector<std::uint32_t> vertices;
++    /// Triangle corners as LOCAL offsets into the owning meshlet's slice of
++    /// `vertices`; 3 per triangle. 8-bit because maxVertices <= 256.
++    std::vector<std::uint8_t> indices;
++
++    [[nodiscard]] bool empty() const { return meshlets.empty(); }
++    /// Total triangles across all clusters — equals the input triangle count for
++    /// a well-formed build, which is what the tests assert.
++    [[nodiscard]] std::size_t triangleCount() const { return indices.size() / 3; }
++};
++
++/// Clusters `indices` (3 per triangle, into `positions`) into meshlets.
++///
++/// DETERMINISTIC: seeds from the lowest unassigned triangle and grows by the
++/// candidate sharing the most vertices, breaking ties on the lower triangle
++/// index. Same input, same output, on any platform — the render path's goldens
++/// and the frame-time comparison both depend on that.
++///
++/// `positions` is xyz per vertex. A degenerate triangle (repeated corner) is
++/// dropped rather than clustered; an out-of-range index makes the build return
++/// an empty set, since a malformed stream must not produce a partially valid
++/// one the renderer would draw.
++[[nodiscard]] MeshletSet buildMeshlets(std::span<const float> positions,
++                                       std::span<const std::uint32_t> indices,
++                                       MeshletCaps caps = {});
++
++}  // namespace cyber::remesh
+diff --git a/src/core/src/meshlet.cpp b/src/core/src/meshlet.cpp
+new file mode 100644
+index 0000000..fac10d1
+--- /dev/null
++++ b/src/core/src/meshlet.cpp
+@@ -0,0 +1,222 @@
++#include "cyber/core/meshlet.hpp"
++
++#include <algorithm>
++#include <cmath>
++#include <unordered_map>
++#include <unordered_set>
++
++namespace cyber::remesh {
++
++namespace {
++
++Vec3 positionAt(std::span<const float> positions, std::uint32_t vertex) {
++    const std::size_t base = static_cast<std::size_t>(vertex) * 3;
++    return Vec3{positions[base], positions[base + 1], positions[base + 2]};
++}
++
++/// Triangle normal, or a zero vector for a degenerate triangle.
++Vec3 triangleNormal(std::span<const float> positions, std::uint32_t a, std::uint32_t b,
++                    std::uint32_t c) {
++    const Vec3 pa = positionAt(positions, a);
++    const Vec3 n = cross(positionAt(positions, b) - pa, positionAt(positions, c) - pa);
++    const float len = length(n);
++    return len > 0.0f ? n * (1.0f / len) : Vec3{};
++}
++
++/// Finalises a cluster's bounding sphere and normal cone.
++///
++/// The sphere is centre-of-extremes plus max radius: not the minimal enclosing
++/// sphere, but conservative (never too small), which is the only property a
++/// culling test may rely on. A too-LARGE sphere costs a missed cull; a too-small
++/// one drops visible geometry.
++void finaliseBounds(Meshlet& meshlet, std::span<const float> positions,
++                    const MeshletSet& set) {
++    Vec3 lo{}, hi{};
++    bool first = true;
++    Vec3 normalSum{};
++    std::size_t normalCount = 0;
++
++    for (std::uint32_t i = 0; i < meshlet.vertexCount; ++i) {
++        const Vec3 p = positionAt(positions, set.vertices[meshlet.vertexOffset + i]);
++        if (first) {
++            lo = hi = p;
++            first = false;
++        } else {
++            lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
++            hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
++        }
++    }
++    meshlet.center = (lo + hi) * 0.5f;
++    float radius = 0.0f;
++    for (std::uint32_t i = 0; i < meshlet.vertexCount; ++i) {
++        const Vec3 p = positionAt(positions, set.vertices[meshlet.vertexOffset + i]);
++        radius = std::max(radius, length(p - meshlet.center));
++    }
++    meshlet.radius = radius;
++
++    for (std::uint32_t t = 0; t < meshlet.triangleCount; ++t) {
++        const std::size_t base = (static_cast<std::size_t>(meshlet.triangleOffset) + t) * 3;
++        const std::uint32_t a = set.vertices[meshlet.vertexOffset + set.indices[base]];
++        const std::uint32_t b = set.vertices[meshlet.vertexOffset + set.indices[base + 1]];
++        const std::uint32_t c = set.vertices[meshlet.vertexOffset + set.indices[base + 2]];
++        const Vec3 n = triangleNormal(positions, a, b, c);
++        if (length(n) > 0.0f) {
++            normalSum += n;
++            ++normalCount;
++        }
++    }
++
++    const float sumLength = length(normalSum);
++    if (normalCount == 0 || sumLength <= 0.0f) {
++        // No usable normals: must never be backface-culled.
++        meshlet.coneAxis = Vec3{0.0f, 0.0f, 1.0f};
++        meshlet.coneCutoff = 0.0f;
++        return;
++    }
++    meshlet.coneAxis = normalSum * (1.0f / sumLength);
++
++    float cutoff = 1.0f;
++    for (std::uint32_t t = 0; t < meshlet.triangleCount; ++t) {
++        const std::size_t base = (static_cast<std::size_t>(meshlet.triangleOffset) + t) * 3;
++        const std::uint32_t a = set.vertices[meshlet.vertexOffset + set.indices[base]];
++        const std::uint32_t b = set.vertices[meshlet.vertexOffset + set.indices[base + 1]];
++        const std::uint32_t c = set.vertices[meshlet.vertexOffset + set.indices[base + 2]];
++        const Vec3 n = triangleNormal(positions, a, b, c);
++        if (length(n) > 0.0f) {
++            cutoff = std::min(cutoff, dot(meshlet.coneAxis, n));
++        }
++    }
++    // Spanning more than a hemisphere means no view direction can be proven to
++    // see only back faces, so the cone is unusable: fail safe.
++    meshlet.coneCutoff = cutoff > 0.0f ? cutoff : 0.0f;
++}
++
++}  // namespace
++
++MeshletSet buildMeshlets(std::span<const float> positions,
++                         std::span<const std::uint32_t> indices, MeshletCaps caps) {
++    MeshletSet set;
++    if (indices.empty() || indices.size() % 3 != 0 || positions.size() % 3 != 0) {
++        return set;
++    }
++    const std::uint32_t vertexCount = static_cast<std::uint32_t>(positions.size() / 3);
++    const std::size_t triangleTotal = indices.size() / 3;
++
++    // Caps are clamped, not trusted: 8-bit local indices cap vertices at 256, and
++    // a zero cap would loop forever.
++    const std::uint32_t maxVertices = std::clamp<std::uint32_t>(caps.maxVertices, 3, 256);
++    const std::uint32_t maxTriangles = std::max<std::uint32_t>(caps.maxTriangles, 1);
++
++    // Validate the whole stream first: a malformed index must not yield a
++    // partially valid set the renderer would happily draw.
++    for (const std::uint32_t index : indices) {
++        if (index >= vertexCount) {
++            return set;
++        }
++    }
++
++    // Vertex -> triangles, for adjacency without building a half-edge structure.
++    std::vector<std::vector<std::uint32_t>> vertexTriangles(vertexCount);
++    std::vector<char> degenerate(triangleTotal, 0);
++    for (std::size_t t = 0; t < triangleTotal; ++t) {
++        const std::uint32_t a = indices[t * 3], b = indices[t * 3 + 1], c = indices[t * 3 + 2];
++        if (a == b || b == c || a == c) {
++            degenerate[t] = 1;  // dropped: it has no area and no usable normal
++            continue;
++        }
++        vertexTriangles[a].push_back(static_cast<std::uint32_t>(t));
++        vertexTriangles[b].push_back(static_cast<std::uint32_t>(t));
++        vertexTriangles[c].push_back(static_cast<std::uint32_t>(t));
++    }
++
++    std::vector<char> assigned(triangleTotal, 0);
++    std::size_t nextSeed = 0;
++
++    while (true) {
++        while (nextSeed < triangleTotal && (assigned[nextSeed] || degenerate[nextSeed])) {
++            ++nextSeed;
++        }
++        if (nextSeed >= triangleTotal) {
++            break;
++        }
++
++        Meshlet meshlet;
++        meshlet.vertexOffset = static_cast<std::uint32_t>(set.vertices.size());
++        meshlet.triangleOffset = static_cast<std::uint32_t>(set.indices.size() / 3);
++
++        // Local vertex list for this cluster; `local` maps global -> local index.
++        std::unordered_map<std::uint32_t, std::uint8_t> local;
++        local.reserve(maxVertices * 2);
++
++        const auto addTriangle = [&](std::uint32_t triangle) {
++            const std::uint32_t corners[3] = {indices[triangle * 3], indices[triangle * 3 + 1],
++                                              indices[triangle * 3 + 2]};
++            for (const std::uint32_t corner : corners) {
++                const auto [it, inserted] = local.try_emplace(
++                    corner, static_cast<std::uint8_t>(local.size()));
++                if (inserted) {
++                    set.vertices.push_back(corner);
++                }
++                set.indices.push_back(it->second);
++            }
++            assigned[triangle] = 1;
++            ++meshlet.triangleCount;
++        };
++
++        // How many NEW vertices adding this triangle would cost.
++        const auto newVertexCost = [&](std::uint32_t triangle) {
++            std::uint32_t cost = 0;
++            std::uint32_t seen[3] = {UINT32_MAX, UINT32_MAX, UINT32_MAX};
++            for (int i = 0; i < 3; ++i) {
++                const std::uint32_t corner = indices[triangle * 3 + static_cast<std::size_t>(i)];
++                if (local.count(corner) != 0) {
++                    continue;
++                }
++                if (corner == seen[0] || corner == seen[1] || corner == seen[2]) {
++                    continue;  // repeated within the same triangle
++                }
++                seen[i] = corner;
++                ++cost;
++            }
++            return cost;
++        };
++
++        addTriangle(static_cast<std::uint32_t>(nextSeed));
++
++        // Grow: repeatedly take the unassigned neighbour sharing the most
++        // vertices with the cluster, tie-broken on the LOWER triangle index so
++        // the result is deterministic.
++        while (meshlet.triangleCount < maxTriangles) {
++            std::uint32_t best = UINT32_MAX;
++            std::uint32_t bestShared = 0;
++            for (const auto& [globalVertex, unusedLocal] : local) {
++                (void)unusedLocal;
++                for (const std::uint32_t candidate : vertexTriangles[globalVertex]) {
++                    if (assigned[candidate]) {
++                        continue;
++                    }
++                    const std::uint32_t cost = newVertexCost(candidate);
++                    if (local.size() + cost > maxVertices) {
++                        continue;
++                    }
++                    const std::uint32_t shared = 3 - cost;
++                    if (shared > bestShared || (shared == bestShared && candidate < best)) {
++                        bestShared = shared;
++                        best = candidate;
++                    }
++                }
++            }
++            if (best == UINT32_MAX) {
++                break;  // nothing adjacent fits; the cluster is closed
++            }
++            addTriangle(best);
++        }
++
++        meshlet.vertexCount = static_cast<std::uint32_t>(local.size());
++        finaliseBounds(meshlet, positions, set);
++        set.meshlets.push_back(meshlet);
++    }
++    return set;
++}
++
++}  // namespace cyber::remesh
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index a05b9c8..a6e2c1d 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -27,6 +27,7 @@ add_executable(cyber_tests
+     core/test_remesh_params.cpp
+     core/test_mesh.cpp
+     core/test_mesh_property.cpp
++    core/test_meshlet.cpp
+     core/test_version.cpp
+     accel/test_cpu_backend.cpp
+     accel/test_gpu_parity.cpp
+diff --git a/tests/core/test_meshlet.cpp b/tests/core/test_meshlet.cpp
+new file mode 100644
+index 0000000..3afc054
+--- /dev/null
++++ b/tests/core/test_meshlet.cpp
+@@ -0,0 +1,218 @@
++// Meshlet clustering (openspec add-meshlet-target-path, task 3.1).
++//
++// The load-bearing properties are CONSERVATIVENESS and COMPLETENESS: a bounding
++// sphere that is too small or a normal cone that is too tight makes the GPU cull
++// geometry the user can see, which shows up as holes in the model. Every bound
++// here is therefore asserted to CONTAIN what it claims to, not merely to exist.
++
++#include <doctest.h>
++
++#include <cmath>
++#include <set>
++#include <vector>
++
++#include "cyber/core/meshlet.hpp"
++
++using cyber::Vec3;
++namespace remesh = cyber::remesh;
++
++namespace {
++
++/// A grid of `n`x`n` quads, each split into two triangles, on z = 0.
++struct Grid {
++    std::vector<float> positions;
++    std::vector<std::uint32_t> indices;
++};
++
++Grid makeGrid(int n) {
++    Grid grid;
++    for (int y = 0; y <= n; ++y) {
++        for (int x = 0; x <= n; ++x) {
++            grid.positions.push_back(static_cast<float>(x));
++            grid.positions.push_back(static_cast<float>(y));
++            grid.positions.push_back(0.0f);
++        }
++    }
++    const int stride = n + 1;
++    for (int y = 0; y < n; ++y) {
++        for (int x = 0; x < n; ++x) {
++            const std::uint32_t a = static_cast<std::uint32_t>(y * stride + x);
++            const std::uint32_t b = a + 1;
++            const std::uint32_t c = a + static_cast<std::uint32_t>(stride) + 1;
++            const std::uint32_t d = a + static_cast<std::uint32_t>(stride);
++            grid.indices.insert(grid.indices.end(), {a, b, c});
++            grid.indices.insert(grid.indices.end(), {a, c, d});
++        }
++    }
++    return grid;
++}
++
++/// A closed octahedron — normals span every direction, so its clusters exercise
++/// the cone logic on genuinely varied geometry.
++Grid makeOctahedron() {
++    Grid mesh;
++    const float p[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
++    for (const auto& v : p) {
++        mesh.positions.insert(mesh.positions.end(), {v[0], v[1], v[2]});
++    }
++    const std::uint32_t faces[8][3] = {{0, 2, 4}, {2, 1, 4}, {1, 3, 4}, {3, 0, 4},
++                                       {2, 0, 5}, {1, 2, 5}, {3, 1, 5}, {0, 3, 5}};
++    for (const auto& f : faces) {
++        mesh.indices.insert(mesh.indices.end(), {f[0], f[1], f[2]});
++    }
++    return mesh;
++}
++
++Vec3 positionAt(const std::vector<float>& positions, std::uint32_t v) {
++    return Vec3{positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]};
++}
++
++}  // namespace
++
++TEST_CASE("meshlets cover every triangle exactly once") {
++    const Grid grid = makeGrid(20);  // 800 triangles
++    const remesh::MeshletSet set = remesh::buildMeshlets(grid.positions, grid.indices);
++
++    REQUIRE(!set.empty());
++    CHECK(set.triangleCount() == grid.indices.size() / 3);
++
++    // Reconstruct the global triangle set from the clusters and compare with the
++    // input: no triangle dropped, none duplicated into two clusters.
++    std::multiset<std::array<std::uint32_t, 3>> rebuilt;
++    for (const remesh::Meshlet& meshlet : set.meshlets) {
++        for (std::uint32_t t = 0; t < meshlet.triangleCount; ++t) {
++            const std::size_t base = (static_cast<std::size_t>(meshlet.triangleOffset) + t) * 3;
++            std::array<std::uint32_t, 3> tri{};
++            for (int i = 0; i < 3; ++i) {
++                const std::uint8_t localIndex = set.indices[base + static_cast<std::size_t>(i)];
++                CHECK(localIndex < meshlet.vertexCount);
++                tri[static_cast<std::size_t>(i)] =
++                    set.vertices[meshlet.vertexOffset + localIndex];
++            }
++            rebuilt.insert(tri);
++        }
++    }
++    std::multiset<std::array<std::uint32_t, 3>> expected;
++    for (std::size_t t = 0; t < grid.indices.size() / 3; ++t) {
++        expected.insert({grid.indices[t * 3], grid.indices[t * 3 + 1], grid.indices[t * 3 + 2]});
++    }
++    CHECK(rebuilt == expected);
++}
++
++TEST_CASE("meshlets respect the vertex and triangle caps") {
++    const Grid grid = makeGrid(24);
++    const remesh::MeshletCaps caps{.maxVertices = 64, .maxTriangles = 126};
++    const remesh::MeshletSet set = remesh::buildMeshlets(grid.positions, grid.indices, caps);
++    REQUIRE(!set.empty());
++    for (const remesh::Meshlet& meshlet : set.meshlets) {
++        CHECK(meshlet.vertexCount <= caps.maxVertices);
++        CHECK(meshlet.triangleCount <= caps.maxTriangles);
++        CHECK(meshlet.vertexCount > 0);
++        CHECK(meshlet.triangleCount > 0);
++    }
++    // Clusters should be reasonably full, or the clustering is not doing its job:
++    // 1152 triangles at 126 per cluster is ~10 clusters, not ~1000.
++    CHECK(set.meshlets.size() < grid.indices.size() / 3 / 4);
++}
++
++TEST_CASE("every bounding sphere CONTAINS its cluster's vertices") {
++    // A sphere that is too small culls visible geometry. Conservativeness is the
++    // property, so it is asserted directly rather than inferred from the formula.
++    const Grid mesh = makeOctahedron();
++    const remesh::MeshletSet set = remesh::buildMeshlets(mesh.positions, mesh.indices);
++    REQUIRE(!set.empty());
++    for (const remesh::Meshlet& meshlet : set.meshlets) {
++        for (std::uint32_t i = 0; i < meshlet.vertexCount; ++i) {
++            const Vec3 p = positionAt(mesh.positions, set.vertices[meshlet.vertexOffset + i]);
++            const float distance = length(p - meshlet.center);
++            CHECK(distance <= meshlet.radius + 1e-5f);
++        }
++    }
++}
++
++TEST_CASE("every normal cone CONTAINS its cluster's triangle normals") {
++    const Grid mesh = makeOctahedron();
++    const remesh::MeshletSet set = remesh::buildMeshlets(mesh.positions, mesh.indices);
++    REQUIRE(!set.empty());
++    for (const remesh::Meshlet& meshlet : set.meshlets) {
++        if (meshlet.coneCutoff <= 0.0f) {
++            continue;  // declared unusable; never culled, nothing to contain
++        }
++        for (std::uint32_t t = 0; t < meshlet.triangleCount; ++t) {
++            const std::size_t base = (static_cast<std::size_t>(meshlet.triangleOffset) + t) * 3;
++            const std::uint32_t a = set.vertices[meshlet.vertexOffset + set.indices[base]];
++            const std::uint32_t b = set.vertices[meshlet.vertexOffset + set.indices[base + 1]];
++            const std::uint32_t c = set.vertices[meshlet.vertexOffset + set.indices[base + 2]];
++            const Vec3 pa = positionAt(mesh.positions, a);
++            Vec3 n = cross(positionAt(mesh.positions, b) - pa, positionAt(mesh.positions, c) - pa);
++            const float len = length(n);
++            if (len <= 0.0f) {
++                continue;
++            }
++            n = n * (1.0f / len);
++            // Inside the cone means at least as aligned as the declared cutoff.
++            CHECK(dot(meshlet.coneAxis, n) >= meshlet.coneCutoff - 1e-4f);
++        }
++    }
++}
++
++TEST_CASE("a flat grid cluster has a tight cone; a hemisphere-spanning one is unusable") {
++    // Flat geometry: every normal identical, so the cone should be maximally
++    // tight — this is what makes backface culling effective at all.
++    const Grid grid = makeGrid(8);
++    const remesh::MeshletSet flat = remesh::buildMeshlets(grid.positions, grid.indices);
++    REQUIRE(!flat.empty());
++    for (const remesh::Meshlet& meshlet : flat.meshlets) {
++        CHECK(meshlet.coneCutoff > 0.99f);
++    }
++
++    // A cluster forced to hold opposite-facing triangles must declare itself
++    // unusable (cutoff <= 0) rather than claim a cone that would cull visible
++    // faces. Two back-to-back triangles, one cluster.
++    std::vector<float> positions{0, 0, 0, 1, 0, 0, 0, 1, 0};
++    std::vector<std::uint32_t> indices{0, 1, 2, 0, 2, 1};  // opposite windings
++    const remesh::MeshletSet folded = remesh::buildMeshlets(positions, indices);
++    REQUIRE(folded.meshlets.size() == 1);
++    CHECK(folded.meshlets[0].triangleCount == 2);
++    CHECK(folded.meshlets[0].coneCutoff == 0.0f);
++}
++
++TEST_CASE("clustering is deterministic") {
++    const Grid grid = makeGrid(16);
++    const remesh::MeshletSet a = remesh::buildMeshlets(grid.positions, grid.indices);
++    const remesh::MeshletSet b = remesh::buildMeshlets(grid.positions, grid.indices);
++    REQUIRE(a.meshlets.size() == b.meshlets.size());
++    CHECK(a.vertices == b.vertices);
++    CHECK(a.indices == b.indices);
++    for (std::size_t i = 0; i < a.meshlets.size(); ++i) {
++        CHECK(a.meshlets[i].vertexOffset == b.meshlets[i].vertexOffset);
++        CHECK(a.meshlets[i].triangleCount == b.meshlets[i].triangleCount);
++        CHECK(a.meshlets[i].coneCutoff == b.meshlets[i].coneCutoff);
++    }
++}
++
++TEST_CASE("malformed input yields an EMPTY set, never a partial one") {
++    const Grid grid = makeGrid(4);
++    // Out-of-range index: a partially valid set would be drawn by the renderer.
++    std::vector<std::uint32_t> bad = grid.indices;
++    bad[0] = 9999;
++    CHECK(remesh::buildMeshlets(grid.positions, bad).empty());
++    // Index count not a multiple of 3.
++    std::vector<std::uint32_t> ragged{0, 1};
++    CHECK(remesh::buildMeshlets(grid.positions, ragged).empty());
++    CHECK(remesh::buildMeshlets(grid.positions, {}).empty());
++}
++
++TEST_CASE("degenerate triangles are dropped, not clustered") {
++    // A zero-area triangle has no normal, so keeping it would widen a cone for
++    // nothing. The rest of the mesh must still cluster.
++    std::vector<float> positions{0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0};
++    std::vector<std::uint32_t> indices{
++        0, 1, 2,  // real
++        0, 1, 1,  // degenerate (repeated corner)
++        1, 3, 2,  // real
++    };
++    const remesh::MeshletSet set = remesh::buildMeshlets(positions, indices);
++    REQUIRE(!set.empty());
++    CHECK(set.triangleCount() == 2);
++}
