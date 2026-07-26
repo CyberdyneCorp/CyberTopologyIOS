@@ -151,19 +151,47 @@ If a task here turns out to need one, it is out of scope and belongs in 5.4b.
       boundary spacing, which is the spec's "no density dial", so there is no dial whose
       change could trigger a re-solve.
 
-## 5. Tests
+## 5. Tests — DONE
 
-- [ ] 5.1 Seeding: rows are welded to the cage boundary and lie on the Target; no
-      open boundary refuses with its own reason.
-- [ ] 5.2 Cage faces and boundary vertices are unchanged across an accepted fill —
-      same id, same ring, bitwise identical positions, asserted on the LIVE handle.
-- [ ] 5.3 The Target is byte-unchanged by a fill.
-- [ ] 5.4 Accept journals exactly once and undoes byte-exactly; discard journals
-      nothing AND leaves no seed rows in the document.
-- [ ] 5.5 Painting further re-solves and replaces the ghost; document unchanged.
-- [ ] 5.6 A superseded in-flight solve never becomes the presented ghost.
-- [ ] 5.7 Bare Target disconnected from the cage is refused, not mis-filled.
-- [ ] 5.8 A UI test driving the REAL tool: arm, tap, accept, undo.
+- [x] 5.1 Seeding is covered by the task-1 suite (rows welded to the boundary, lying
+      on the Target, no-open-boundary refused) plus capture semantics: tap replaces,
+      paint unions and re-centres the fill direction, a Target-missing stroke asks for
+      nothing. None of it journals.
+- [x] 5.2 Every cage face is unchanged across an ACCEPTED fill — same id, same ring,
+      bitwise identical positions, compared against the DOCUMENT rather than a payload
+      round trip (which writes 6 significant digits and so could not tell "untouched"
+      from "nearly untouched").
+- [x] 5.3 The Target payload is byte-identical after an accepted fill.
+- [x] 5.4 Accept is one entry and one undo restores the pre-accept bytes; discard
+      journals nothing and leaves NO seed rows — structural, since the seed grew on a copy.
+- [x] 5.5 Re-solve replaces rather than stacks, and reaching further proposes DIFFERENT
+      geometry, so "replaced" is distinguishable from "unchanged".
+- [~] 5.6 **Moot — see 4.2.** A synchronous solve has no in-flight window to supersede.
+      Returns if the solve ever goes async.
+- [x] 5.7 **A gap the plan only half-named, now closed.** A cage with no free edge was
+      already refused; a TAP far from any free edge was NOT — it grew a two-row band
+      beside the cage while the user pointed somewhere else, exactly the spec's
+      "mis-filled" case. A tap must now land within the band a default fill would cover,
+      else it is refused with advice ("paint the area to fill it"). Painting that far
+      still works, so the guard is about TAPS, not distance — both directions asserted.
+      **The reach measurement had its own bug**: taken from the run's CENTROID it
+      refused good taps beside the END of a long free edge (which is how the all-tools
+      probe first failed). It is measured from the nearest boundary vertex.
+      A paint exceeding the row cap now SAYS it filled as far as the limit allows,
+      rather than truncating silently and looking complete.
+- [x] 5.8 UI test drives the real tool end to end (arm → tap → solve → accept → undo)
+      on the seeded on-dome strip, with a screenshot.
+      **It caught a real user-visible bug** that every headless test missed:
+      `acceptAutoRetopo` passed a literal `"EditMesh"` to `objectCommand`, which mints a
+      fresh object and replaces whichever holds that role — so accepting RENAMED the
+      user's object. Wrong for Auto-Retopo, plainly wrong for a fill that extends the
+      cage. An accepted proposal now carries the existing object's name. Only the UI test
+      could see it, because its outliner row identifier derives from that name.
+- [x] 5.9 The all-tools probe invariant now INCLUDES Weave Fill — its probe taps and
+      accepts, so it journals like every other tool. The task-2.5 exemption is CLOSED
+      rather than carried. Needed `onAcceptWeaveFill` to return the journaled command,
+      because a fill commits through the Coordinator, not the controller's own
+      transaction path that sets `lastCommit`.
 
 ## 6. Validation
 
