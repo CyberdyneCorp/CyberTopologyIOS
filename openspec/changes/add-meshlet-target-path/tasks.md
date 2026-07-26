@@ -98,8 +98,28 @@ machinery for an outcome A problem.
       they cannot widen a cone for no benefit.
       8 tests; engine suite now **289 cases / 129 771 assertions**, and the CI floor was
       raised 281 → 289 so the new tests are covered by the guard too.
-- [ ] 3.2 C API + CyberKit accessors for the meshlet buffers, following the zero-copy
-      pointer-view lifetime contract the render buffers already use (Engine/patches/0002).
+- [x] 3.2 C API (`cyber_mesh_meshlets_ptr` / `_meshlet_vertices_ptr` /
+      `_meshlet_indices_ptr` + `CyberMeshlet`) and CyberKit `withMeshletBuffers` /
+      `meshletCount`, under the same zero-copy pointer-view lifetime contract as the
+      render buffers. Clusters are built **lazily on first request**, not with the rest
+      of the render cache: clustering a multi-million-triangle Target costs real time and
+      the overlay, picking and export paths never ask for it.
+      **A LAYOUT BUG, caught by the tests and worth recording.** The Swift `Meshlet`
+      first used `SIMD3<Float>` for the vector members. `SIMD3<Float>` is **16 bytes, not
+      12** (padded to four lanes), so the struct was 56 bytes against C's 48 and every
+      field after `center` sat at the wrong offset. It compiled cleanly and the
+      reinterpreted buffer read garbage — `triangleCount` came back as 4,853,069,083 and
+      every `radius` as 0. The comment at the time asserted the layout was
+      "layout-compatible by construction", which was a claim I had not checked.
+      Fixed with 3-Float tuples plus computed `SIMD3` accessors, and
+      `Mesh.meshletLayoutMatchesC` is now **asserted by a test** — a mismatch here is
+      silent, so it cannot be left to reasoning.
+      Also asserted: clusters index the SAME compacted array the position buffer uses
+      (out of range would be a GPU read past the end), local corners stay inside their
+      own cluster's slice, spheres contain their vertices, a flat mesh yields cones with
+      cutoff > 0.99, a back-to-back pair declares itself uncullable, and clusters are
+      REBUILT after an edit rather than served stale (the compacted vertex order moves,
+      so a stale cluster would draw scrambled geometry).
 - [ ] 3.3 `MeshletRenderPath: TargetRenderPath` — object/mesh shader pair, per-meshlet
       frustum and normal-cone culling, pooled buffers, no per-frame allocation.
 - [ ] 3.4 `TargetRenderPathSelection.availableKind` returns `.meshlet` when capabilities

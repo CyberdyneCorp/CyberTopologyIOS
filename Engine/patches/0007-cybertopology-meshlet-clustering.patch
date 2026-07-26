@@ -1,3 +1,144 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index 4b1c3bc..1a0a36c 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -257,6 +257,45 @@ size_t cyber_mesh_copy_edge_indices(const CyberMesh* mesh, uint32_t* out,
+  * Each accessor stores the element count (floats / indices) in *out_count
+  * (ignored when NULL) and returns NULL with *out_count = 0 when the mesh is
+  * NULL, empty, or — for colors — carries no per-vertex colors. */
++/* ---- meshlet clusters (add-meshlet-target-path, task 3.2) ----------------
++ *
++ * Clusters of the SAME compacted render streams the pointer views above
++ * expose, for the Metal mesh-shader Target path: each meshlet's vertex
++ * indices address exactly the array cyber_mesh_positions_ptr returns, so a
++ * renderer binds one position buffer and one normal buffer for every
++ * cluster.
++ *
++ * Built lazily into the handle's render cache and invalidated by the same
++ * mutating calls, under the identical LIFETIME contract described above --
++ * including that the compacted vertex ORDER changes on mutation, so a
++ * meshlet fetched before an edit is doubly stale afterwards.
++ *
++ * Each cluster carries a bounding sphere and a normal cone. Both are
++ * CONSERVATIVE by construction: the sphere contains every cluster vertex and
++ * the cone contains every cluster triangle normal. A cluster whose normals
++ * span more than a hemisphere reports cone_cutoff == 0, which means NEVER
++ * backface-cull this cluster -- culling a visible cluster leaves a hole in
++ * the model, so the ambiguous case fails safe. */
++typedef struct CyberMeshlet {
++    uint32_t vertex_offset;    /* into cyber_mesh_meshlet_vertices_ptr        */
++    uint32_t vertex_count;
++    uint32_t triangle_offset;  /* in TRIANGLES, into ..._meshlet_indices_ptr  */
++    uint32_t triangle_count;
++    float center[3];           /* bounding sphere, conservative               */
++    float radius;
++    float cone_axis[3];        /* average triangle normal                     */
++    float cone_cutoff;         /* min dot(axis, n_i); 0 == do not cull        */
++} CyberMeshlet;
++
++/* The clusters themselves. *out_count receives the meshlet count. */
++const CyberMeshlet* cyber_mesh_meshlets_ptr(const CyberMesh* mesh, size_t* out_count);
++/* Global vertex indices, grouped per meshlet (index into the position and
++ * normal pointer views). */
++const uint32_t* cyber_mesh_meshlet_vertices_ptr(const CyberMesh* mesh, size_t* out_count);
++/* Triangle corners as LOCAL offsets into the owning meshlet's vertex slice,
++ * 3 per triangle, 8-bit because a meshlet holds at most 256 vertices. */
++const uint8_t* cyber_mesh_meshlet_indices_ptr(const CyberMesh* mesh, size_t* out_count);
++
+ const float* cyber_mesh_positions_ptr(const CyberMesh* mesh, size_t* out_count);
+ const uint32_t* cyber_mesh_triangle_indices_ptr(const CyberMesh* mesh, size_t* out_count);
+ const uint32_t* cyber_mesh_edge_indices_ptr(const CyberMesh* mesh, size_t* out_count);
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index a3196d6..48b8496 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -25,6 +25,7 @@
+ #include "cyber/core/io.hpp"
+ #include "cyber/core/mesh.hpp"
+ #include "cyber/core/pipeline.hpp"
++#include "cyber/core/meshlet.hpp"
+ #include "cyber/core/region_solve.hpp"
+ #include "cyber/quadrangulate/field_quadrangulator.hpp"
+ #include "cyber/quadrangulate/quadcover_extractor.hpp"
+@@ -79,6 +80,14 @@ struct CyberRenderCache {
+     std::vector<float> colors;           // r,g,b per vertex; empty if none
+     bool hasColors = false;
+     bool built = false;
++    // Meshlet clusters over `positions`/`indices` (add-meshlet-target-path).
++    // Built on FIRST REQUEST rather than with the rest of the cache: clustering
++    // costs real time on a multi-million-triangle Target, and the overlay,
++    // picking and export paths never ask for it.
++    std::vector<CyberMeshlet> meshlets;
++    std::vector<std::uint32_t> meshletVertices;
++    std::vector<std::uint8_t> meshletIndices;
++    bool meshletsBuilt = false;
+ };
+ 
+ // Opaque handle definition: the mesh plus any statistics captured when the
+@@ -804,6 +813,63 @@ const T* bufferView(const std::vector<T>* src, size_t* out_count) {
+ 
+ }  // namespace
+ 
++namespace {
++
++/// Builds the meshlet clusters into the render cache on first request. Separate
++/// from `ensureRenderCache` because clustering a multi-million-triangle Target is
++/// not free and only the mesh-shader render path wants it.
++const CyberRenderCache* ensureMeshlets(const CyberMesh* mesh) {
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    if (cache == nullptr) {
++        return nullptr;
++    }
++    if (cache->meshletsBuilt) {
++        return cache;
++    }
++    // The cache is `mutable` on the handle for exactly this lazy-build reason.
++    auto& mutableCache = const_cast<CyberRenderCache&>(*cache);
++    mutableCache.meshletsBuilt = true;
++    const cyber::remesh::MeshletSet set =
++        cyber::remesh::buildMeshlets(cache->positions, cache->indices);
++    mutableCache.meshletVertices = set.vertices;
++    mutableCache.meshletIndices = set.indices;
++    mutableCache.meshlets.reserve(set.meshlets.size());
++    for (const cyber::remesh::Meshlet& source : set.meshlets) {
++        CyberMeshlet out{};
++        out.vertex_offset = source.vertexOffset;
++        out.vertex_count = source.vertexCount;
++        out.triangle_offset = source.triangleOffset;
++        out.triangle_count = source.triangleCount;
++        out.center[0] = source.center.x;
++        out.center[1] = source.center.y;
++        out.center[2] = source.center.z;
++        out.radius = source.radius;
++        out.cone_axis[0] = source.coneAxis.x;
++        out.cone_axis[1] = source.coneAxis.y;
++        out.cone_axis[2] = source.coneAxis.z;
++        out.cone_cutoff = source.coneCutoff;
++        mutableCache.meshlets.push_back(out);
++    }
++    return cache;
++}
++
++}  // namespace
++
++const CyberMeshlet* cyber_mesh_meshlets_ptr(const CyberMesh* mesh, size_t* out_count) {
++    const CyberRenderCache* cache = ensureMeshlets(mesh);
++    return bufferView(cache == nullptr ? nullptr : &cache->meshlets, out_count);
++}
++
++const uint32_t* cyber_mesh_meshlet_vertices_ptr(const CyberMesh* mesh, size_t* out_count) {
++    const CyberRenderCache* cache = ensureMeshlets(mesh);
++    return bufferView(cache == nullptr ? nullptr : &cache->meshletVertices, out_count);
++}
++
++const uint8_t* cyber_mesh_meshlet_indices_ptr(const CyberMesh* mesh, size_t* out_count) {
++    const CyberRenderCache* cache = ensureMeshlets(mesh);
++    return bufferView(cache == nullptr ? nullptr : &cache->meshletIndices, out_count);
++}
++
+ size_t cyber_mesh_triangle_count(const CyberMesh* mesh) {
+     const CyberRenderCache* cache = ensureRenderCache(mesh);
+     return cache == nullptr ? 0 : cache->indices.size() / 3;
 diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
 index cb83bdc..d2f4510 100644
 --- a/src/core/CMakeLists.txt
@@ -355,6 +496,90 @@ index a05b9c8..a6e2c1d 100644
      core/test_version.cpp
      accel/test_cpu_backend.cpp
      accel/test_gpu_parity.cpp
+diff --git a/tests/capi/test_capi.cpp b/tests/capi/test_capi.cpp
+index a191fd5..9d977d2 100644
+--- a/tests/capi/test_capi.cpp
++++ b/tests/capi/test_capi.cpp
+@@ -285,3 +285,79 @@ TEST_CASE("capi region solve: ids survive, report is readable") {
+ 
+     cyber_mesh_destroy(mesh);
+ }
++
++// --- meshlet clusters (add-meshlet-target-path, task 3.2) --------------------
++
++TEST_CASE("capi meshlets cluster the render streams and honour the cache lifetime") {
++    const std::string path = writeGridObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(path.c_str(), &mesh) == CYBER_OK);
++    REQUIRE(mesh != nullptr);
++
++    size_t meshletCount = 0, vertexCount = 0, indexCount = 0;
++    const CyberMeshlet* meshlets = cyber_mesh_meshlets_ptr(mesh, &meshletCount);
++    const uint32_t* vertices = cyber_mesh_meshlet_vertices_ptr(mesh, &vertexCount);
++    const uint8_t* localIndices = cyber_mesh_meshlet_indices_ptr(mesh, &indexCount);
++    REQUIRE(meshlets != nullptr);
++    REQUIRE(meshletCount > 0);
++    REQUIRE(vertices != nullptr);
++    REQUIRE(localIndices != nullptr);
++
++    // Every triangle of the render stream ends up in exactly one cluster.
++    size_t triangleTotal = 0;
++    cyber_mesh_triangle_indices_ptr(mesh, &triangleTotal);
++    size_t clustered = 0;
++    for (size_t i = 0; i < meshletCount; ++i) {
++        clustered += meshlets[i].triangle_count;
++    }
++    CHECK(clustered == triangleTotal / 3);
++    CHECK(indexCount == clustered * 3);
++
++    // Meshlet vertex indices address the SAME compacted array the position
++    // pointer view exposes -- that is what lets one position buffer serve every
++    // cluster, so an out-of-range index here would be a GPU read past the end.
++    size_t positionFloats = 0;
++    cyber_mesh_positions_ptr(mesh, &positionFloats);
++    const uint32_t renderVertexCount = static_cast<uint32_t>(positionFloats / 3);
++    for (size_t i = 0; i < vertexCount; ++i) {
++        CHECK(vertices[i] < renderVertexCount);
++    }
++    // Local corner indices stay inside their own cluster's vertex slice.
++    for (size_t i = 0; i < meshletCount; ++i) {
++        const CyberMeshlet& m = meshlets[i];
++        for (uint32_t t = 0; t < m.triangle_count; ++t) {
++            for (int c = 0; c < 3; ++c) {
++                const size_t at = (static_cast<size_t>(m.triangle_offset) + t) * 3
++                    + static_cast<size_t>(c);
++                CHECK(localIndices[at] < m.vertex_count);
++            }
++        }
++        // Conservative bounds, as the builder promises.
++        CHECK(m.radius >= 0.0f);
++        CHECK(m.cone_cutoff >= 0.0f);
++        CHECK(m.cone_cutoff <= 1.0f);
++    }
++
++    // LIFETIME: a mutating call invalidates the cache, so the clusters are
++    // rebuilt on the next request rather than served stale. The compacted vertex
++    // ORDER also moves, which is what makes a stale meshlet dangerous.
++    size_t before = meshletCount;
++    uint32_t faces[1] = {0};
++    size_t removed = 0;
++    REQUIRE(cyber_retopo_delete_faces(mesh, faces, 1, &removed) == CYBER_OK);
++    REQUIRE(removed == 1);
++    size_t after = 0;
++    const CyberMeshlet* rebuilt = cyber_mesh_meshlets_ptr(mesh, &after);
++    REQUIRE(rebuilt != nullptr);
++    size_t clusteredAfter = 0;
++    for (size_t i = 0; i < after; ++i) {
++        clusteredAfter += rebuilt[i].triangle_count;
++    }
++    size_t triangleTotalAfter = 0;
++    cyber_mesh_triangle_indices_ptr(mesh, &triangleTotalAfter);
++    CHECK(clusteredAfter == triangleTotalAfter / 3);
++    CHECK(clusteredAfter < clustered);  // a face really was removed
++    CHECK(before > 0);
++
++    cyber_mesh_destroy(mesh);
++}
 diff --git a/tests/core/test_meshlet.cpp b/tests/core/test_meshlet.cpp
 new file mode 100644
 index 0000000..3afc054
