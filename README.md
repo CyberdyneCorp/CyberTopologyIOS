@@ -27,9 +27,19 @@ The C++20 engine is a git submodule at `Engine/CyberRemesherAndUV`, built by
 `scripts/build_engine.sh` into a static xcframework (device arm64 + simulator
 arm64; pass `--sim-only` to skip the device slice, `--force` to rebuild). The
 script is idempotent — it no-ops while the artifact matches the submodule
-commit — and applies the iOS compile fixes in `Engine/patches/` until they are
-merged upstream. An Xcode pre-build phase reruns it on every build, so a stale
-engine can never ship.
+commit AND the patch stack — and applies `Engine/patches/*.patch` in numbered
+order. An Xcode pre-build phase reruns it on every build, so a stale engine can
+never ship.
+
+Those patches are not compile fixes; they are app-local engine features carried
+until they are upstreamed (each one's header comment in `build_engine.sh` says
+what it does and carries a `TODO(upstream)`). Later patches touch files earlier
+ones own, so **generate a new patch as a tree-to-tree diff**, not as
+`git diff HEAD`: snapshot the tree with the existing stack applied
+(`git write-tree`), snapshot the working tree, and diff the two. A plain
+`git diff HEAD` on a shared file silently folds the earlier patch's changes into
+the new one. Always verify the full stack replays from a pristine checkout
+before committing a patch.
 
 All engine access from Swift goes through **CyberKit** (`CyberKit/`), a local
 SwiftPM package wrapping the engine's C API (`cyber_capi.h`) with a typed

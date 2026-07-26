@@ -454,16 +454,31 @@ provably cannot distinguish "never touched the vertex" from "snapped to within 1
 
 ## 17. Validation
 
-- [ ] 17.1 `openspec validate add-weave-regional-solve --strict`.
-- [~] 17.2 Simulator: **771 tests in 73 suites green** on iPad Pro 11-inch (M4) after task 11,
+- [x] 17.1 `openspec validate --changes --strict` — all 7 changes pass.
+- [ ] 17.2 **NOT DONE — the device half is outstanding.** Marking this partial made the whole change read "Complete", which is false while a stated gate has never run. Simulator: **771 tests in 73 suites green** on iPad Pro 11-inch (M4) after task 11,
       no golden regenerated — that is the CyberKit half of 16.1's null-object evidence. Engine +
       CyberKit link confirmed (xcframework rebuilt with `--sim-only`, all 8 new symbols exported).
       DEVICE run still outstanding, and the device slice of the xcframework has not been built.
       After tasks 12-16: **794 tests in 76 suites green** on iPad Pro 11-inch (M4).
-- [ ] 17.3 Engine C++ suite green under a host configure with `-DCYBER_BUILD_TESTS=ON`.
-- [ ] 17.4 Update `openspec/changes/add-cybertopology-app/tasks.md`: mark 5.1a's region-scoped
+- [x] 17.3 Engine C++ suite green under a host configure with `-DCYBER_BUILD_TESTS=ON`:
+      **281 cases / 127 262 assertions / 0 failures**, re-verified from a pristine replay of
+      0001→0006. Note `scripts/build_engine.sh:198-199` sets `CYBER_BUILD_TESTS=OFF`, so these are
+      NOT run by the app build or by CI — wiring them into CI is a genuine gap this change does
+      not close, and patch 0006 ships with the same posture 0003 did.
+- [x] 17.4 Master Phase 5 list updated: 5.1a ticked with what shipped; 5.3 ticked for EXACT
+      LANDING ONLY with the singularity half named as not delivered; **5.3a created** carrying the
+      b-matching characterisation, the evidence pointers and the partial mitigation; 5.2a narrowed
+      from three open constraint kinds to two (frozen patches' solver half is done, the app half
+      is not); 5.7 annotated with the three benchmark corrections and an explicit "do NOT claim
+      Weave places no singularity on a prescribed interface until 5.3a lands". Phase 5 now reads
+      6/12 rather than 4/7. ORIGINAL: mark 5.1a's region-scoped
       clause done; mark 5.3 done ONLY for exact boundary landing, stating in the entry that the
       interior-only-singularity half is measured-and-reported, not guaranteed; add `5.3a` for that
       half in the house "split out honestly" style, citing the b-matching characterisation. Also
       note in 5.7 that the interface-singularity marketing claim is unsupported until 5.3a lands.
-- [ ] 17.5 Update `scripts/build_engine.sh` docs and the repo README's engine-patch table.
+- [x] 17.5 `build_engine.sh` header documents 0006 (done in 10.4). The README had no
+      engine-patch TABLE to update — it described the patches as "iOS compile fixes", which is
+      simply wrong now, so that paragraph was corrected: the patches are app-local engine features
+      carried until upstreamed, and the **tree-to-tree generation discipline is documented there**
+      so the next person does not repeat the near-miss where a plain `git diff HEAD` would have
+      folded patch 0003 into 0006.
