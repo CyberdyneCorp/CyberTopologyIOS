@@ -454,6 +454,19 @@ struct MetalViewport: UIViewRepresentable {
             // IS the re-solve trigger. A tap or each paint stroke lands here, so a
             // second stroke replaces the pending proposal rather than stacking one.
             // Clearing the request drops the proposal with it.
+            meshEditor.onAcceptWeaveFill = { [weak self] in
+                guard let self, let ghost = self.autoRetopoGhost,
+                    let bundle = self.bundleProvider?()
+                else { return nil }
+                // Build the command the accept WILL journal, so the caller can observe
+                // it; acceptAutoRetopo then performs the accept through the one path.
+                let command = try? bundle.objectCommand(
+                    for: ghost.mesh,
+                    name: MetalViewport.Coordinator.acceptedEditMeshName(in: bundle),
+                    role: .editMesh, verb: "autoRetopo.accept"
+                )
+                return self.acceptAutoRetopo() ? command : nil
+            }
             meshEditor.onWeaveFillIntentChanged = { [weak self] intent in
                 guard let self else { return }
                 if intent == nil {

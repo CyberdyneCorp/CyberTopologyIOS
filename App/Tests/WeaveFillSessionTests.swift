@@ -232,6 +232,94 @@ struct WeaveFillSessionTests {
         #expect(!harness.coordinator.hasAutoRetopoGhost)
     }
 
+    // MARK: - The user-visible form of the guarantee (task 5.2, 5.3, 5.7)
+
+    @Test("An accepted fill leaves every cage face untouched — id, ring and bits")
+    func acceptedFillPreservesTheCage() throws {
+        let harness = Harness()
+        try harness.addDomedTarget()
+        try harness.addPartialCage()
+
+        // Snapshot the artist's cage from the DOCUMENT, then compare the document
+        // after accept. Never through a payload round-trip: that writes 6 significant
+        // digits, so it could not tell "untouched" from "nearly untouched".
+        let cage = try harness.editMesh()
+        var rings: [UInt32: [UInt32]] = [:]
+        var positions: [UInt32: SIMD3<Float>] = [:]
+        for f in cage.liveFaceIDs() {
+            rings[f] = cage.faceVertices(f)
+            for v in cage.faceVertices(f) { positions[v] = cage.vertexPosition(v) }
+        }
+        #expect(rings.count == 8)
+
+        harness.requestTapFill()
+        #expect(harness.coordinator.beginWeaveFill())
+        #expect(harness.coordinator.acceptAutoRetopo())
+
+        let after = try harness.editMesh()
+        for (face, ring) in rings {
+            #expect(after.faceVertices(face) == ring, "cage face \(face) changed")
+        }
+        for (vertex, position) in positions {
+            let now = try #require(after.vertexPosition(vertex))
+            #expect(now.x.bitPattern == position.x.bitPattern)
+            #expect(now.y.bitPattern == position.y.bitPattern)
+            #expect(now.z.bitPattern == position.z.bitPattern)
+        }
+    }
+
+    @Test("A fill never modifies the Target — it is a reference surface, not an output")
+    func targetIsUntouched() throws {
+        let harness = Harness()
+        try harness.addDomedTarget()
+        try harness.addPartialCage()
+        let targetObject = try #require(
+            harness.bundle.manifest.objects.first { $0.role == .target }
+        )
+        let before = try #require(harness.bundle.payloads[targetObject.payloadFile])
+
+        harness.requestTapFill()
+        #expect(harness.coordinator.beginWeaveFill())
+        #expect(harness.coordinator.acceptAutoRetopo())
+
+        let object = try #require(harness.bundle.manifest.objects.first { $0.role == .target })
+        #expect(harness.bundle.payloads[object.payloadFile] == before)
+    }
+
+    @Test("A tap far from any cage edge is REFUSED, not filled somewhere else")
+    func farTapRefused() throws {
+        let harness = Harness()
+        try harness.addDomedTarget()
+        try harness.addPartialCage()
+
+        // The cage's free edge is at y = -0.2. Tapping at the far rim would otherwise
+        // grow a two-row band beside the cage while the user pointed metres away —
+        // filling somewhere they did not ask for.
+        harness.coordinator.meshEditor.weaveFillIntent = WeaveFillIntent(
+            fillPoint: SIMD3(0, 0.95, 0), extent: [], isTap: true
+        )
+        #expect(harness.coordinator.beginWeaveFill() == false)
+        #expect(!harness.coordinator.hasAutoRetopoGhost)
+        let notice = try #require(harness.coordinator.inputModel.autoRetopoNotice)
+        #expect(notice.lowercased().contains("too far"))
+        #expect(notice.lowercased().contains("paint"), "the refusal should say what to do instead")
+        #expect(harness.committed.isEmpty)
+    }
+
+    @Test("Painting that far DOES fill — the guard is about taps, not about distance")
+    func paintingFarIsAllowed() throws {
+        let harness = Harness()
+        try harness.addDomedTarget()
+        try harness.addPartialCage()
+        harness.coordinator.meshEditor.weaveFillIntent = WeaveFillIntent(
+            fillPoint: SIMD3(0, 0.5, 0),
+            extent: [SIMD3(0, 0.0, 0), SIMD3(0, 0.9, 0)],
+            isTap: false
+        )
+        #expect(harness.coordinator.beginWeaveFill())
+        #expect(harness.coordinator.hasAutoRetopoGhost)
+    }
+
     @Test("Refusal messages are distinct and human")
     func refusalMessages() {
         let messages = [

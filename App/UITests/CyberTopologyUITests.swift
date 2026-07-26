@@ -670,6 +670,45 @@ final class CyberTopologyUITests: XCTestCase {
     /// roster", scenario "Patch Clone round-trip"): the Patch Clone tool
     /// armed and driven through the auto-tool probe — a real selection
     /// stroke over the seeded on-dome strip, a REAL viewport camera orbit
+    /// Weave Fill (add-weave-region-selection, task 5.8): the auto-tool probe
+    /// arms the REAL tool, TAPS bare Target beside the seeded strip's free
+    /// edge, solves the region against the frozen cage, and ACCEPTS — one
+    /// journal entry a single three-finger undo restores. This is the whole
+    /// feature end to end through the real capture → domain → solve → accept
+    /// path, not a driven session.
+    @MainActor
+    func testWeaveFillToolProbeFillsBesideTheCageAndUndoRestores() throws {
+        try skipIfInteractionUnsupported()
+        let app = launch(arguments: [
+            "-UITestResetState", "-UITestOpenDocument", "-UITestSeedTarget",
+            "-UITestSeedEditMeshOnDome", "-UITestAutoTool", "weaveFill",
+        ])
+
+        let viewport = app.otherElements["viewport"].firstMatch
+        XCTAssertTrue(viewport.waitForExistence(timeout: 15))
+        let row = app.descendants(matching: .any)["object-row-seed-dome-strip"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+
+        // The fill adds quads to the 2-face seeded strip, so the face count moves.
+        XCTAssertTrue(
+            waitForLabel(of: row, timeout: 15) { !$0.contains("2 f") },
+            "row: \(row.label)"
+        )
+        XCTAssertTrue(app.buttons["undo"].isEnabled)
+
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "weave-fill-tool"
+        shot.lifetime = .keepAlways
+        add(shot)
+
+        // ONE journal entry for the whole fill, undone by one gesture.
+        viewport.tap(withNumberOfTaps: 1, numberOfTouches: 3)
+        XCTAssertTrue(
+            waitForLabel(of: row, timeout: 10) { $0.contains("2 f") },
+            "one undo should restore the seeded strip — row: \(row.label)"
+        )
+    }
+
     /// fed through the arbiter-gated camera→tool routing, and a paste
     /// projected onto the dome Target, journaled as ONE entry that a
     /// single three-finger undo restores.

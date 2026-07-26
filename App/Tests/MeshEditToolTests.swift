@@ -620,12 +620,11 @@ extension MeshEditToolTests {
     /// because the tool captures an INTENT rather than editing the document:
     ///
     /// - Guide (add-guide-stroke-authoring) captures steering hints.
-    /// - Weave Fill (add-weave-region-selection) captures a fill request; the
-    ///   document changes only when the resulting proposal is ACCEPTED.
-    ///   **Re-include it once the probe accepts** — task 3 wires accept, and at
-    ///   that point this exemption becomes a hole rather than a fact.
+    /// Weave Fill is INCLUDED: its probe now taps and then accepts, so it journals
+    /// like the rest. It was exempt while only capture existed (task 2.5) — the
+    /// exemption is closed rather than left as a standing hole.
     @Test func visualVerificationProbesJournalEveryTool() throws {
-        for tool in RetopoTool.allCases where tool != .guide && tool != .weaveFill {
+        for tool in RetopoTool.allCases where tool != .guide {
             let harness = try makeSeededHarness()
             let editor = try #require(harness.coordinator.inputModel.meshEditor)
             #expect(

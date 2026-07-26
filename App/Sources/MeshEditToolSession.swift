@@ -545,6 +545,11 @@ extension MeshEditController {
     private func probeWeaveFill(vertices: [ProbeVertex], context: Context) {
         guard let start = vertices.first else { return }
         driveProbeStroke(verb: .pencil, through: [start.screen, start.screen])
+        // Accept, so the probe covers arm → tap → solve → ACCEPT and therefore
+        // journals like every other tool's probe (closing the task-2.5 exemption).
+        if let committed = onAcceptWeaveFill?() {
+            lastCommit = committed
+        }
     }
 
     /// Extend Boundary: hold on a boundary vertex (whole-loop

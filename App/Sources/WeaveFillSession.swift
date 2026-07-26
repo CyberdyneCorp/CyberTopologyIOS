@@ -42,20 +42,42 @@ extension MetalViewport.Coordinator {
         }
 
         let seed: WeaveFillDomain.Seed
+        var truncated = false
         do {
-            // Rows: a tap asks for the default band, paint asks for its reach.
+            // One row first, to learn the run and its step before deciding how far.
             let probe = try WeaveFillDomain.grow(
                 cage: cage, snapper: snapper, towards: intent.fillPoint, rows: 1
             )
-            let rows = intent.wantsDefaultExtent
-                ? Self.defaultFillRows
-                : WeaveFillDomain.rows(
-                    toCover: intent.extent, from: probe.chain, of: cage, step: probe.step
+            let reach = Self.reach(
+                of: intent, from: probe.chain, of: cage, step: probe.step
+            )
+            let rows: Int
+            if intent.wantsDefaultExtent {
+                // A TAP asks for the default band, so it only makes sense NEAR a free
+                // edge. Growing 2 rows toward a distant tap would fill a band beside
+                // the cage while the user pointed somewhere else — the "isolated area
+                // is refused, not mis-filled" requirement. Paint that far instead.
+                // The tap must lie within the band a default fill would cover.
+                // Anything beyond it is a request to fill somewhere the band will
+                // not reach, which is the "mis-filled" case.
+                guard reach <= Float(Self.defaultFillRows) else {
+                    throw Failure.tooFarToTap
+                }
+                rows = Self.defaultFillRows
+            } else {
+                let wanted = WeaveFillDomain.rows(
+                    toCover: intent.extent, from: probe.chain, of: cage, step: probe.step,
+                    maximumRows: Self.maximumFillRows
                 )
+                // A cap that silently truncates reads as "filled everything". Say so.
+                truncated = wanted >= Self.maximumFillRows && reach > Float(wanted)
+                rows = wanted
+            }
             seed = rows == 1
                 ? probe
                 : try WeaveFillDomain.grow(
-                    cage: cage, snapper: snapper, towards: intent.fillPoint, rows: rows
+                    cage: cage, snapper: snapper, towards: intent.fillPoint, rows: rows,
+                    maximumRows: Self.maximumFillRows
                 )
         } catch {
             // A refusal is information, not a crash: say why and show nothing.
@@ -105,8 +127,56 @@ extension MetalViewport.Coordinator {
         // whole-Target proposal, which merely becomes outdated.
         weaveFillBasePayload = currentCagePayload()
         syncAutoRetopoGhostState()
-        inputModel.autoRetopoNotice = Self.notice(for: ghost)
+        inputModel.autoRetopoNotice = [
+            truncated ? "filled as far as the row limit allows" : nil,
+            Self.notice(for: ghost),
+        ].compactMap { $0 }.joined(separator: " · ").nilWhenEmpty
         return true
+    }
+
+    /// How far the request reaches beyond the boundary run, in ROWS.
+    static func reach(
+        of intent: WeaveFillIntent, from chain: [UInt32], of cage: Mesh, step: SIMD3<Float>
+    ) -> Float {
+        let length = simd_length(step)
+        guard length > 1e-9 else { return 0 }
+        var sum = SIMD3<Float>.zero
+        var count = 0
+        for v in chain {
+            guard let p = cage.vertexPosition(v) else { continue }
+            sum += p
+            count += 1
+        }
+        guard count > 0 else { return 0 }
+        let direction = step / length
+        let points = intent.extent.isEmpty ? [intent.fillPoint] : intent.extent
+        // Measured from the NEAREST boundary vertex, not the run's centroid: a tap
+        // beside the END of a long free edge is close to the boundary even though it
+        // is far from the middle of it. Using the centroid refused perfectly good taps
+        // on any run longer than a few quads.
+        var furthest: Float = 0
+        for p in points {
+            var nearest = Float.greatestFiniteMagnitude
+            var along: Float = 0
+            for v in chain {
+                guard let q = cage.vertexPosition(v) else { continue }
+                let distance = simd_length(p - q)
+                if distance < nearest {
+                    nearest = distance
+                    along = simd_dot(p - q, direction)
+                }
+            }
+            furthest = max(furthest, along)
+        }
+        return max(0, furthest / length)
+    }
+
+    /// Shared row cap — one place, so the guard and the derivation cannot disagree.
+    static var maximumFillRows: Int { 12 }
+
+    /// Refusals that belong to the session rather than to domain construction.
+    enum Failure: Error, Equatable {
+        case tooFarToTap
     }
 
     /// Drops a pending FILL proposal when the EditMesh changed underneath it.
@@ -160,6 +230,12 @@ extension MetalViewport.Coordinator {
     static var defaultFillRows: Int { 2 }
 
     static func fillRefusal(_ error: Error) -> String {
+        if let own = error as? Failure {
+            switch own {
+            case .tooFarToTap:
+                return "Too far from an open cage edge — paint the area to fill it"
+            }
+        }
         guard let failure = error as? WeaveFillDomain.Failure else {
             return "Fill could not be prepared"
         }
@@ -174,4 +250,9 @@ extension MetalViewport.Coordinator {
             return "Could not work out which way to fill"
         }
     }
+}
+
+extension String {
+    /// nil for an empty string, so an absent notice is absent rather than blank.
+    var nilWhenEmpty: String? { isEmpty ? nil : self }
 }

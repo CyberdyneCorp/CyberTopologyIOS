@@ -172,7 +172,8 @@ extension MetalViewport.Coordinator {
     func acceptAutoRetopo() -> Bool {
         guard let ghost = autoRetopoGhost, let bundle = bundleProvider?() else { return false }
         guard let command = try? bundle.objectCommand(
-            for: ghost.mesh, name: "EditMesh", role: .editMesh, verb: "autoRetopo.accept"
+            for: ghost.mesh, name: Self.acceptedEditMeshName(in: bundle),
+            role: .editMesh, verb: "autoRetopo.accept"
         ) else { return false }
         autoRetopoGhost = nil
         weaveFillBasePayload = nil
@@ -213,6 +214,19 @@ extension MetalViewport.Coordinator {
 
     /// The live Target mesh from the current document bundle, or nil when the
     /// document has no Target to retopologize.
+    /// The name an accepted proposal should carry: the EXISTING EditMesh's, when
+    /// there is one.
+    ///
+    /// `objectCommand` mints a fresh object and replaces the one holding that role, so
+    /// passing a literal renamed the user's object — visible in the outliner, and
+    /// plainly wrong for a Weave FILL, which extends the cage rather than replacing
+    /// it. Caught by the fill UI test, whose row identifier is derived from the name.
+    /// (The object's UUID still changes, and with it every face id; that is the
+    /// separate sharp edge documented on `acceptAutoRetopo`.)
+    static func acceptedEditMeshName(in bundle: DocumentBundle) -> String {
+        bundle.manifest.objects.first { $0.role == .editMesh }?.name ?? "EditMesh"
+    }
+
     private func currentTargetMesh() -> Mesh? {
         guard let bundle = bundleProvider?() else { return nil }
         guard let target = bundle.manifest.objects.first(where: { $0.role == .target }) else {

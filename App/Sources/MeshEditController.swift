@@ -359,6 +359,17 @@ final class MeshEditController {
     /// Fires whenever the pending request changes, so the shell can re-solve and
     /// refresh the banner.
     var onWeaveFillIntentChanged: ((WeaveFillIntent?) -> Void)?
+    /// Accepts a pending Weave Fill proposal. Installed by the shell (the proposal
+    /// slot lives on the Coordinator); used by the visual-verification probe so it
+    /// exercises the FULL arm → tap → solve → accept path rather than stopping at a
+    /// ghost. Returns whether anything was accepted.
+    /// Accepts a pending Weave Fill proposal and returns the command it journaled.
+    /// Installed by the shell, because the proposal slot lives on the Coordinator.
+    /// Used by the visual-verification probe so it drives arm → tap → solve → ACCEPT
+    /// rather than stopping at a ghost; the command comes back because `lastCommit`
+    /// is how a probe reports that it journaled, and a fill commits through the
+    /// Coordinator rather than this controller's own transaction path.
+    var onAcceptWeaveFill: (() -> DocumentCommand?)?
     /// Sticky Extend Boundary mode across selections (banner picker).
     var preferredExtendBoundaryMode: ExtendBoundaryPlan.Mode = .single
     /// Session banner sink (nil = no session): the input model publishes
