@@ -116,6 +116,7 @@ targets:
       # Weave solver session (Phase 5): public-API + inline fixtures, so it runs
       # on device too (the auto-remesh backend + determinism verified on iPad).
       - path: CyberKit/Tests/CyberKitTests/WeaveSolverTests.swift
+      - path: CyberKit/Tests/CyberKitTests/RegionSolveOpsTests.swift
       # Context-aware create-face: public-API + inline mesh, runs on device too.
       - path: CyberKit/Tests/CyberKitTests/ContextAwareCreateFaceTests.swift
       # Relax boundary preservation: public-API + inline mesh, runs on device too.

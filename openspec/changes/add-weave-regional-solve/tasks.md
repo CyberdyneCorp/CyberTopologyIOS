@@ -332,10 +332,18 @@ unachievable by any local pass). Refusing on irregularity rejected every fixture
 
 ## 11. CyberKit: primitives
 
-- [ ] 11.1 `MeshAnnotations.swift` — `setSolveRegion(faces:)`, `solvedFaceIDs()`,
+- [x] 11.1 Shipped as a new `MeshRegionSolve.swift` (a `Mesh` extension) rather than appended to
+      `MeshAnnotations.swift` — the region layer is its own concern and the file is already large.
+      `setSolveRegion(faces:)`, `setRegionValence(_:)`, `solvedFaceIDs()`, `interfaceVertexIDs()`,
+      `interfaceIrregularIDs()`, `regionReport()`, `vertexFaceCount(_:)`. The readback getters
+      return **nil, not []**, when the mesh did not come from a region solve, so "no region ran"
+      cannot be misread as "the region was clean". ORIGINAL: `setSolveRegion(faces:)`, `solvedFaceIDs()`,
       `interfaceVertexIDs()`, `vertexFaceCount(_:)`, `regionBoundaryLoops(faces:)`, each a
       two-call size-then-fill in the shape of `liveFaceIDs()` (`:286`) / `faceVertices(_:)` (`:298`).
-- [ ] 11.2 `Mesh.swift` — `duplicated()` over `cyber_mesh_duplicate`, and
+- [x] 11.2 `duplicated()` over `cyber_mesh_duplicate` and
+      `remeshedRegion(faces:parameters:valenceOverrides:onProgress:isCancelled:)`, which sets the
+      region on the source handle (the guides precedent), solves, and clears it in a `defer` so a
+      stale region cannot leak into the next whole-mesh solve. ORIGINAL: `duplicated()` over `cyber_mesh_duplicate`, and
       `remeshedRegion(faces:parameters:onProgress:isCancelled:)` mirroring the existing
       `remeshed(...)` progress/cancel plumbing.
 
@@ -428,7 +436,10 @@ provably cannot distinguish "never touched the vertex" from "snapped to within 1
 ## 17. Validation
 
 - [ ] 17.1 `openspec validate add-weave-regional-solve --strict`.
-- [ ] 17.2 Full CyberKit suite green on simulator AND device; engine + CyberKit link.
+- [~] 17.2 Simulator: **771 tests in 73 suites green** on iPad Pro 11-inch (M4) after task 11,
+      no golden regenerated — that is the CyberKit half of 16.1's null-object evidence. Engine +
+      CyberKit link confirmed (xcframework rebuilt with `--sim-only`, all 8 new symbols exported).
+      DEVICE run still outstanding, and the device slice of the xcframework has not been built.
 - [ ] 17.3 Engine C++ suite green under a host configure with `-DCYBER_BUILD_TESTS=ON`.
 - [ ] 17.4 Update `openspec/changes/add-cybertopology-app/tasks.md`: mark 5.1a's region-scoped
       clause done; mark 5.3 done ONLY for exact boundary landing, stating in the entry that the
