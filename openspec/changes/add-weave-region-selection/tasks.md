@@ -61,15 +61,30 @@ If a task here turns out to need one, it is out of scope and belongs in 5.4b.
       Target within 1e-5, a CLOSED cage is refused, row derivation and its cap, and a
       grown domain solving with the prescribed boundary bitwise preserved.
 
-## 2. The armed tool
+## 2. The armed tool — DONE
 
-- [ ] 2.1 `RetopoTool.weaveFill` + an `EditorAction`, toolbar-assignable, with an
-      `ActionCatalog` entry whose help says PAINT or TAP and says why it is not a
-      lasso (the retired `visibilityLasso` entry is the precedent for recording that).
-- [ ] 2.2 `isCameraManipulator = false`. Tap and paint are distinguished by
-      `CameraToolStrokes.isTap`, the same test the camera tools already use.
-- [ ] 2.3 Paint resolves the covered Target area via `strokeSurfaceHits` against the
-      TARGET (Patch Clone resolves against the EditMesh — same helper, other mesh).
+- [x] 2.1 `RetopoTool.weaveFill` + `EditorAction.weaveFill`/`.clearWeaveFill`,
+      toolbar-assignable, with gallery entries whose help states both gestures and
+      records why it is not a lasso. The action count guard in
+      `ToolbarConfigurationTests` moved 34 → 36 deliberately: it exists so an action
+      added without a gallery entry fails rather than shipping a blank help panel.
+- [x] 2.2 `isCameraManipulator = false`; tap vs paint via `CameraToolStrokes.isTap`.
+- [x] 2.3 **No new helper needed** — `context.snapper` IS the Target snapper, so the
+      existing `strokeSurfaceHits` already returns Target-surface points. The plan
+      assumed Patch Clone resolved against the EditMesh and that a Target variant would
+      be needed; it does not, and it is not.
+- [x] 2.4 Capture resolves a stroke into a `WeaveFillIntent` (fill point, painted
+      extent, tap flag) and journals NOTHING. A TAP replaces the request ("fill here",
+      not "also here"); a PAINT stroke unions its hits and re-centres the fill point, so
+      a second stroke both extends the reach AND steers which stretch of cage boundary
+      gets grown. A stroke that missed the Target asks for nothing and must not clear a
+      request the user already made.
+- [x] 2.5 **The all-tools probe invariant needed an honest exemption.**
+      `visualVerificationProbesJournalEveryTool` asserts every tool's probe journals;
+      Weave Fill capture deliberately does not, because the document changes only on
+      ACCEPT. Exempted alongside Guide, with a note to RE-INCLUDE it once task 3 wires
+      accept into the probe — at that point the exemption becomes a hole rather than a
+      fact. Recorded rather than silently widened.
 
 ## 3. Session and solve
 

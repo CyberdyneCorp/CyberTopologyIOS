@@ -31,6 +31,17 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
     /// flow. Needs only a Target (no EditMesh) and journals nothing — guides are
     /// authoring hints, not document edits.
     case guide
+    /// Weave Fill (add-weave-region-selection): fills BARE TARGET with quads that
+    /// meet the existing cage's open boundary exactly. A TAP proposes the next patch
+    /// outward from the nearest free edge; a PAINT stroke says how far to fill. The
+    /// solve domain is grown from the boundary (`WeaveFillDomain`), so this needs both
+    /// a Target and an EditMesh with a free edge.
+    ///
+    /// Deliberately NOT a lasso: `simplify-gesture-grammar` removed that shape from the
+    /// Pencil grammar because on device a closed quad stroke with a slight overshoot
+    /// classified as `lasso` -> `hideRegion`. An armed tool needs no shape
+    /// classification, so there is nothing to misread.
+    case weaveFill
 
     /// Camera-as-manipulator tools: a selection stroke arms a session,
     /// then the CAMERA is the manipulator until commit/cancel. Draw Strip
@@ -41,7 +52,9 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
         case .patchClone, .extendBoundary, .transformVertices:
             return true
         case .buildQuad, .buildTriangle, .mergePair, .pathDistribute,
-            .surfaceCut, .drawStrip, .pinFlip, .guide:
+            .surfaceCut, .drawStrip, .pinFlip, .guide, .weaveFill:
+            // Weave Fill is stroke-driven: the camera never manipulates the
+            // proposal, the fill point and painted extent do.
             return false
         }
     }
@@ -118,6 +131,8 @@ extension MeshEditController {
             handleCameraToolStroke(stroke, samples: samples)
         case .drawStrip:
             applyDrawStrip(stroke, samples: samples)
+        case .weaveFill:
+            handleWeaveFillStroke(stroke, samples: samples)
         case .pinFlip:
             commitPinFlipStroke(stroke, samples: samples)
         case .guide:
@@ -483,6 +498,8 @@ extension MeshEditController {
             probePatchClone(vertices: vertices, context: context)
         case .extendBoundary:
             probeExtendBoundary(vertices: vertices, context: context)
+        case .weaveFill:
+            probeWeaveFill(vertices: vertices, context: context)
         case .drawStrip:
             probeDrawStrip(vertices: vertices, context: context)
         case .transformVertices:
@@ -520,6 +537,14 @@ extension MeshEditController {
         guard cameraSession != nil else { return }
         feedProbeCameraOrbit(context: context, steps: 4)
         commitCameraToolSession()
+    }
+
+    /// Weave Fill: a TAP just past the cage's free edge, which is the
+    /// zero-selection entry. Drives the real capture path, so the probe
+    /// exercises tap-vs-paint resolution rather than a shortcut.
+    private func probeWeaveFill(vertices: [ProbeVertex], context: Context) {
+        guard let start = vertices.first else { return }
+        driveProbeStroke(verb: .pencil, through: [start.screen, start.screen])
     }
 
     /// Extend Boundary: hold on a boundary vertex (whole-loop

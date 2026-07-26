@@ -77,6 +77,10 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     case pinFlip
     case clearPins
     case clearLoopTags
+    // add-weave-region-selection: Weave Fill arms the fill tool; clearWeaveFill drops
+    // a pending proposal and its painted extent (journals nothing either way).
+    case weaveFill
+    case clearWeaveFill
     // Task 4.4 symmetry (spec: retopology-tools / "Multi-axis and radial
     // symmetry"). All three are immediate commands; the axes/origin/radial
     // count they act under live in the viewport settings popover.
@@ -142,6 +146,7 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
         case .drawStrip: .drawStrip
         case .transformVertices: .transformVertices
         case .pinFlip: .pinFlip
+        case .weaveFill: .weaveFill
         default: nil
         }
     }

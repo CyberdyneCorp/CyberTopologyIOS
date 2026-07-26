@@ -134,7 +134,7 @@ extension MeshEditController {
 
     /// Sampled surface hits of a stroke (bounded stride so long strokes
     /// stay cheap).
-    private func strokeSurfaceHits(
+    func strokeSurfaceHits(
         samples points: [SIMD2<Float>], context: Context, limit: Int = 48
     ) -> [SIMD3<Float>] {
         guard !points.isEmpty else { return [] }

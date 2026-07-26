@@ -360,6 +360,39 @@ extension EditorAction {
                     "circle.grid.2x2.fill",
                 ]
             )
+        case .weaveFill:
+            GalleryEntry(
+                title: "Weave fill",
+                symbol: "square.grid.3x3.topleft.filled",
+                gesture: "Tool — tap bare surface to fill, or paint how far",
+                notes: "Fills unretopologized Target with quads that meet your "
+                    + "hand-drawn cage EXACTLY: same boundary vertices, no "
+                    + "T-junctions, no seam in the edge flow. TAP just past an "
+                    + "open cage edge to propose the next patch; PAINT across "
+                    + "bare surface to say how far to fill. Quad size is read "
+                    + "off your cage at the seam, so the fill matches the scale "
+                    + "you already set — no density dial. The proposal is a "
+                    + "ghost until you accept it. Not a lasso: enclosing "
+                    + "strokes were too easily read as a quad (see Hide "
+                    + "region), so this is an armed tool and needs no shape "
+                    + "guess. It grows outward from a free cage edge, so bare "
+                    + "surface with no cage nearby cannot be filled this way.",
+                demoFrames: [
+                    "square.grid.3x3.topleft.filled", "square.grid.3x3.fill",
+                    "checkmark.circle",
+                ]
+            )
+        case .clearWeaveFill:
+            GalleryEntry(
+                title: "Clear fill",
+                symbol: "xmark.square.dashed",
+                gesture: "Command — tap",
+                notes: "Drops a pending Weave fill proposal and whatever area "
+                    + "you painted for it. Nothing is committed either way, so "
+                    + "this leaves no undo step — the proposal was never in "
+                    + "the document.",
+                demoFrames: ["xmark.square.dashed", "square.dashed"]
+            )
         case .pinFlip:
             GalleryEntry(
                 title: "Pin flip",

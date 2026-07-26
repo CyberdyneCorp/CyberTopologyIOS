@@ -616,11 +616,16 @@ extension MeshEditToolTests {
     }
 
     /// The visual-verification probes drive REAL journaled strokes for
-    /// every tool (the screenshot hooks' entry point). Guide (add-guide-stroke-
-    /// authoring) is exempt: it captures steering hints, not document edits, so
-    /// it journals nothing and has no screenshot probe.
+    /// every tool (the screenshot hooks' entry point). Two exemptions, both
+    /// because the tool captures an INTENT rather than editing the document:
+    ///
+    /// - Guide (add-guide-stroke-authoring) captures steering hints.
+    /// - Weave Fill (add-weave-region-selection) captures a fill request; the
+    ///   document changes only when the resulting proposal is ACCEPTED.
+    ///   **Re-include it once the probe accepts** — task 3 wires accept, and at
+    ///   that point this exemption becomes a hole rather than a fact.
     @Test func visualVerificationProbesJournalEveryTool() throws {
-        for tool in RetopoTool.allCases where tool != .guide {
+        for tool in RetopoTool.allCases where tool != .guide && tool != .weaveFill {
             let harness = try makeSeededHarness()
             let editor = try #require(harness.coordinator.inputModel.meshEditor)
             #expect(

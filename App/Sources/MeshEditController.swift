@@ -353,6 +353,12 @@ final class MeshEditController {
     /// deltas drive it (routed through the InputArbiter), commit journals
     /// ONCE, cancel discards. See `MeshEditCameraTools.swift`.
     var cameraSession: CameraToolSession?
+    /// Pending Weave Fill request (add-weave-region-selection). NOT document state
+    /// and not persisted — an unexecuted intent, cleared with the proposal it feeds.
+    var weaveFillIntent: WeaveFillIntent?
+    /// Fires whenever the pending request changes, so the shell can re-solve and
+    /// refresh the banner.
+    var onWeaveFillIntentChanged: ((WeaveFillIntent?) -> Void)?
     /// Sticky Extend Boundary mode across selections (banner picker).
     var preferredExtendBoundaryMode: ExtendBoundaryPlan.Mode = .single
     /// Session banner sink (nil = no session): the input model publishes
