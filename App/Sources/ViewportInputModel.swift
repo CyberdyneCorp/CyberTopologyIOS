@@ -203,6 +203,11 @@ final class ViewportInputModel {
     /// True while a solve is running (off the main thread). Observed: the
     /// viewport shows a progress indicator instead of freezing.
     var autoRetopoSolving = false
+    /// Short, honest summary of what a region proposal reported — irregular
+    /// interface vertices, seam triangles. nil when there is nothing to say.
+    /// An irregular interface is NOT a failure (see SolverGhost); it is shown so
+    /// the user can decide before accepting.
+    var autoRetopoNotice: String?
     /// Wired by the coordinator to its Auto-Retopo session (which owns the
     /// Target mesh, the renderer ghost, and the journal sink). The begin
     /// handler is async (the solve runs off-main) and takes the chosen density.

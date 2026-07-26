@@ -23,6 +23,8 @@ extension MetalViewport.Coordinator {
     @discardableResult
     func beginAutoRetopo(
         parameters: SolverParameters = SolverParameters(),
+        region: SolveRegion = .wholeMesh,
+        constraints: WeaveConstraints = WeaveConstraints(),
         onProgress: ((SolverProgress) -> Void)? = nil,
         isCancelled: () -> Bool = { false }
     ) -> Bool {
@@ -30,7 +32,7 @@ extension MetalViewport.Coordinator {
         let ghost: SolverGhost?
         do {
             ghost = try weaveSolver.solve(
-                source: target, region: .wholeMesh, constraints: WeaveConstraints(),
+                source: target, region: region, constraints: constraints,
                 params: parameters, onProgress: onProgress, isCancelled: isCancelled
             )
         } catch {
@@ -50,7 +52,10 @@ extension MetalViewport.Coordinator {
     /// the `WeaveSolving` seam is preserved. Sets `autoRetopoSolving` for the
     /// duration so the viewport can show progress.
     @discardableResult
-    func beginAutoRetopoAsync(parameters: SolverParameters = .autoRetopoDefault) async -> Bool {
+    func beginAutoRetopoAsync(
+        parameters: SolverParameters = .autoRetopoDefault,
+        region: SolveRegion = .wholeMesh
+    ) async -> Bool {
         guard let target = currentTargetMesh() else { return false }
         let targetData: Data
         do { targetData = try target.payloadData() } catch { return false }
@@ -65,10 +70,11 @@ extension MetalViewport.Coordinator {
         inputModel.autoRetopoSolving = true
         defer { inputModel.autoRetopoSolving = false }
 
-        let ghostData = await Self.solveOffMain(
+        let solved = await Self.solveOffMain(
             targetData: targetData, params: parameters, constraints: constraints,
-            solver: weaveSolver
+            region: region, solver: weaveSolver
         )
+        let ghostData = solved?.payload
         guard let ghostData else {
             autoRetopoGhost = nil
             syncAutoRetopoGhostState()
@@ -80,30 +86,73 @@ extension MetalViewport.Coordinator {
             syncAutoRetopoGhostState()
             return false
         }
-        autoRetopoGhost = SolverGhost(mesh: ghostMesh, addedFaces: ghostMesh.liveFaceIDs())
+        autoRetopoGhost = SolverGhost(
+            mesh: ghostMesh,
+            addedFaces: ghostMesh.liveFaceIDs(),
+            interfaceVertices: solved?.interfaceVertices ?? [],
+            interfaceIrregular: solved?.interfaceIrregular ?? [],
+            residualTriangles: solved?.residualTriangles ?? 0,
+            interiorIndexBudget: solved?.interiorIndexBudget ?? 0
+        )
+        // 13.3: surface what the solve reported rather than swallowing it. An
+        // irregular interface is NOT a failure — the guarantee is exact landing,
+        // and regularity is measured, not enforced (task 5.3a) — but the user
+        // should be told before they accept a patch with a pole welded into it.
         syncAutoRetopoGhostState()
+        inputModel.autoRetopoNotice = Self.notice(for: autoRetopoGhost)
         return true
+    }
+
+    /// A short, honest summary of a region proposal, or nil when there is
+    /// nothing worth saying.
+    static func notice(for ghost: SolverGhost?) -> String? {
+        guard let ghost, !ghost.interfaceVertices.isEmpty else { return nil }
+        var parts: [String] = []
+        if !ghost.interfaceIrregular.isEmpty {
+            parts.append("\(ghost.interfaceIrregular.count) irregular interface "
+                + (ghost.interfaceIrregular.count == 1 ? "vertex" : "vertices"))
+        }
+        if ghost.residualTriangles > 0 {
+            parts.append("\(ghost.residualTriangles) triangles at the seam")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 
     /// Runs the solve OFF the main actor. Data in, Data out — the engine meshes
     /// are created and destroyed inside this call, so nothing non-`Sendable`
     /// crosses the boundary.
+    /// The ghost's payload plus the region report, which cannot ride the mesh
+    /// across the boundary because the mesh itself is not `Sendable`.
+    struct SolvedGhost: Sendable {
+        var payload: Data
+        var interfaceVertices: [UInt32] = []
+        var interfaceIrregular: [UInt32] = []
+        var residualTriangles: Int = 0
+        var interiorIndexBudget: Int = 0
+    }
+
     private nonisolated static func solveOffMain(
         targetData: Data, params: SolverParameters, constraints: WeaveConstraints,
-        solver: WeaveSolving
-    ) async -> Data? {
-        await Task.detached(priority: .userInitiated) { () -> Data? in
+        region: SolveRegion, solver: WeaveSolving
+    ) async -> SolvedGhost? {
+        await Task.detached(priority: .userInitiated) { () -> SolvedGhost? in
             let source: Mesh
             do { source = try Mesh(payloadData: targetData) } catch { return nil }
             let ghost: SolverGhost?
             do {
                 ghost = try solver.solve(
-                    source: source, region: .wholeMesh, constraints: constraints,
+                    source: source, region: region, constraints: constraints,
                     params: params, onProgress: nil, isCancelled: { false }
                 )
             } catch { return nil }
-            guard let ghost else { return nil }
-            return try? ghost.mesh.payloadData()
+            guard let ghost, let payload = try? ghost.mesh.payloadData() else { return nil }
+            return SolvedGhost(
+                payload: payload,
+                interfaceVertices: ghost.interfaceVertices,
+                interfaceIrregular: ghost.interfaceIrregular,
+                residualTriangles: ghost.residualTriangles,
+                interiorIndexBudget: ghost.interiorIndexBudget
+            )
         }.value
     }
 
@@ -111,6 +160,14 @@ extension MetalViewport.Coordinator {
     /// (create-or-replace, so a single undo restores the prior document
     /// exactly). No-op returning false when nothing is pending or the command
     /// cannot be built. Clears the pending ghost.
+    ///
+    /// **A REGION accept still replaces the whole EditMesh**, exactly as a
+    /// whole-mesh accept does, so every face id changes and any face-keyed
+    /// annotation (hidden faces, tagged edges) is invalidated. That is far more
+    /// surprising for an edit the user perceives as touching sixteen faces than
+    /// for one they know rebuilt the model. Making a region accept a local
+    /// splice is a separate change; until then this is a known sharp edge and
+    /// is deliberately not papered over here (task 13.2).
     @discardableResult
     func acceptAutoRetopo() -> Bool {
         guard let ghost = autoRetopoGhost, let bundle = bundleProvider?() else { return false }
@@ -135,6 +192,11 @@ extension MetalViewport.Coordinator {
     /// renderer headless (tests have no renderer); the state still updates.
     private func syncAutoRetopoGhostState() {
         inputModel.autoRetopoGhostPending = autoRetopoGhost != nil
+        // The notice belongs to the pending ghost. Clearing it HERE rather than
+        // at each call site means every teardown path — accept, discard,
+        // replace, a failed solve — drops it together with the ghost, so a
+        // stale warning cannot outlive the proposal it described.
+        if autoRetopoGhost == nil { inputModel.autoRetopoNotice = nil }
         guard let renderer else { return }
         if let ghost = autoRetopoGhost {
             renderer.ghostStyle = .weaveProposal(sceneRadius: renderer.bounds.radius)

@@ -185,3 +185,98 @@ struct RegionSolveOpsTests {
         #expect(solved.regionReport() != nil)
     }
 }
+
+/// The region backend behind the `WeaveSolving` seam (task 12).
+@Suite("Region Weave solver backend")
+struct RegionWeaveSolverTests {
+    private func grid66() throws -> Mesh {
+        var obj = ""
+        for i in 0...6 { for j in 0...6 { obj += "v \(i) \(j) 0\n" } }
+        for i in 0..<6 {
+            for j in 0..<6 {
+                let v = { (a: Int, b: Int) in a * 7 + b + 1 }
+                obj += "f \(v(i, j)) \(v(i + 1, j)) \(v(i + 1, j + 1)) \(v(i, j + 1))\n"
+            }
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rws-\(UUID().uuidString).obj")
+        try obj.write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        return try Mesh.loadOBJ(at: url)
+    }
+
+    private var centreBlock: [UInt32] {
+        var faces: [UInt32] = []
+        for i in 1...4 { for j in 1...4 { faces.append(UInt32(i * 6 + j)) } }
+        return faces
+    }
+
+    @Test("EngineRemeshSolver still rejects a sub-region — the split is deliberate")
+    func engineBackendStillRefusesRegions() throws {
+        let source = try grid66()
+        #expect(throws: CyberKitError.self) {
+            _ = try EngineRemeshSolver().solve(
+                source: source, region: .faces(centreBlock), constraints: WeaveConstraints(),
+                params: SolverParameters(), onProgress: nil, isCancelled: { false }
+            )
+        }
+    }
+
+    @Test("CompositeWeaveSolver routes each region to its backend")
+    func compositeRoutes() throws {
+        let solver = CompositeWeaveSolver()
+        let source = try grid66()
+
+        let whole = try solver.solve(
+            source: source, region: .wholeMesh, constraints: WeaveConstraints(),
+            params: .coarse, onProgress: nil, isCancelled: { false }
+        )
+        #expect(whole != nil)
+        #expect(whole?.interfaceVertices.isEmpty == true)  // no region report
+
+        let regional = try #require(try solver.solve(
+            source: try grid66(), region: .faces(centreBlock), constraints: WeaveConstraints(),
+            params: SolverParameters(), onProgress: nil, isCancelled: { false }
+        ))
+        #expect(regional.interfaceVertices.count == 16)
+    }
+
+    @Test("Frozen faces are removed from the region, not merely passed along")
+    func frozenFacesAreExcluded() throws {
+        // Freeze the whole region: nothing is left to solve, and that must be a
+        // clear refusal rather than a silent whole-region solve.
+        let source = try grid66()
+        #expect(throws: CyberKitError.self) {
+            _ = try RegionWeaveSolver().solve(
+                source: source, region: .faces(centreBlock),
+                constraints: WeaveConstraints(frozenFaces: centreBlock),
+                params: SolverParameters(), onProgress: nil, isCancelled: { false }
+            )
+        }
+    }
+
+    @Test("Density is derived from the prescribed boundary, not the global default")
+    func prescribedDensity() throws {
+        let source = try grid66()
+        // The grid's edges are 1 unit; the 4x4 region is 16 square units, so a
+        // patch matching the cage spacing is ~16 quads — not the 50 000 the
+        // whole-mesh default would ask for.
+        let budget = try #require(
+            RegionWeaveSolver.prescribedQuadBudget(source: source, regionFaces: centreBlock)
+        )
+        #expect(budget == 16)
+    }
+
+    @Test("A region ghost reports its interface and does not fail on irregularity")
+    func ghostCarriesTheReport() throws {
+        let ghost = try #require(try RegionWeaveSolver().solve(
+            source: try grid66(), region: .faces(centreBlock), constraints: WeaveConstraints(),
+            params: SolverParameters(), onProgress: nil, isCancelled: { false }
+        ))
+        #expect(ghost.interfaceVertices.count == 16)
+        #expect(ghost.addedFaces.count > 0)
+        // Irregularity is reported, and reporting it did not prevent a ghost.
+        let interface = Set(ghost.interfaceVertices)
+        for id in ghost.interfaceIrregular { #expect(interface.contains(id)) }
+    }
+}

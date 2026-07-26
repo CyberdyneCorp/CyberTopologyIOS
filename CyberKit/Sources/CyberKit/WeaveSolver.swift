@@ -11,8 +11,18 @@ import simd
 /// same `WeaveSolving` protocol, so nothing above the protocol changes when it
 /// arrives. See `openspec/changes/add-weave-solver-pipeline`.
 
-/// The region a solve operates over. A whole-mesh solve is the maximal region
-/// ("solve all"); a face sub-region is reserved for the constraint-aware solver.
+/// The region a solve operates over.
+///
+/// `.wholeMesh` is the maximal region ("solve all"), handled by
+/// `EngineRemeshSolver`. `.faces` is a connected sub-region rewritten IN PLACE
+/// against frozen surrounding topology, handled by `RegionWeaveSolver`; route
+/// between them with `CompositeWeaveSolver`.
+///
+/// **`.faces(everyLiveFace)` is NOT equivalent to `.wholeMesh`.** The region
+/// path preserves element ids and deliberately skips triangulate / weld /
+/// orient / islands / hole-fill / pure-quads, so it is a different operation,
+/// not an optimisation of the same one. The engine REFUSES that case rather
+/// than aliasing it — treating them as interchangeable would be a lie.
 public enum SolveRegion: Equatable, Sendable {
     case wholeMesh
     case faces([UInt32])
@@ -57,13 +67,19 @@ public struct WeaveConstraints: Equatable, Codable, Sendable {
     public var density: DensityField?
     public var symmetry: SymmetrySettings?
 
+    /// Per-vertex prescribed TOTAL valence on a region solve's interface, so a
+    /// deliberately authored pole is not reported as irregular. Region solves
+    /// only; ignored by the whole-mesh backend.
+    public var interfaceValence: [UInt32: Int]
+
     public init(
         frozenFaces: [UInt32] = [],
         taggedLoops: [TaggedLoop] = [],
         guideStrokes: [GuideStroke] = [],
         pinnedVertices: [UInt32] = [],
         density: DensityField? = nil,
-        symmetry: SymmetrySettings? = nil
+        symmetry: SymmetrySettings? = nil,
+        interfaceValence: [UInt32: Int] = [:]
     ) {
         self.frozenFaces = frozenFaces
         self.taggedLoops = taggedLoops
@@ -71,6 +87,7 @@ public struct WeaveConstraints: Equatable, Codable, Sendable {
         self.pinnedVertices = pinnedVertices
         self.density = density
         self.symmetry = symmetry
+        self.interfaceValence = interfaceValence
     }
 }
 
@@ -126,9 +143,39 @@ public struct SolverProgress: Equatable, Sendable {
 public struct SolverGhost {
     public let mesh: Mesh
     public let addedFaces: [UInt32]
-    public init(mesh: Mesh, addedFaces: [UInt32]) {
+
+    /// Region solves only; empty for `.wholeMesh`. Interface vertices are
+    /// guaranteed to be present in `mesh` under the same ids at bitwise
+    /// identical positions — the engine refuses to publish a solve otherwise.
+    public let interfaceVertices: [UInt32]
+
+    /// Interface vertices whose valence differs from the surrounding cage's
+    /// prescription. **Not an error, and not guaranteed empty.** Forcing it to
+    /// zero is a coupled degree-constrained matching over the interface ring
+    /// that no local pass solves; it is tracked as task 5.3a. Surface it, do
+    /// not assert on it.
+    public let interfaceIrregular: [UInt32]
+
+    /// Non-quads touching the interface.
+    public let residualTriangles: Int
+
+    /// Predicted interior singularity budget implied by the boundary charge.
+    public let interiorIndexBudget: Int
+
+    public init(
+        mesh: Mesh,
+        addedFaces: [UInt32],
+        interfaceVertices: [UInt32] = [],
+        interfaceIrregular: [UInt32] = [],
+        residualTriangles: Int = 0,
+        interiorIndexBudget: Int = 0
+    ) {
         self.mesh = mesh
         self.addedFaces = addedFaces
+        self.interfaceVertices = interfaceVertices
+        self.interfaceIrregular = interfaceIrregular
+        self.residualTriangles = residualTriangles
+        self.interiorIndexBudget = interiorIndexBudget
     }
 }
 

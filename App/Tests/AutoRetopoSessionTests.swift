@@ -188,3 +188,53 @@ struct AutoRetopoSessionTests {
         return url
     }
 }
+
+/// The region notice on the Auto-Retopo banner (task 13.3), and its lifetime.
+@MainActor
+@Suite("Auto-Retopo region notice")
+struct AutoRetopoRegionNoticeTests {
+    private func ghost(irregular: Int, triangles: Int) throws -> SolverGhost {
+        // A ghost's mesh content is irrelevant here — only the report is.
+        let mesh = try Mesh()
+        return SolverGhost(
+            mesh: mesh,
+            addedFaces: [],
+            interfaceVertices: Array(0..<16),
+            interfaceIrregular: Array(0..<UInt32(irregular)),
+            residualTriangles: triangles
+        )
+    }
+
+    @Test("A clean region proposal says nothing")
+    func silentWhenClean() throws {
+        let notice = MetalViewport.Coordinator.notice(
+            for: try ghost(irregular: 0, triangles: 0)
+        )
+        #expect(notice == nil)
+    }
+
+    @Test("A whole-mesh proposal has no interface, so no notice")
+    func silentForWholeMesh() throws {
+        let mesh = try Mesh()
+        let wholeMesh = SolverGhost(mesh: mesh, addedFaces: [])
+        #expect(MetalViewport.Coordinator.notice(for: wholeMesh) == nil)
+    }
+
+    @Test("Irregular interface vertices and seam triangles are both surfaced")
+    func reportsBoth() throws {
+        let notice = try #require(
+            MetalViewport.Coordinator.notice(for: try ghost(irregular: 3, triangles: 2))
+        )
+        #expect(notice.contains("3 irregular interface vertices"))
+        #expect(notice.contains("2 triangles at the seam"))
+    }
+
+    @Test("One irregular vertex reads as singular, not '1 vertices'")
+    func singularWording() throws {
+        let notice = try #require(
+            MetalViewport.Coordinator.notice(for: try ghost(irregular: 1, triangles: 0))
+        )
+        #expect(notice.contains("1 irregular interface vertex"))
+        #expect(!notice.contains("vertices"))
+    }
+}

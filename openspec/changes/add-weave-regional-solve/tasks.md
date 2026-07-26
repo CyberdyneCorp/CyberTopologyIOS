@@ -349,31 +349,47 @@ unachievable by any local pass). Refusing on irregularity rejected every fixture
 
 ## 12. CyberKit: the region backend as a second conformance
 
-- [ ] 12.1 `public struct RegionWeaveSolver: WeaveSolving` per design Stage 0, plus a
+- [x] 12.1 `public struct RegionWeaveSolver: WeaveSolving` per design Stage 0, plus a
       dispatching `CompositeWeaveSolver` routing `.wholeMesh` → `EngineRemeshSolver` and
       `.faces` → `RegionWeaveSolver`. **Do NOT delete the guard at `WeaveSolver.swift:171`** —
       the protocol doc at `:133-142` already promises exactly this swap, and keeping it makes a
       whole-mesh regression structurally impossible.
-- [ ] 12.2 Extend `SolverGhost` (`:126-133`) additively with `interfaceVertices: [UInt32]`,
+- [x] 12.2 `SolverGhost` gained `interfaceVertices`, `interfaceIrregular`, `residualTriangles`
+      and `interiorIndexBudget`, all defaulted. `interfaceIrregular` is beyond the plan and is
+      the important one: the plan predated the rescope and had no field for the thing the solve
+      now measures rather than guarantees. ORIGINAL: (`:126-133`) additively with `interfaceVertices: [UInt32]`,
       `interiorIndexBudget: Int`, `residualTriangles: Int`, all defaulted.
-- [ ] 12.3 Implement the `frozenFaces` subtraction (where `WeaveConstraints.frozenFaces` stops
+- [x] 12.3 Frozen faces are subtracted from the region (freezing all of it is a clear refusal,
+      not a silent whole-region solve), and `prescribedQuadBudget` derives the quad count from the
+      region's area and its boundary spacing — 16 on the 6×6 fixture, versus the 50 000 the
+      whole-mesh default would ask for. Made `public`: 5.5a needs the same number to preview a
+      region's density. Also added `WeaveConstraints.interfaceValence` for the spec's
+      caller-overridable prescription, which had no home. ORIGINAL: (where `WeaveConstraints.frozenFaces` stops
       being stored-and-never-read) and the prescribed-spacing `targetQuads` derivation —
       `targetQuads ≈ regionArea / meanPrescribedBoundaryEdgeLength²`. Without it the region
       inherits the whole-mesh default of 50 000 (`remesh_params.hpp:14`) and density fights the
       pinned interface. This is also most of 5.5a's implicit sizing.
-- [ ] 12.4 Document in the `SolveRegion` doc comment that `.faces(everyLiveFace)` is NOT
+- [x] 12.4 Documented in the `SolveRegion` doc comment that `.faces(everyLiveFace)` is NOT
       equivalent to `.wholeMesh` (the region path skips weld/orient/islands/pureQuads and
       preserves ids). Aliasing them silently would be a lie.
 
 ## 13. App wiring
 
-- [ ] 13.1 `AutoRetopoSession.swift` — add `region:` (default `.wholeMesh`) to
+- [x] 13.1 `beginAutoRetopo` and `beginAutoRetopoAsync` gained `region:` (default `.wholeMesh`),
+      threaded through `solveOffMain`. The report cannot ride the mesh across the actor boundary
+      (meshes are not `Sendable`), so `solveOffMain` returns a `SolvedGhost` carrying the payload
+      plus the report fields. ORIGINAL: add `region:` (default `.wholeMesh`) to
       `beginAutoRetopo`, thread through `solveOffMain` (`:89-108`).
-- [ ] 13.2 Leave `acceptAutoRetopo` (`:108-121`) unchanged, but comment that a region accept
+- [x] 13.2 Left `acceptAutoRetopo` (`:108-121`) unchanged, but comment that a region accept
       still replaces the whole EditMesh and therefore invalidates every face id and any
       face-keyed annotation — the same as a whole-mesh accept, but far more surprising for an
       edit the user perceives as local.
-- [ ] 13.3 Surface `residualTriangles` and a rejected-solve message in the Auto-Retopo banner
+- [x] 13.3 `ViewportInputModel.autoRetopoNotice` + an orange line on the accept/discard banner,
+      surfacing irregular interface vertices and seam triangles. **Its lifetime is tied to the
+      ghost** — cleared inside `syncAutoRetopoGhostState`, so accept, discard, replace and a
+      failed solve all drop it together with the proposal it described; clearing at each call
+      site would have left a stale warning on screen (the failure mode of commit 65866a8).
+      ORIGINAL: and a rejected-solve message in the Auto-Retopo banner
       rather than swallowing them.
 
 ## 14. Tests: the 5.3 proof (CyberKit, simulator + device)
@@ -440,6 +456,7 @@ provably cannot distinguish "never touched the vertex" from "snapped to within 1
       no golden regenerated — that is the CyberKit half of 16.1's null-object evidence. Engine +
       CyberKit link confirmed (xcframework rebuilt with `--sim-only`, all 8 new symbols exported).
       DEVICE run still outstanding, and the device slice of the xcframework has not been built.
+      After tasks 12-13: **780 tests in 75 suites green**, no golden regenerated.
 - [ ] 17.3 Engine C++ suite green under a host configure with `-DCYBER_BUILD_TESTS=ON`.
 - [ ] 17.4 Update `openspec/changes/add-cybertopology-app/tasks.md`: mark 5.1a's region-scoped
       clause done; mark 5.3 done ONLY for exact boundary landing, stating in the entry that the
