@@ -406,6 +406,18 @@ extension EditorAction {
                     + "protecting. Painting the same faces again thaws them.",
                 demoFrames: ["snowflake", "square.grid.2x2"]
             )
+        case .toggleLoopInfoPin:
+            GalleryEntry(
+                title: "Pin loop info",
+                symbol: "pin.circle",
+                gesture: "Command",
+                notes: "Freezes the Loop Info chip on its current reading so you can "
+                    + "study it with both hands on the model. Normally the chip "
+                    + "follows the Pencil and vanishes the moment you lift it, which "
+                    + "makes the numbers impossible to compare. Run it again to "
+                    + "unpin and go back to following hover.",
+                demoFrames: ["pin.circle", "pin.slash"]
+            )
         case .clearFrozen:
             GalleryEntry(
                 title: "Clear frozen",

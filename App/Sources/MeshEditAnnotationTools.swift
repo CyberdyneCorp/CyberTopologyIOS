@@ -93,18 +93,50 @@ struct LoopInfoChipState: Equatable {
 
     private(set) var info: Info?
 
+    /// STICKY mode (task 4.3a): the chip normally follows hover, which means it
+    /// cannot be READ while both hands are on the model — the moment the pen
+    /// leaves, the numbers go. Pinning freezes the current reading so it can be
+    /// consulted, compared, or read aloud, and it survives hover ending.
+    ///
+    /// Deliberately not a separate cached copy: `info` stays the single source
+    /// of what is on screen, and `isPinned` only changes who is allowed to
+    /// replace it. A second stored Info would let the pinned chip and the live
+    /// chip disagree about what the user is looking at.
+    private(set) var isPinned = false
+
     /// Publishes `next`, returning true when the visible chip CHANGED (the
     /// caller only re-renders on change — hovering along one loop keeps
     /// the same chip rather than restarting it every sample).
+    ///
+    /// A PINNED chip ignores hover updates, including nil. That is the whole
+    /// point: the reading holds still while the hands move.
     mutating func show(_ next: Info?) -> Bool {
+        guard !isPinned else { return false }
         guard next != info else { return false }
         info = next
         return true
     }
 
     /// Hover ended / a stroke began: the chip must never outlive the
-    /// gesture that produced it.
+    /// gesture that produced it — unless the user pinned it.
     mutating func clear() -> Bool { show(nil) }
+
+    /// Toggles sticky mode. Pinning with nothing shown is a no-op rather than
+    /// pinning an empty chip, which would strand a blank panel on screen with no
+    /// obvious way to read or dismiss it.
+    ///
+    /// Unpinning also CLEARS, because the reading it was holding belongs to a
+    /// hover that has long since ended; leaving it would show a measurement of
+    /// whatever the pen last touched, indistinguishable from a live one.
+    mutating func togglePinned() -> Bool {
+        if isPinned {
+            isPinned = false
+            return clear()
+        }
+        guard info != nil else { return false }
+        isPinned = true
+        return true
+    }
 }
 
 extension MeshEditController {

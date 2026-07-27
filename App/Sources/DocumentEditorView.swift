@@ -580,7 +580,7 @@ struct DocumentEditorView: View {
             VStack(alignment: .trailing, spacing: 8) {
                 LoopTagPaletteView(model: inputModel)
                 if let info = inputModel.loopInfo {
-                    LoopInfoChipView(info: info)
+                    LoopInfoChipView(info: info, isPinned: inputModel.loopInfoPinned)
                 }
             }
             .padding(.top, 8)

@@ -313,14 +313,47 @@ struct AnnotationRenderState: Equatable {
         edgeEndpoints: (UInt32) -> (UInt32, UInt32)?,
         vertexPosition: (UInt32) -> SIMD3<Float>?,
         faceVertices: (UInt32) -> [UInt32] = { _ in [] },
+        liveFaces: () -> [UInt32] = { [] },
         color: (UInt8) -> SIMD3<Float> = LoopTagPalette.color
     ) -> AnnotationRenderState {
         var state = AnnotationRenderState()
 
+        // HIDDEN-FACE FILTER (task 4.3a). The engine's render cache filters hidden faces
+        // for the mesh itself, but this pass is standalone world-space geometry and never
+        // consulted it — so a tag or pin on a face the visibility lasso had hidden went on
+        // drawing, floating over whatever was behind it.
+        //
+        // Visibility is derived from the surviving faces rather than tested per element,
+        // because the annotations carry no element->face adjacency: an element is visible
+        // exactly when some VISIBLE face still uses it. Undirected vertex pairs are packed
+        // into a UInt64 the same way `prescribedQuadBudget` does, so an edge is matched by
+        // its endpoints without needing an edge->face map.
+        var visibleVertices: Set<UInt32> = []
+        var visiblePairs: Set<UInt64> = []
+        let hidden = Set(annotations.hiddenFaces)
+        if !hidden.isEmpty {
+            for face in liveFaces() where !hidden.contains(face) {
+                let ring = faceVertices(face)
+                guard ring.count >= 3 else { continue }
+                visibleVertices.formUnion(ring)
+                for index in ring.indices {
+                    let a = ring[index], b = ring[(index + 1) % ring.count]
+                    visiblePairs.insert((UInt64(min(a, b)) << 32) | UInt64(max(a, b)))
+                }
+            }
+        }
+        // No hidden faces means no filtering at all, so the common case pays nothing and
+        // stays byte-identical to before.
+        let filtering = !hidden.isEmpty
+        func vertexVisible(_ v: UInt32) -> Bool { !filtering || visibleVertices.contains(v) }
+        func edgeVisible(_ a: UInt32, _ b: UInt32) -> Bool {
+            !filtering || visiblePairs.contains((UInt64(min(a, b)) << 32) | UInt64(max(a, b)))
+        }
+
         // Frozen faces as closed perimeters. A face whose ring has gone stale
         // renders as nothing, exactly like a stale pin or tag.
         var frozen: [Float] = []
-        for face in annotations.frozenFaces {
+        for face in annotations.frozenFaces where !hidden.contains(face) {
             let ring = faceVertices(face)
             guard ring.count >= 3 else { continue }
             let positions = ring.compactMap(vertexPosition)
@@ -335,7 +368,7 @@ struct AnnotationRenderState: Equatable {
         if !frozen.isEmpty {
             state.frozenOutlines = [TagGroup(color: Self.frozenColor, segments: frozen)]
         }
-        for vertex in annotations.pinnedVertices {
+        for vertex in annotations.pinnedVertices where vertexVisible(vertex) {
             guard let position = vertexPosition(vertex) else { continue }
             state.pinPoints.append(contentsOf: [position.x, position.y, position.z])
         }
@@ -345,6 +378,7 @@ struct AnnotationRenderState: Equatable {
             for edge in groups[index] ?? [] {
                 guard
                     let (a, b) = edgeEndpoints(edge),
+                    edgeVisible(a, b),
                     let start = vertexPosition(a), let end = vertexPosition(b)
                 else { continue }
                 segments.append(contentsOf: [start.x, start.y, start.z])

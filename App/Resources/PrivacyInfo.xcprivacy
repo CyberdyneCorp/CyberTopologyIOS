@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Privacy manifest (task 9.3; spec: monetization / privacy audit).
+
+  The product position is "Data Not Collected" on the App Store label, and this file
+  is the machine-readable half of that claim. It is deliberately EMPTY of collected
+  data types rather than merely conservative: there is no analytics SDK, no crash
+  reporter, and no networking in the app at all — App/Sources and CyberKit/Sources
+  contain no URLSession, Network.framework or socket use, and the engine's `net`
+  module is compiled OFF for the shipped iOS slices (scripts/build_engine.sh passes
+  -DCYBER_BUILD_NET=OFF; it is ON only for host tests). No `cyber_net_*` entry point
+  is exposed through the C API.
+
+  `PrivacyAuditTests` asserts these properties against the built app rather than
+  trusting this file, because a manifest is a claim and a claim with no test behind it
+  is how "Data Not Collected" quietly becomes false.
+
+  NSPrivacyAccessedAPITypes is empty: the app reads and writes only documents the user
+  chose through the system document browser, which is the user-selected-file exemption
+  and requires no declared reason. If a future change adds file-timestamp, disk-space,
+  active-keyboard or user-defaults access for anything beyond that, the reason codes
+  belong here and the audit test must be extended to match.
+-->
+<plist version="1.0">
+<dict>
+    <key>NSPrivacyTracking</key>
+    <false/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array/>
+</dict>
+</plist>

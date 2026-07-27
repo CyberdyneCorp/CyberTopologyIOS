@@ -33,6 +33,11 @@ targets:
     sources:
       - App/Sources
       - App/Resources
+      # Privacy manifest (task 9.3): must be IN the bundle, not merely in the repo, or
+      # the store label has nothing backing it. PrivacyAuditTests reads it from the
+      # built app bundle for exactly that reason.
+      - path: App/Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
     dependencies:
       - package: CyberKit
         product: CyberKit

@@ -401,9 +401,30 @@ final class ViewportInputModel {
     /// Loop Info chip content (nil = hidden). Published by the hover
     /// controller when the Pencil holds over an interior edge.
     private(set) var loopInfo: LoopInfoChipState.Info?
+    /// True while the chip is frozen on one reading (task 4.3a). Drives the pin glyph,
+    /// so a chip that has stopped updating LOOKS stopped rather than looking broken.
+    private(set) var loopInfoPinned = false
 
     func setLoopInfo(_ info: LoopInfoChipState.Info?) {
+        // A pinned chip ignores hover, matching `LoopInfoChipState.show`. Enforced here
+        // too because the hover controller publishes straight into the model, so trusting
+        // one side alone would let the two disagree about what is on screen.
+        guard !loopInfoPinned else { return }
         loopInfo = info
+    }
+
+    /// Freezes or releases the chip. Returns whether anything changed, so a pin attempt
+    /// with nothing shown reports honestly instead of silently arming an empty chip.
+    @discardableResult
+    func toggleLoopInfoPinned() -> Bool {
+        if loopInfoPinned {
+            loopInfoPinned = false
+            loopInfo = nil  // the held reading belongs to a hover that ended long ago
+            return true
+        }
+        guard loopInfo != nil else { return false }
+        loopInfoPinned = true
+        return true
     }
 
     /// Runs an immediate annotation command (the en-masse clears). Returns
@@ -414,6 +435,8 @@ final class ViewportInputModel {
         switch action {
         case .clearPins: return meshEditor?.clearAllPins() ?? false
         case .clearFrozen: return meshEditor?.clearAllFrozen() ?? false
+        // Not a document edit and nothing to journal: the chip is view state.
+        case .toggleLoopInfoPin: return toggleLoopInfoPinned()
         case .clearLoopTags: return meshEditor?.clearAllLoopTags() ?? false
         // Task 4.4: symmetry commands. The toggle journals a
         // `setSymmetry`; the two bakes journal one `meshEdit` each.

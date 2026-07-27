@@ -51,6 +51,9 @@ struct LoopTagPaletteView: View {
 /// reports the engine's measurements for that loop.
 struct LoopInfoChipView: View {
     let info: LoopInfoChipState.Info
+    /// Task 4.3a: shown pinned, so a chip that has deliberately stopped following the
+    /// Pencil is distinguishable from one that has stopped working.
+    var isPinned: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -62,6 +65,13 @@ struct LoopInfoChipView: View {
                 }
                 Text("Loop")
                     .font(.caption.weight(.semibold))
+                if isPinned {
+                    Image(systemName: "pin.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.tint)
+                        .accessibilityLabel("Pinned")
+                        .accessibilityIdentifier("loop-info-pinned")
+                }
             }
             Text(info.countsLine)
                 .accessibilityIdentifier("loop-info-counts")

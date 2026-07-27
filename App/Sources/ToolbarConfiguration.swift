@@ -81,6 +81,11 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     // immediate command, also hosted by the batch panel beside clearPins.
     case freezeFlip
     case clearFrozen
+    /// Task 4.3a: freezes the Loop Info chip so it can be READ while both hands are
+    /// on the model. Reached through the gallery rather than by tapping the chip,
+    /// because the chip is deliberately `allowsHitTesting(false)` — an inspector must
+    /// never intercept the next stroke, and a hit-testable corner would.
+    case toggleLoopInfoPin
     // add-weave-region-selection: Weave Fill arms the fill tool; clearWeaveFill drops
     // a pending proposal and its painted extent (journals nothing either way).
     case weaveFill
@@ -128,8 +133,8 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     /// the panel whose commands do the journaling.
     var isImmediateCommand: Bool {
         switch self {
-        case .clearPins, .clearLoopTags, .clearFrozen, .toggleSymmetry, .applySymmetry,
-            .resymmetrize, .toggleAutoRelax, .batchCommands:
+        case .clearPins, .clearLoopTags, .clearFrozen, .toggleLoopInfoPin, .toggleSymmetry,
+            .applySymmetry, .resymmetrize, .toggleAutoRelax, .batchCommands:
             true
         default:
             false

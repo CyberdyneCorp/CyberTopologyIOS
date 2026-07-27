@@ -17,6 +17,16 @@ jobs:
       - run: npm install -g @fission-ai/openspec@latest
       - run: openspec validate --all --strict
 
+  network-audit:
+    name: Network audit (privacy, task 9.3)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Source + engine-config checks only. The LINK check needs a built product, so it
+      # runs in the `test` job where one exists; here a skip is reported honestly rather
+      # than counted as a pass.
+      - run: ./Scripts/network_audit.sh
+
   engine-tests:
     name: Engine C++ suite (host)
     runs-on: macos-latest

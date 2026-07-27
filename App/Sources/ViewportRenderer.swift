@@ -564,7 +564,8 @@ final class ViewportRenderer: NSObject {
                 annotations: annotations,
                 edgeEndpoints: { mesh.edgeEndpoints(of: $0) },
                 vertexPosition: { mesh.vertexPosition($0) },
-                faceVertices: { mesh.faceVertices($0) }
+                faceVertices: { mesh.faceVertices($0) },
+                liveFaces: { mesh.liveFaceIDs() }
             )
         } else {
             annotationRenderState = AnnotationRenderState()

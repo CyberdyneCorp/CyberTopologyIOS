@@ -81,6 +81,10 @@ this is the shape of what is left and why.
 | 5.3a | won't fix | interior-only singularities — 4 refuted attempts; **claim reworded instead** |
 | 5.4b | ✅ | region solves project onto the Target — external reference surface |
 | **5.4c** | open | filling bare Target with no open cage edge — needs the carve path |
+
+Outside Phase 5, this pass also closed **4.3a** (annotation remainders: tags/pins now respect
+the visibility lasso, and the Loop Info chip has a sticky mode) and **9.3** (privacy manifest
+plus a network audit wired into CI). **8.1** (outliner) is next.
 | 5.6 | ✅ | ambient assist — satisfied by tap-to-fill; hover half declined |
 | 5.7 | ✅ | benchmark corrections landed; competitor harnesses declined |
 
