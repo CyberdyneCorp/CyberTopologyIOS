@@ -60,10 +60,28 @@ public struct DocumentManifest: Codable, Equatable, Sendable {
         /// pre-3.4 documents and for never-annotated objects.
         public var annotations: MeshAnnotations?
 
+        // MARK: - Outliner state (task 8.1; spec: scene-pipeline)
+
+        /// Object-level visibility. Composes with `annotations.hiddenFaces`: geometry
+        /// draws only when the object is visible AND the face is not hidden, so hiding
+        /// an object dominates without rewriting its face state — showing it again
+        /// restores exactly the lasso visibility the artist had.
+        public var isHidden: Bool
+        /// Edit protection. A locked object may be viewed, measured, soloed and renamed;
+        /// what it may not be is PAYLOAD-CHANGED, and that is refused at the command
+        /// layer rather than by disabling buttons — a refusal survives a programmatic
+        /// caller and a replayed journal, a disabled button does not.
+        public var isLocked: Bool
+        /// Flat group label; nil means ungrouped. Deliberately NOT a scene graph: a
+        /// hierarchy implies inherited transforms, which this document model has no
+        /// notion of and which no Phase 8 task asks for.
+        public var group: String?
+
         public init(
             id: UUID = UUID(), name: String, role: Role, payloadFile: String,
             counts: Counts? = nil, revision: Int? = nil,
-            annotations: MeshAnnotations? = nil
+            annotations: MeshAnnotations? = nil,
+            isHidden: Bool = false, isLocked: Bool = false, group: String? = nil
         ) {
             self.id = id
             self.name = name
@@ -72,6 +90,41 @@ public struct DocumentManifest: Codable, Equatable, Sendable {
             self.counts = counts
             self.revision = revision
             self.annotations = annotations
+            self.isHidden = isHidden
+            self.isLocked = isLocked
+            self.group = group
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, name, role, payloadFile, counts, revision, annotations
+            case isHidden, isLocked, group
+        }
+
+        /// Explicit decode so pre-8.1 documents still open.
+        ///
+        /// The synthesized conformance would be fine for the OPTIONAL properties above —
+        /// Swift decodes those with `decodeIfPresent` already, which is why `counts` and
+        /// `annotations` survived their own schema bumps. It is NOT fine for
+        /// `isHidden`/`isLocked`, which are non-optional `Bool`s and would therefore be
+        /// REQUIRED, making every existing document fail to decode with `keyNotFound`.
+        /// `DensityField` hit exactly this in 5.2b and only a test caught it.
+        ///
+        /// Absent means the pre-8.1 behaviour: visible, unlocked, ungrouped.
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.init(
+                id: try container.decode(UUID.self, forKey: .id),
+                name: try container.decode(String.self, forKey: .name),
+                role: try container.decode(Role.self, forKey: .role),
+                payloadFile: try container.decode(String.self, forKey: .payloadFile),
+                counts: try container.decodeIfPresent(Counts.self, forKey: .counts),
+                revision: try container.decodeIfPresent(Int.self, forKey: .revision),
+                annotations: try container.decodeIfPresent(
+                    MeshAnnotations.self, forKey: .annotations),
+                isHidden: try container.decodeIfPresent(Bool.self, forKey: .isHidden) ?? false,
+                isLocked: try container.decodeIfPresent(Bool.self, forKey: .isLocked) ?? false,
+                group: try container.decodeIfPresent(String.self, forKey: .group)
+            )
         }
     }
 

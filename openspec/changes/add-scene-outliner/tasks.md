@@ -5,25 +5,29 @@ outliner real, and they are testable headless. No engine work at any point.
 
 ## 1. Document model
 
-- [ ] 1.1 `DocumentManifest.Object` gains `isHidden`, `isLocked` and `group` (an optional
-      name). All three OPTIONAL in `Codable` with `decodeIfPresent`, because a synthesized
-      conformance makes them required and breaks every existing document — the exact
-      failure `DensityField` hit in 5.2b, caught only by a test.
-- [ ] 1.2 A `Bool`/`String?` default must also mean the pre-8.1 behaviour: absent ⇒ visible,
+- [x] 1.1 `DocumentManifest.Object` gains `isHidden`, `isLocked` and `group`, with an
+      EXPLICIT `init(from:)` using `decodeIfPresent`. The hazard was real and slightly
+      narrower than written: Swift's synthesized conformance already decodes OPTIONAL
+      properties with `decodeIfPresent` (which is why `counts` and `annotations` survived
+      their own schema bumps), but `isHidden`/`isLocked` are non-optional `Bool`s and would
+      therefore have been REQUIRED, throwing `keyNotFound` on every existing document —
+      exactly `DensityField`'s 5.2b failure. Asserted by a test that decodes a manifest
+      entry containing only the pre-8.1 keys.
+- [x] 1.2 A `Bool`/`String?` default must also mean the pre-8.1 behaviour: absent ⇒ visible,
       unlocked, ungrouped.
-- [ ] 1.3 Tests: round-trip; a document written WITHOUT the new keys still decodes; defaults
+- [x] 1.3 Tests: round-trip; a document written WITHOUT the new keys still decodes; defaults
       are the old behaviour.
 
 ## 2. Journaled commands
 
-- [ ] 2.1 `DocumentCommand.objectStateEdit` carrying before/after so undo is exact, covering
+- [x] 2.1 `DocumentCommand.objectStateEdit` carrying before/after so undo is exact, covering
       visibility, lock, group and name. One case rather than four: they are all the same
       kind of manifest-entry change, and four cases would mean four apply/revert paths to
       keep consistent.
-- [ ] 2.2 Solo is NOT journaled. It is a view mode; journaling it would put a camera-like
+- [x] 2.2 Solo is NOT journaled. It is a view mode; journaling it would put a camera-like
       action in the undo stack and, worse, require storing "everything else hidden", which
       destroys the artist's real visibility state.
-- [ ] 2.3 Tests: each state change is exactly ONE undo step and reverts precisely; solo
+- [x] 2.3 Tests: each state change is exactly ONE undo step and reverts precisely; solo
       leaves the journal untouched.
 
 ## 3. The lock guarantee

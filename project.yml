@@ -129,6 +129,8 @@ targets:
       - path: CyberKit/Tests/CyberKitTests/ConstraintBridgeTests.swift
       # Implicit sizing from a prescribed interface (5.5a): public-API + inline fixtures.
       - path: CyberKit/Tests/CyberKitTests/ImplicitInterfaceSizingTests.swift
+      # Outliner document state (8.1): public-API only, so it runs on device too.
+      - path: CyberKit/Tests/CyberKitTests/OutlinerStateTests.swift
       # Context-aware create-face: public-API + inline mesh, runs on device too.
       - path: CyberKit/Tests/CyberKitTests/ContextAwareCreateFaceTests.swift
       # Relax boundary preservation: public-API + inline mesh, runs on device too.

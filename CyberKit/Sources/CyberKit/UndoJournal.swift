@@ -38,6 +38,19 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
     /// stroke does, so undo has to step back over it or the history would
     /// replay strokes under the wrong symmetry.
     case setSymmetry(from: SymmetrySettings?, to: SymmetrySettings?)
+    /// Outliner state of one object (task 8.1: visibility, lock, group, name),
+    /// carrying the exact before/after so apply and revert restore it verbatim.
+    /// Payload bytes and topology are untouched.
+    ///
+    /// ONE case rather than four, because all four are the same kind of
+    /// manifest-entry change; four cases would mean four apply/revert pairs to keep
+    /// mutually consistent for no gain.
+    ///
+    /// SOLO is deliberately absent: it is a view mode, not document state. Journaling
+    /// it would put a camera-like action in the undo stack, and implementing it as
+    /// "hide everything else" would overwrite the artist's real visibility so that
+    /// un-soloing could not restore it.
+    case objectStateEdit(ObjectStateEdit)
     /// Several commands that are ONE user-visible step (task 4.5): applied
     /// in order, reverted in reverse order, journaled as a single node so a
     /// single undo restores all of them together.
@@ -110,6 +123,63 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
     }
 
     /// Performs the command on `bundle`.
+    /// Payload of an `objectStateEdit`. Whole-value before/after rather than a diff:
+    /// the values are tiny, and a diff would need its own inverse logic to be exact.
+    public struct ObjectStateEdit: Codable, Equatable, Sendable {
+        public var objectID: UUID
+        public var beforeName: String
+        public var afterName: String
+        public var beforeHidden: Bool
+        public var afterHidden: Bool
+        public var beforeLocked: Bool
+        public var afterLocked: Bool
+        public var beforeGroup: String?
+        public var afterGroup: String?
+
+        public init(
+            objectID: UUID,
+            beforeName: String, afterName: String,
+            beforeHidden: Bool, afterHidden: Bool,
+            beforeLocked: Bool, afterLocked: Bool,
+            beforeGroup: String?, afterGroup: String?
+        ) {
+            self.objectID = objectID
+            self.beforeName = beforeName
+            self.afterName = afterName
+            self.beforeHidden = beforeHidden
+            self.afterHidden = afterHidden
+            self.beforeLocked = beforeLocked
+            self.afterLocked = afterLocked
+            self.beforeGroup = beforeGroup
+            self.afterGroup = afterGroup
+        }
+
+        /// True when nothing actually changed, so a caller can skip journaling a no-op
+        /// rather than putting an empty step in the undo stack.
+        public var isNoOp: Bool {
+            beforeName == afterName && beforeHidden == afterHidden
+                && beforeLocked == afterLocked && beforeGroup == afterGroup
+        }
+
+        /// The edit that takes `object` to the given state.
+        public static func from(
+            _ object: DocumentManifest.Object,
+            name: String? = nil, hidden: Bool? = nil, locked: Bool? = nil,
+            group: String?? = nil
+        ) -> ObjectStateEdit {
+            ObjectStateEdit(
+                objectID: object.id,
+                beforeName: object.name, afterName: name ?? object.name,
+                beforeHidden: object.isHidden, afterHidden: hidden ?? object.isHidden,
+                beforeLocked: object.isLocked, afterLocked: locked ?? object.isLocked,
+                beforeGroup: object.group,
+                // Double optional: `nil` means "leave alone", `.some(nil)` means
+                // "ungroup". Collapsing them would make ungrouping impossible to express.
+                afterGroup: group.map { $0 } ?? object.group
+            )
+        }
+    }
+
     public func apply(to bundle: inout DocumentBundle) {
         switch self {
         case .setStage(_, let to):
@@ -132,6 +202,13 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
             }
         case .setSymmetry(_, let to):
             bundle.manifest.symmetry = to
+        case .objectStateEdit(let edit):
+            bundle.updateObject(id: edit.objectID) { object in
+                object.name = edit.afterName
+                object.isHidden = edit.afterHidden
+                object.isLocked = edit.afterLocked
+                object.group = edit.afterGroup
+            }
         case .compound(_, let commands):
             for command in commands { command.apply(to: &bundle) }
         }
@@ -162,6 +239,13 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
             }
         case .setSymmetry(let from, _):
             bundle.manifest.symmetry = from
+        case .objectStateEdit(let edit):
+            bundle.updateObject(id: edit.objectID) { object in
+                object.name = edit.beforeName
+                object.isHidden = edit.beforeHidden
+                object.isLocked = edit.beforeLocked
+                object.group = edit.beforeGroup
+            }
         case .compound(_, let commands):
             // Reverse order: the annotation edit was journaled against the
             // state the mesh edit produced, so undoing it first restores
@@ -186,7 +270,10 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
             // Last writer wins, matching apply order.
             return commands.reversed().lazy
                 .compactMap { $0.resultingPayload(forObject: object) }.first
-        case .addObject, .removeObject, .annotationEdit, .setSymmetry, .setStage:
+        // objectStateEdit changes the manifest entry only — visibility, lock, group,
+        // name — and never the payload bytes, so it reports nil like the rest.
+        case .addObject, .removeObject, .annotationEdit, .setSymmetry, .setStage,
+            .objectStateEdit:
             return nil
         }
     }
