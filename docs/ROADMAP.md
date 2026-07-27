@@ -65,7 +65,7 @@ The differentiator lands. TestFlight to ~50 invited retopo artists under NDA.
 - Benchmark run vs AutoRemesher / Quadriflow / Instant Meshes published internally — the "better than" marketing claim becomes a measured number before we say it publicly.
 - **Exit criteria:** frozen-patch bit-identity holds on every alpha document; full-body character done in the hybrid flow (hand loops + Weave fill) in under 1 hour; determinism verified simulator-vs-device.
 
-#### Phase 5 status — 10 of 16 closed (5.2b's solver halves landed; its brush UI is the remainder)
+#### Phase 5 status — 13 of 16, and the marketing claim is now the PROVEN one
 
 Per-task detail lives in [`tasks.md`](../openspec/changes/add-cybertopology-app/tasks.md);
 this is the shape of what is left and why.
@@ -78,13 +78,13 @@ this is the shape of what is left and why.
 | 5.4, 5.4a | ✅ | ghost accept/override, Weave Fill (tap + paint), live re-solve |
 | 5.5, 5.5a | ✅ | global density presets + implicit sizing from a prescribed interface |
 | 5.2b | mostly | RADIAL symmetry done; density channel done, **brush UI open** |
-| **5.3a** | **blocked** | interior-only singularities — **four refuted attempts** |
+| 5.3a | won't fix | interior-only singularities — 4 refuted attempts; **claim reworded instead** |
 | 5.4b | ✅ | region solves project onto the Target — external reference surface |
 | **5.4c** | open | filling bare Target with no open cage edge — needs the carve path |
-| **5.6** | decision | ambient hover assist — needs a product call, not code |
-| **5.7** | open | competitive benchmark — gated on 5.3a, needs new harnesses |
+| 5.6 | ✅ | ambient assist — satisfied by tap-to-fill; hover half declined |
+| 5.7 | ✅ | benchmark corrections landed; competitor harnesses declined |
 
-**5.3a is the phase's hard blocker and the one that gates the marketing claim.** Face count
+**5.3a is closed as won't-fix, and the CLAIM changed rather than the solver.** Face count
 at an interface vertex is `n(b) − k(b)`. Four approaches have now been built and MEASURED,
 and none converged: greedy ring-first pairing (changed the failure count by exactly zero),
 degree-constrained pairing (deadlocks — a merge decrements both endpoints, so adjacent
@@ -93,20 +93,28 @@ feature-locking interface-adjacent edges. The fourth is the most informative: th
 worked, and conformance got strictly worse everywhere, because `q_in(b)` counts the QUADS
 the cage expects while `k(b) = 0` guarantees triangles. What remains is a genuine
 degree-constrained b-matching over the interface ring — `maximumTrianglePairing` is
-blossom-free — which is a substantial piece of combinatorial optimisation and should not be
-started without deciding it is worth the cost. **Until it lands, do not claim Weave places
-no singularity on a prescribed interface**, and 5.7's Table 2 stays unpublishable.
+blossom-free — and that was DECIDED against: substantial combinatorial optimisation, with
+real risk it still fails on reflex rings, funded purely to support a marketing sentence. So
+the sentence changed instead. **Weave is marketed on EXACT LANDING** — bitwise preservation
+of a hand-authored boundary, enforced by a refusing gate — which is proven and which
+competitors cannot do AT ALL, having no notion of a prescribed boundary. **Do not claim
+Weave places no singularity on a prescribed interface.** Interface irregularity stays
+measured and reported; 5.3a remains a documented quality gap, not a blocker.
 
-**5.6 is a product decision, not a wiring gap.** Tap-to-fill already delivers this
-requirement's content; what remains is showing a proposal on boundary HOVER without being
-asked, which means solving speculatively — a real cost-per-hover and an unrequested ghost.
+**5.6 is closed: tap-to-fill IS the requirement.** The hover half was declined — an
+unrequested proposal on every boundary hover means a speculative solve per hover, and the
+armed tool already provides the opt-in control the task asked for. Reversible if artists ask
+for it after real use.
 
-**5.7 is larger than a measurement run.** Three corrections must land first: the published
-"Instant Meshes" column is our own retired extractor (`wjakob/instant-meshes` has never been
-run and no harness exists), every published number came from a `CYBER_WITH_QUADCOVER=ON`
-preset the iPad does not use, and wall-clock and determinism are unmeasured. The defensible
-differentiator is that on a frozen-patch interface the competitors are UNDEFINED rather than
-worse — which is exactly the table 5.3a gates.
+**5.7: corrections landed, competitor harnesses declined.** One of the three "corrections"
+turned out not to need making — the harness already labels our retired extractor
+`ours position-field`, and no results table is published anywhere in the repo, so there were
+no wrong numbers to withdraw. The two real ones are fixed: the harness now NAMES the backend
+it measured and warns when `CYBER_WITH_QUADCOVER=ON` is in force (a configuration the iPad
+does not ship, and one that builds QuadCover from vendored AutoRemesher/Geogram source), and
+wall-clock plus determinism are measured rather than asserted in prose. Real competitor
+harnesses are out of scope: with 5.3a's claim withdrawn, the honest comparison is exact
+landing, where rivals are undefined rather than slower — which needs no competitor run.
 
 ### v0.3 — Public beta (target: Jun 2027) — "The pipeline's second stage"
 

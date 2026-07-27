@@ -1,7 +1,25 @@
 # weave-solver Specification
 
 ## Purpose
-TBD - created by archiving change add-weave-solver-pipeline. Update Purpose after archive.
+
+Weave is constraint-driven hybrid retopology: the artist draws roughly a tenth of the
+cage by hand, and the solver fills the rest so that it meets the hand-drawn boundary
+EXACTLY.
+
+**What is guaranteed, and what deliberately is not.** The guarantee is EXACT LANDING:
+every prescribed interface vertex survives a region solve with the same id at a
+bitwise-identical position, the interface edge set is preserved, and frozen faces keep
+their rings — enforced by a gate that refuses to publish a violating solve, not by
+tolerance. That is the differentiator, and it is the thing competitors cannot do at all
+rather than merely do worse: AutoRemesher, QuadriFlow and Instant Meshes have no notion
+of a prescribed boundary, so on this axis they are undefined.
+
+Interface REGULARITY is measured and reported, never guaranteed. Placing no singularity
+on a prescribed interface requires a degree-constrained b-matching over the interface
+ring; four approaches were built and measured and none converged (see the archived
+`add-interface-singularity-guarantee`). **Do not claim that Weave places no singularity
+on a prescribed interface.** Callers read `SolverGhost.interfaceIrregular` and decide;
+they must not assume it is empty.
 ## Requirements
 ### Requirement: Solver-session API
 The system SHALL provide a solver-session API that takes a solve region, a constraint
