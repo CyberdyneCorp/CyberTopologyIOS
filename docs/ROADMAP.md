@@ -65,7 +65,7 @@ The differentiator lands. TestFlight to ~50 invited retopo artists under NDA.
 - Benchmark run vs AutoRemesher / Quadriflow / Instant Meshes published internally — the "better than" marketing claim becomes a measured number before we say it publicly.
 - **Exit criteria:** frozen-patch bit-identity holds on every alpha document; full-body character done in the hybrid flow (hand loops + Weave fill) in under 1 hour; determinism verified simulator-vs-device.
 
-#### Phase 5 status — 10 of 16 closed
+#### Phase 5 status — 10 of 16 closed (5.2b's solver halves landed; its brush UI is the remainder)
 
 Per-task detail lives in [`tasks.md`](../openspec/changes/add-cybertopology-app/tasks.md);
 this is the shape of what is left and why.
@@ -77,7 +77,7 @@ this is the shape of what is left and why.
 | 5.3 | ✅ | prescribed-boundary guarantee, **exact landing only** |
 | 5.4, 5.4a | ✅ | ghost accept/override, Weave Fill (tap + paint), live re-solve |
 | 5.5, 5.5a | ✅ | global density presets + implicit sizing from a prescribed interface |
-| **5.2b** | open | density BRUSH + RADIAL symmetry — engine work, scoped and decided |
+| 5.2b | mostly | RADIAL symmetry done; density channel done, **brush UI open** |
 | **5.3a** | **blocked** | interior-only singularities — **four refuted attempts** |
 | 5.4b | ✅ | region solves project onto the Target — external reference surface |
 | **5.4c** | open | filling bare Target with no open cage edge — needs the carve path |

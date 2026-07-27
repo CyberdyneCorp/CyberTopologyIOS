@@ -148,6 +148,26 @@ extension Mesh {
         try check(cyber_mesh_set_region_reference(handle, reference?.handle))
     }
 
+    /// Authored per-vertex density scales — the density brush (openspec
+    /// add-weave-density-radial-symmetry). Empty clears.
+    ///
+    /// Each entry multiplies the target edge length at that vertex: > 1 coarser, < 1
+    /// finer, entries past the end reading as 1.0. Every value must be finite and
+    /// positive; the engine validates the whole array before storing any of it, so a
+    /// rejected call leaves the handle untouched.
+    ///
+    /// Rides the handle like the solve region and the orientation guides. Honoured by a
+    /// REGION solve only — see `DensityField.perVertex`.
+    public func setDensityScales(_ scales: [Float]) throws {
+        if scales.isEmpty {
+            try check(cyber_mesh_set_density_scales(handle, nil, 0))
+            return
+        }
+        try scales.withUnsafeBufferPointer { buffer in
+            try check(cyber_mesh_set_density_scales(handle, buffer.baseAddress, scales.count))
+        }
+    }
+
     /// Region-scoped remesh: rewrites only `faces`, leaving every other face's
     /// geometry, ring and element id untouched. `self` is never modified.
     ///

@@ -1,0 +1,362 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index 076c393..3327d93 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -381,6 +381,21 @@ const uint32_t* cyber_mesh_tagged_edge_indices_ptr(const CyberMesh* mesh,
+  * The surface is built lazily and CACHED on the reference handle, and dropped
+  * whenever that handle is mutated -- construction is ~636us per 1k faces, so a
+  * multi-million-triangle Target costs seconds and a fill cannot pay that per call. */
++/* Authored per-vertex density scales -- the density BRUSH
++ * (add-weave-density-radial-symmetry). `scales[i]` multiplies the target edge length
++ * at vertex i, so > 1 is coarser and < 1 is finer; entries past the array's end read
++ * as 1.0, and count == 0 clears. Every value must be finite and > 0, validated before
++ * anything is stored.
++ *
++ * MULTIPLIED into the solver's curvature-derived scales and clamped to the same
++ * [0.3, 3.0] band, so an authored coarse patch does not discard detail preservation
++ * the artist did not ask to lose, and the composition is order-independent.
++ *
++ * Read by a REGION solve only. The whole-mesh path remeshes per island and island
++ * extraction RENUMBERS vertices, so these indices would not survive it -- honouring a
++ * brush there needs an id mapping first. */
++CyberStatus cyber_mesh_set_density_scales(CyberMesh* mesh, const float* scales, size_t count);
++
+ CyberStatus cyber_mesh_set_region_reference(CyberMesh* mesh, const CyberMesh* reference);
+ 
+ CyberStatus cyber_mesh_set_solve_region(CyberMesh* mesh, const uint32_t* face_ids, size_t count);
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index e275105..9ac3c41 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -121,6 +121,12 @@ struct CyberMesh {
+     // the caller guarantees the reference outlives the solve, exactly as it already
+     // must for the snapper handles it passes elsewhere.
+     const CyberMesh* regionReference = nullptr;
++    // Authored per-vertex density scales — the density BRUSH
++    // (add-weave-density-radial-symmetry). Indexed by vertex id; multipliers on the
++    // target edge length. Read by cyber_remesh for a REGION solve only: the
++    // whole-mesh path remeshes per island and extractIsland renumbers vertices, so
++    // these indices would not survive it.
++    std::vector<float> densityScales;
+     // CACHED reference surface for when THIS handle is used as someone's reference.
+     // Mandatory rather than an optimisation: construction is ~636 us per 1k faces,
+     // so ~3 s at 4.8M, and a Weave Fill solves synchronously on the main actor.
+@@ -413,7 +419,8 @@ CyberStatus cyber_remesh(const CyberMesh* in, const CyberRemeshParams* params,
+         cyber::remesh::PipelineResult result = cyber::remesh::remesh(
+             in->mesh, cppParams, &sink, &token,
+             [quadMethod, makeQuad]() { return makeQuad(quadMethod); }, fallback, regionFaces,
+-            in->regionValence.empty() ? nullptr : &in->regionValence, regionReference);
++            in->regionValence.empty() ? nullptr : &in->regionValence, regionReference,
++            in->densityScales.empty() ? nullptr : &in->densityScales);
+ 
+         switch (result.status) {
+             case cyber::remesh::RunStatus::Success:
+@@ -1097,6 +1104,35 @@ CyberStatus copyIds(const Container& src, Project project, uint32_t* out_ids, si
+ 
+ }  // namespace
+ 
++CyberStatus cyber_mesh_set_density_scales(CyberMesh* mesh, const float* scales, size_t count) {
++    if (mesh == nullptr || (scales == nullptr && count > 0)) {
++        setError("cyber_mesh_set_density_scales: null argument");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        if (count == 0) {
++            mesh->densityScales.clear();
++            clearError();
++            return CYBER_OK;
++        }
++        // Validate BEFORE mutating, so a rejected call leaves the handle as it was. A
++        // non-positive or non-finite multiplier is meaningless and would silently
++        // degenerate the target edge length rather than fail visibly.
++        for (size_t i = 0; i < count; ++i) {
++            if (!(scales[i] > 0.0f) || !std::isfinite(scales[i])) {
++                setError("cyber_mesh_set_density_scales: scales must be finite and > 0");
++                return CYBER_ERR_INVALID_ARG;
++            }
++        }
++        mesh->densityScales.assign(scales, scales + count);
++        clearError();
++        return CYBER_OK;
++    } catch (const std::exception& e) {
++        setError(e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++}
++
+ CyberStatus cyber_mesh_set_region_reference(CyberMesh* mesh, const CyberMesh* reference) {
+     if (mesh == nullptr) {
+         setError("cyber_mesh_set_region_reference: null mesh");
+diff --git a/src/core/include/cyber/core/isotropic.hpp b/src/core/include/cyber/core/isotropic.hpp
+index 94011e0..583dd4d 100644
+--- a/src/core/include/cyber/core/isotropic.hpp
++++ b/src/core/include/cyber/core/isotropic.hpp
+@@ -1,5 +1,7 @@
+ #pragma once
+ 
++#include <vector>
++
+ #include "cyber/core/mesh.hpp"
+ #include "cyber/core/progress.hpp"
+ #include "cyber/core/reference_surface.hpp"
+@@ -31,6 +33,30 @@ struct IsotropicOptions {
+     // Null (the default) = whole-mesh remesh, byte-for-byte the previous
+     // behaviour. Non-null = region solve; only SplitPass consults it.
+     const RegionSolve* region = nullptr;
++    // AUTHORED per-vertex density scales, indexed by VertexId::value
++    // (add-weave-density-radial-symmetry): the density BRUSH. Same units as the
++    // curvature-derived scales this stage already carries — a MULTIPLIER on the
++    // target edge length, so > 1 is coarser and < 1 is finer.
++    //
++    // COMPOSITION RULE, decided before the code and asserted by test: the authored
++    // scale is MULTIPLIED into the curvature-derived one, then the product is clamped
++    // to the same [0.3, 3.0] band curvature alone is clamped to.
++    //
++    //  * Multiplication because both are multipliers on the same quantity, so it
++    //    composes them without either needing to know about the other — and because
++    //    it is COMMUTATIVE, which is what makes the result independent of the order
++    //    the two were applied, a property the spec requires.
++    //  * NOT override: discarding curvature where the artist painted coarse would
++    //    throw away detail preservation the artist did not ask to lose.
++    //  * Clamped to the SAME band, not a wider one, because the split/collapse
++    //    thresholds are tuned against [0.3, 3.0]; letting a product reach 9.0 risks
++    //    exactly the compounding runaway documented at kScaleAttribute (a 100x
++    //    face-count explosion). An authored 3.0 over a curvature 3.0 therefore
++    //    yields 3.0 — honoured up to the band, never beyond it.
++    //
++    // Shorter than the vertex capacity is fine: missing entries read as 1.0. Null
++    // (the default) leaves the stage byte-for-byte unchanged.
++    const std::vector<float>* densityScales = nullptr;
+ };
+ 
+ enum class IsotropicStatus { Success, Cancelled, InvalidInput };
+diff --git a/src/core/include/cyber/core/pipeline.hpp b/src/core/include/cyber/core/pipeline.hpp
+index 3307fd7..9cedd35 100644
+--- a/src/core/include/cyber/core/pipeline.hpp
++++ b/src/core/include/cyber/core/pipeline.hpp
+@@ -110,6 +110,12 @@ struct PipelineResult {
+ // replaced by the working mesh, which would make the difference invisible from
+ // outside. Interface vertices are unaffected either way: they are never smoothed
+ // (Invariant P), so exact landing does not depend on which surface is used.
++//
++// `densityScales` is the authored density BRUSH
++// (add-weave-density-radial-symmetry): per-vertex multipliers on the target edge
++// length, indexed by VertexId::value, MULTIPLIED into the curvature-derived
++// scales and clamped to the same band. See IsotropicOptions::densityScales for
++// the composition rule and why override was rejected. nullptr is byte-identical.
+ using QuadrangulatorFactory = std::function<std::unique_ptr<IQuadrangulator>()>;
+ [[nodiscard]] PipelineResult remesh(
+     const Mesh& input, const Parameters& rawParams, ProgressSink* progress = nullptr,
+@@ -117,7 +123,8 @@ using QuadrangulatorFactory = std::function<std::unique_ptr<IQuadrangulator>()>;
+     const QuadrangulatorFactory& fallbackQuadrangulator = {},
+     std::span<const FaceId> regionFaces = {},
+     const std::unordered_map<Index, int>* regionValenceOverrides = nullptr,
+-    const ReferenceSurface* regionReference = nullptr);
++    const ReferenceSurface* regionReference = nullptr,
++    const std::vector<float>* densityScales = nullptr);
+ 
+ // Cleanup policy from the canonical parameters, applied per island result:
+ // KeepLargest keeps only the biggest connected patch, KeepAll keeps
+diff --git a/src/core/src/isotropic.cpp b/src/core/src/isotropic.cpp
+index 024f5af..1cbd40d 100644
+--- a/src/core/src/isotropic.cpp
++++ b/src/core/src/isotropic.cpp
+@@ -50,9 +50,34 @@ protected:
+ // AutoRemesher-style: scale = clamp(normalizedCurvature^(-adaptivity),
+ // 0.3, 3.0) so flat regions get longer edges. adaptivity 0 -> all 1
+ // (remeshing-parameters spec, "Adaptivity zero is uniform").
+-void computeTargetScales(Mesh& mesh, float adaptivity, std::vector<float>& scales) {
++void computeTargetScales(Mesh& mesh, float adaptivity, const std::vector<float>* authored,
++                         std::vector<float>& scales) {
++    // Applies the authored density brush on top of whatever curvature produced.
++    // MULTIPLY then clamp to the same band — see IsotropicOptions::densityScales for
++    // why, including why override and a wider band were both rejected.
++    const auto applyAuthored = [&]() {
++        if (authored == nullptr || authored->empty()) {
++            return;
++        }
++        for (Index i = 0; i < mesh.vertexCapacity(); ++i) {
++            if (!mesh.isAlive(VertexId{i})) {
++                continue;
++            }
++            // A short array reads as 1.0 past its end, so a caller need not size it to
++            // the full capacity.
++            const float painted = i < authored->size() ? (*authored)[i] : 1.0f;
++            if (painted <= 0.0f) {
++                continue;  // 0 or negative is meaningless as a multiplier; ignore it
++            }
++            scales[i] = std::clamp(scales[i] * painted, 0.3f, 3.0f);
++        }
++    };
++
+     std::fill(scales.begin(), scales.end(), 1.0f);
+     if (adaptivity <= 0.0f) {
++        // Uniform curvature scaling, but an authored brush still applies: "adaptivity
++        // zero is uniform" is about CURVATURE, not about ignoring the artist.
++        applyAuthored();
+         return;
+     }
+ 
+@@ -117,6 +142,7 @@ void computeTargetScales(Mesh& mesh, float adaptivity, std::vector<float>& scale
+         }
+     }
+     if (aliveCount == 0 || meanCurvature <= 0.0) {
++        applyAuthored();
+         return;
+     }
+     meanCurvature /= static_cast<double>(aliveCount);
+@@ -128,6 +154,7 @@ void computeTargetScales(Mesh& mesh, float adaptivity, std::vector<float>& scale
+             std::fmax(curvature[i] / static_cast<float>(meanCurvature), 1e-3f);
+         scales[i] = std::clamp(std::pow(normalizedCurvature, -adaptivity), 0.3f, 3.0f);
+     }
++    applyAuthored();
+ }
+ 
+ class SplitPass : public Pass {
+@@ -384,7 +411,7 @@ IsotropicStatus isotropicRemesh(Mesh& mesh, const ReferenceSurface& reference,
+     using Clk = std::chrono::steady_clock;
+     const auto t0 = Clk::now();
+     std::vector<float>& scales = mesh.vertexAttributes().create<float>(kScaleAttribute);
+-    computeTargetScales(mesh, options.adaptivity, scales);
++    computeTargetScales(mesh, options.adaptivity, options.densityScales, scales);
+     long long tScale = 0, tSplit = 0, tCollapse = 0, tFlip = 0, tSmooth = 0;
+     const auto ms = [](Clk::time_point a, Clk::time_point b) {
+         return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count();
+diff --git a/src/core/src/pipeline.cpp b/src/core/src/pipeline.cpp
+index 844b775..931e174 100644
+--- a/src/core/src/pipeline.cpp
++++ b/src/core/src/pipeline.cpp
+@@ -503,7 +503,8 @@ void countFaces(const Mesh& mesh, Statistics& stats) {
+ PipelineResult remeshRegion(const Mesh& input, const Parameters& params, int effectiveQuads,
+                             std::span<const FaceId> regionFaces,
+                             const std::unordered_map<Index, int>* valenceOverrides,
+-                            const ReferenceSurface* externalReference, ProgressSink* progress,
++                            const ReferenceSurface* externalReference,
++                            const std::vector<float>* densityScales, ProgressSink* progress,
+                             const CancelToken* cancel,
+                             const QuadrangulatorFactory& quadrangulator, PipelineResult result) {
+     const auto fail = [&result](std::string message) {
+@@ -590,6 +591,7 @@ PipelineResult remeshRegion(const Mesh& input, const Parameters& params, int eff
+     iso.adaptivity = params.adaptivity;
+     iso.smoothNormalDegrees = params.smoothNormalDegrees;
+     iso.region = &region;
++    iso.densityScales = densityScales;
+     ProgressSink isoSink = progress ? progress->subrange(0.0f, 0.3f, "isotropic") : ProgressSink{};
+     const IsotropicStatus isoStatus =
+         isotropicRemesh(work, reference, iso, progress ? &isoSink : nullptr, cancel);
+@@ -688,7 +690,8 @@ PipelineResult remesh(const Mesh& input, const Parameters& rawParams, ProgressSi
+                       const QuadrangulatorFactory& fallbackQuadrangulator,
+                       std::span<const FaceId> regionFaces,
+                       const std::unordered_map<Index, int>* regionValenceOverrides,
+-                      const ReferenceSurface* regionReference) {
++                      const ReferenceSurface* regionReference,
++                      const std::vector<float>* densityScales) {
+     PipelineResult result;
+ 
+     // Stage 0: parameters (validated at every entry point — spec). A region
+@@ -721,7 +724,8 @@ PipelineResult remesh(const Mesh& input, const Parameters& rawParams, ProgressSi
+     // Entirely behind this guard, so the whole-mesh path below is untouched.
+     if (!regionFaces.empty()) {
+         return remeshRegion(input, params, effectiveQuads, regionFaces, regionValenceOverrides,
+-                            regionReference, progress, cancel, quadrangulator, result);
++                            regionReference, densityScales, progress, cancel, quadrangulator,
++                            result);
+     }
+ 
+     // Stage 1: guarded target edge length.
+@@ -778,6 +782,13 @@ PipelineResult remesh(const Mesh& input, const Parameters& rawParams, ProgressSi
+         iso.targetEdgeLength = lengthResult.edgeLength;
+         iso.adaptivity = params.adaptivity;
+         iso.smoothNormalDegrees = params.smoothNormalDegrees;
++        // `densityScales` is deliberately NOT passed here. It is indexed by the INPUT
++        // mesh's VertexId, and `extractIsland` RENUMBERS vertices (see the stage note
++        // above), so handing it to an island would apply the artist's painted scales to
++        // whichever vertices happen to land on those indices — silently wrong, and
++        // invisible in the output. Honouring a brush on the whole-mesh path requires
++        // carrying an id mapping through extractIsland first; the region path has no such
++        // problem because its working copy preserves ids by contract.
+         ProgressSink isoSink =
+             progress ? progress->subrange(base, base + span, "isotropic") : ProgressSink{};
+         const IsotropicStatus st =
+diff --git a/tests/core/test_region_solve.cpp b/tests/core/test_region_solve.cpp
+index 2d890a4..f2685e1 100644
+--- a/tests/core/test_region_solve.cpp
++++ b/tests/core/test_region_solve.cpp
+@@ -688,3 +688,77 @@ TEST_CASE("a whole-mesh solve ignores an external reference") {
+     REQUIRE(withRef.status == remesh::RunStatus::Success);
+     CHECK(plain.mesh.faceCount() == withRef.mesh.faceCount());
+ }
++
++// ---- Authored density brush (openspec add-weave-density-radial-symmetry, 5.2b) ----
++//
++// Per-vertex multipliers on the target edge length, MULTIPLIED into the
++// curvature-derived scales and clamped to the same [0.3, 3.0] band. The composition
++// rule was decided before the code (IsotropicOptions::densityScales) precisely so
++// these tests assert a stated rule rather than whatever the implementation happened
++// to do.
++
++TEST_CASE("an authored density scale changes the solve, and absent is byte-identical") {
++    const Mesh cage = rippledCage();
++    const auto faces = centreBlock();
++    const remesh::Parameters params = regionParams(meanEdgeLength(cage));
++
++    const remesh::PipelineResult plain =
++        remesh::remesh(cage, params, nullptr, nullptr, {}, {}, faces, nullptr, nullptr, nullptr);
++    REQUIRE(plain.status == remesh::RunStatus::Success);
++
++    // Uniformly FINER: a 0.5 multiplier everywhere must produce more faces.
++    std::vector<float> finer(cage.vertexCapacity(), 0.5f);
++    const remesh::PipelineResult fine =
++        remesh::remesh(cage, params, nullptr, nullptr, {}, {}, faces, nullptr, nullptr, &finer);
++    REQUIRE(fine.status == remesh::RunStatus::Success);
++    CHECK(fine.mesh.faceCount() > plain.mesh.faceCount());
++
++    // Uniformly COARSER must go the other way, or the sign convention is inverted --
++    // which a single-direction test would not catch.
++    std::vector<float> coarser(cage.vertexCapacity(), 2.0f);
++    const remesh::PipelineResult coarse =
++        remesh::remesh(cage, params, nullptr, nullptr, {}, {}, faces, nullptr, nullptr, &coarser);
++    REQUIRE(coarse.status == remesh::RunStatus::Success);
++    CHECK(coarse.mesh.faceCount() < plain.mesh.faceCount());
++
++    // All-1.0 is the identity: the brush must be inert when it says "no change".
++    std::vector<float> neutral(cage.vertexCapacity(), 1.0f);
++    const remesh::PipelineResult identity =
++        remesh::remesh(cage, params, nullptr, nullptr, {}, {}, faces, nullptr, nullptr, &neutral);
++    REQUIRE(identity.status == remesh::RunStatus::Success);
++    CHECK(identity.mesh.faceCount() == plain.mesh.faceCount());
++}
++
++TEST_CASE("density composition is clamped to the curvature band, not beyond it") {
++    // The stated rule: multiply, then clamp to [0.3, 3.0]. An authored 10x must
++    // therefore behave exactly like an authored 3x -- if the product escaped the band
++    // the split/collapse thresholds would be running outside their tuned range, which
++    // is the compounding runaway documented at kScaleAttribute.
++    const Mesh cage = rippledCage();
++    const auto faces = centreBlock();
++    remesh::Parameters params = regionParams(meanEdgeLength(cage));
++    params.adaptivity = 0.0f;  // isolate the authored term from curvature
++
++    std::vector<float> atBand(cage.vertexCapacity(), 3.0f);
++    std::vector<float> pastBand(cage.vertexCapacity(), 10.0f);
++    const remesh::PipelineResult a =
++        remesh::remesh(cage, params, nullptr, nullptr, {}, {}, faces, nullptr, nullptr, &atBand);
++    const remesh::PipelineResult b =
++        remesh::remesh(cage, params, nullptr, nullptr, {}, {}, faces, nullptr, nullptr, &pastBand);
++    REQUIRE(a.status == remesh::RunStatus::Success);
++    REQUIRE(b.status == remesh::RunStatus::Success);
++    CHECK(a.mesh.faceCount() == b.mesh.faceCount());
++}
++
++TEST_CASE("a short density array is honoured where it applies and defaults elsewhere") {
++    // Callers should not have to size the array to the full vertex capacity; entries
++    // past the end read as 1.0 rather than 0 (which would collapse the target length).
++    const Mesh cage = rippledCage();
++    const auto faces = centreBlock();
++    const remesh::Parameters params = regionParams(meanEdgeLength(cage));
++    std::vector<float> shortArray(4, 0.5f);
++    const remesh::PipelineResult out = remesh::remesh(cage, params, nullptr, nullptr, {}, {},
++                                                     faces, nullptr, nullptr, &shortArray);
++    CHECK(out.status == remesh::RunStatus::Success);
++    CHECK(out.mesh.faceCount() > 0);
++}

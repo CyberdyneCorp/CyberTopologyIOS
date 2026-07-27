@@ -50,8 +50,40 @@ public struct GuideStroke: Equatable, Codable, Sendable {
 /// value; a per-region brush map is a later addition. Not honoured by
 /// `EngineRemeshSolver` beyond what `SolverParameters.remesh` already carries.
 public struct DensityField: Equatable, Codable, Sendable {
+    /// Global multiplier on the derived edge length. Unchanged from 5.2.
     public var targetEdgeLength: Float
-    public init(targetEdgeLength: Float) { self.targetEdgeLength = targetEdgeLength }
+    /// AUTHORED per-vertex multipliers — the density BRUSH
+    /// (openspec add-weave-density-radial-symmetry). Indexed by vertex id; > 1 is
+    /// coarser, < 1 is finer. Entries past the end read as 1.0, so a caller need not
+    /// size this to the mesh. Empty (the default) is exactly the pre-5.2b behaviour.
+    ///
+    /// MULTIPLIED into the solver's curvature-derived scales and clamped to the same
+    /// [0.3, 3.0] band, so painting coarse does not throw away detail preservation the
+    /// artist did not ask to lose, and the composition does not depend on order.
+    ///
+    /// Honoured by a REGION solve. The whole-mesh path remeshes per island and island
+    /// extraction renumbers vertices, so these indices would not survive it.
+    public var perVertex: [Float]
+
+    public init(targetEdgeLength: Float, perVertex: [Float] = []) {
+        self.targetEdgeLength = targetEdgeLength
+        self.perVertex = perVertex
+    }
+
+    private enum CodingKeys: String, CodingKey { case targetEdgeLength, perVertex }
+
+    /// Explicit decode so documents written before the brush existed still load: the
+    /// SYNTHESIZED conformance treats `perVertex` as required and throws `keyNotFound`
+    /// on every pre-5.2b document. Caught by test, not by review — the same
+    /// decodeIfPresent pattern `MeshAnnotations` and `SymmetrySettings` already use for
+    /// exactly this reason.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            targetEdgeLength: try container.decode(Float.self, forKey: .targetEdgeLength),
+            perVertex: try container.decodeIfPresent([Float].self, forKey: .perVertex) ?? []
+        )
+    }
 }
 
 /// The full Weave constraint taxonomy. This slice STORES all of it so call
@@ -243,11 +275,9 @@ public struct EngineRemeshSolver: WeaveSolving {
             )
         }
         guard let ghostMesh else { return nil }  // cancelled
-        // Symmetry: clip the fresh cage to the working ORTHANT and mirror it, so
-        // the output is exactly symmetric about every enabled plane. RADIAL is
-        // still deferred (5.2b) — it does not reduce to half-space clipping.
-        if let symmetry = constraints.symmetry, symmetry.isEnabled,
-            !symmetry.mirrorAxes.isEmpty {
+        // Symmetry: clip the fresh cage to the working domain and replicate it, so the
+        // output is symmetric about every enabled plane AND every radial sector.
+        if let symmetry = constraints.symmetry, symmetry.isEnabled, symmetry.isActive {
             try Self.makeSymmetric(ghostMesh, settings: symmetry)
         }
         return SolverGhost(mesh: ghostMesh, addedFaces: ghostMesh.liveFaceIDs())
@@ -316,30 +346,105 @@ public struct EngineRemeshSolver: WeaveSolving {
     /// Mutates `cage` (a fresh remesh handle — never the source).
     private static func makeSymmetric(_ cage: Mesh, settings: SymmetrySettings) throws {
         let axes = settings.mirrorAxes
-        guard !axes.isEmpty else { return }
+        let sectors = settings.radialCount
         let origin = settings.origin
-        func onFarSide(_ vertex: UInt32) -> Bool {
+
+        // The working DOMAIN is the intersection of the mirror orthant and the radial
+        // sector. Clipping to the intersection first — rather than mirroring and then
+        // sector-clipping, or vice versa — is what makes the two compose: each
+        // replication step then fills a domain the other has not already populated.
+        // Mirroring first and clipping after would throw away most of what it built.
+        func outsideDomain(_ vertex: UInt32) -> Bool {
             guard let position = cage.vertexPosition(vertex) else { return false }
-            return axes.contains { axis in
-                let side = simd_dot(position - origin, axis.normal)
-                return settings.workingSidePositive ? side < 0 : side > 0
+            let local = position - origin
+            for axis in axes {
+                let side = simd_dot(local, axis.normal)
+                if settings.workingSidePositive ? side < 0 : side > 0 { return true }
             }
+            if sectors > 1, let angle = Self.sectorAngle(local, axis: settings.radialAxis) {
+                // [0, 2pi/N) is the authored wedge. A vertex ON the axis has no angle and
+                // belongs to every sector, so `sectorAngle` returns nil for it and it is
+                // never clipped — otherwise the centre would be deleted from its own cage.
+                if angle >= 2 * Float.pi / Float(sectors) { return true }
+            }
+            return false
         }
+
         var doomed: [UInt32] = []
         for face in cage.liveFaceIDs()
-        where cage.faceVertices(face).contains(where: onFarSide) {
+        where cage.faceVertices(face).contains(where: outsideDomain) {
             doomed.append(face)
         }
-        // Nothing to mirror if the clip would empty the cage — leave it as-is.
+        // Nothing to replicate if the clip would empty the cage — leave it as-is.
         // (Preserved from the single-axis version, including that an already-clipped
-        // cage is left alone rather than mirrored.)
+        // cage is left alone rather than replicated.)
         guard !doomed.isEmpty, doomed.count < cage.faceCount else { return }
         _ = try cage.deleteFaces(doomed)
+
+        // RADIAL first: rotation does not commute with reflection in general, and doing
+        // it inside the un-mirrored wedge means each mirror afterwards reflects a
+        // complete radial fan rather than a partial one.
+        if sectors > 1 {
+            try Self.replicateRadially(cage, settings: settings)
+        }
         // Snap each seam onto its OWN plane before mirroring, so a vertex sitting on
         // two planes — the orthant's edge — is welded onto both rather than one.
         for axis in axes {
             _ = try cage.snapToSymmetryPlane(settings, axis: axis)
         }
-        _ = try cage.applySymmetry(settings)
+        if !axes.isEmpty {
+            _ = try cage.applySymmetry(settings)
+        }
+    }
+
+    /// Angle of `local` about `axis`, in [0, 2pi), or nil when the point lies ON the
+    /// axis and therefore has no meaningful angle.
+    private static func sectorAngle(
+        _ local: SIMD3<Float>, axis: SymmetrySettings.Axis
+    ) -> Float? {
+        let normal = axis.normal
+        // Two axis-perpendicular basis vectors, so the angle is measured consistently.
+        let reference: SIMD3<Float> = abs(normal.x) < 0.9 ? SIMD3(1, 0, 0) : SIMD3(0, 1, 0)
+        let u = simd_normalize(reference - normal * simd_dot(reference, normal))
+        let v = simd_cross(normal, u)
+        let planar = local - normal * simd_dot(local, normal)
+        guard simd_length(planar) > 1e-6 else { return nil }  // on the axis
+        let angle = atan2(simd_dot(planar, v), simd_dot(planar, u))
+        return angle < 0 ? angle + 2 * Float.pi : angle
+    }
+
+    /// Fills the remaining sectors by rotating the authored wedge about the radial axis,
+    /// then welding the seams so the result is MANIFOLD rather than abutting shells.
+    ///
+    /// Built from `createFace` on rotated world points rather than an engine op: radial
+    /// replication has no engine primitive (mirroring does), and a sector's face count is
+    /// small enough that constructing them is not worth an engine change to avoid.
+    private static func replicateRadially(_ cage: Mesh, settings: SymmetrySettings) throws {
+        let sectors = settings.radialCount
+        let normal = settings.radialAxis.normal
+        let origin = settings.origin
+        // Snapshot BEFORE adding anything: replicating the growing mesh would
+        // re-replicate what it just created, N times over.
+        let source: [[SIMD3<Float>]] = cage.liveFaceIDs().compactMap { face in
+            let ring = cage.faceVertices(face).compactMap { cage.vertexPosition($0) }
+            return ring.count >= 3 ? ring : nil
+        }
+        guard !source.isEmpty else { return }
+
+        for step in 1..<sectors {
+            let angle = 2 * Float.pi * Float(step) / Float(sectors)
+            let rotation = simd_quatf(angle: angle, axis: normal)
+            for ring in source {
+                let rotated = ring.map { origin + rotation.act($0 - origin) }
+                // A face that fails to build is skipped rather than aborting the whole
+                // replication: a partial fan is recoverable, a thrown-away solve is not.
+                _ = try? cage.createFace(at: rotated)
+            }
+        }
+        // Close the seams the replication left. Scene-scaled tolerance, matching the
+        // bake path: only ALREADY-coincident vertices merge, so nothing visibly moves.
+        _ = try? cage.rotationalWeld(
+            sectorCount: sectors, tolerance: settings.weldTolerance
+        )
     }
 }

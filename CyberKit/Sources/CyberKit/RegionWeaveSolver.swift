@@ -67,6 +67,11 @@ public struct RegionWeaveSolver: WeaveSolving {
             parameters.edgeScale = min(max(parameters.edgeScale * density.targetEdgeLength, 0.05), 100)
         }
 
+        // The authored density BRUSH (openspec add-weave-density-radial-symmetry) rides
+        // the handle beside the guides. Set unconditionally — including to empty — so a
+        // solve cannot inherit a brush left behind by a previous one.
+        try source.setDensityScales(constraints.density?.perVertex ?? [])
+
         // Guide strokes steer the cross field exactly as they do whole-mesh; the
         // engine filters any guide that would overwrite an interface pin.
         let (points, directions) = Self.orientationGuides(from: constraints, source: source)

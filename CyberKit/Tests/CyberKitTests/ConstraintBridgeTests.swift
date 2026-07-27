@@ -305,6 +305,115 @@ struct MultiAxisSymmetryTests {
     }
 }
 
+/// Radial symmetry and the density brush (openspec add-weave-density-radial-symmetry,
+/// 5.2b). Radial is Swift-side (the solver clips to an angular sector and rotates the
+/// wedge); the density composition rule is asserted engine-side, so these cover the
+/// Swift channel and the radial geometry.
+@Suite("Radial symmetry and the density brush")
+struct RadialAndDensityTests {
+    private func centredGrid() throws -> Mesh {
+        var obj = ""
+        let n = 8
+        for i in 0...n {
+            for j in 0...n {
+                obj += "v \(Float(i) - 4) \(Float(j) - 4) 0\n"
+            }
+        }
+        for i in 0..<n {
+            for j in 0..<n {
+                let v = { (a: Int, b: Int) in a * (n + 1) + b + 1 }
+                obj += "f \(v(i, j)) \(v(i + 1, j)) \(v(i + 1, j + 1)) \(v(i, j + 1))\n"
+            }
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("radial-\(UUID().uuidString).obj")
+        try obj.write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        return try Mesh.loadOBJ(at: url)
+    }
+
+    private static let budget = SolverParameters.coarse
+
+    private func solve(_ settings: SymmetrySettings?) throws -> SolverGhost? {
+        try EngineRemeshSolver().solve(
+            source: try centredGrid(), region: .wholeMesh,
+            constraints: WeaveConstraints(symmetry: settings),
+            params: Self.budget, onProgress: nil, isCancelled: { false }
+        )
+    }
+
+    @Test("A radial count above 1 changes the solve; a count of 1 is inert")
+    func radialChangesTheSolve() throws {
+        let plain = try #require(try solve(nil))
+        let oneSector = try #require(
+            try solve(SymmetrySettings(radialCount: 1, radialAxis: .z, isEnabled: true))
+        )
+        // radialCount 1 means radial is OFF, so it must not perturb anything — the
+        // `isActive` guard is what makes this true rather than accidental.
+        #expect(try plain.mesh.payloadData() == oneSector.mesh.payloadData())
+
+        let fourSectors = try #require(
+            try solve(SymmetrySettings(radialCount: 4, radialAxis: .z, isEnabled: true))
+        )
+        // If the sector clip were not wired, this would be identical to plain.
+        #expect(try plain.mesh.payloadData() != fourSectors.mesh.payloadData())
+        #expect(fourSectors.mesh.faceCount > 0, "a radial solve must not empty the cage")
+    }
+
+    @Test("Radial symmetry disabled is inert even with a sector count set")
+    func disabledIsInert() throws {
+        let plain = try #require(try solve(nil))
+        let off = try #require(
+            try solve(SymmetrySettings(radialCount: 6, radialAxis: .z, isEnabled: false))
+        )
+        // The master switch deliberately KEEPS the user's configuration when off.
+        #expect(try plain.mesh.payloadData() == off.mesh.payloadData())
+    }
+
+    @Test("Radial composes with a mirror axis rather than replacing it")
+    func radialComposesWithMirror() throws {
+        let radialOnly = try #require(
+            try solve(SymmetrySettings(radialCount: 4, radialAxis: .z, isEnabled: true))
+        )
+        let both = try #require(
+            try solve(
+                SymmetrySettings(
+                    mirrorAxes: [.x], radialCount: 4, radialAxis: .z, isEnabled: true
+                )
+            )
+        )
+        #expect(try radialOnly.mesh.payloadData() != both.mesh.payloadData())
+    }
+
+    @Test("The density brush channel is wired, validated, and clearable")
+    func densityChannel() throws {
+        let mesh = try centredGrid()
+        try mesh.setDensityScales([0.5, 0.5, 2.0])
+        try mesh.setDensityScales([])  // clears
+
+        // A non-positive or non-finite multiplier is meaningless and must be refused
+        // before anything is stored, not silently degenerate the target edge length.
+        #expect(throws: (any Error).self) { try mesh.setDensityScales([1.0, 0.0]) }
+        #expect(throws: (any Error).self) { try mesh.setDensityScales([-1.0]) }
+        #expect(throws: (any Error).self) { try mesh.setDensityScales([.infinity]) }
+        #expect(throws: (any Error).self) { try mesh.setDensityScales([.nan]) }
+    }
+
+    @Test("DensityField carries a per-vertex brush through Codable")
+    func densityFieldRoundTrips() throws {
+        let field = DensityField(targetEdgeLength: 1.0, perVertex: [0.5, 1.0, 2.0])
+        let restored = try JSONDecoder().decode(
+            DensityField.self, from: try JSONEncoder().encode(field)
+        )
+        #expect(restored == field)
+        // Pre-5.2b documents have no perVertex key.
+        let legacy = Data(#"{"targetEdgeLength":2.0}"#.utf8)
+        let old = try JSONDecoder().decode(DensityField.self, from: legacy)
+        #expect(old.perVertex.isEmpty)
+        #expect(old.targetEdgeLength == 2.0)
+    }
+}
+
 /// Frozen-face authoring (task 3). The solver half already worked; these cover the
 /// annotation state that now carries it, and the trap that came with adding a field.
 @Suite("Frozen faces are authorable")
