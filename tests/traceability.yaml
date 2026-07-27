@@ -472,6 +472,18 @@ scenarios:
   viewport-rendering:
     # X-ray on/off compared over two offscreen frames with far-side overlay
     # geometry (task 2.3): occluded by default, depth-attenuated reveal on.
+    # Device-only GPU-timestamped acceptance on a subdivided REAL asset
+    # (~4.8M tris) at the iPad's native 2732x2048, through the meshlet path
+    # (add-meshlet-target-path). Asserts the WORST frame as well as the
+    # average: on the indexed path the average was inside budget (16.06 ms)
+    # while the worst frame was not (19.65 ms), so an average-only gate would
+    # have certified a visible hitch as 60fps. Also asserts which path RAN,
+    # since the renderer falls back when the mesh pipeline will not build.
+    # Parity against the indexed path is what makes the number trustworthy —
+    # over-aggressive culling shows as holes, not crashes.
+    Multi-million-triangle target:
+      - ViewportPerfTests/testMultiMillionTriangleAcceptanceOnDevice
+      - MeshletParityTests/testMeshletPathRendersTheSameImageAsTheIndexedPathOnDevice
     X-ray mode:
       - EditMeshOverlayTests/xrayRevealsFarSideWireframe
       - EditMeshOverlayTests/occlusionBiasKeepsNearbyBuriedEdgesVisible
@@ -607,12 +619,10 @@ pending:
     - Stack mirrored islands
     - Two-tile UDIM export
   viewport-rendering:
-    # Both remaining scenarios are device-only measurements: the 5M-tri
-    # acceptance belongs to the meshlet path (task 2.2a) and "Stroke
-    # latency" needs ProMotion hardware timing (device release gate, task
+    # "Stroke latency" is a device-only measurement needing ProMotion
+    # hardware timing (device release gate, task
     # 9.6). The 120 Hz pacing *architecture* (render-on-demand scheduler,
     # ProMotion frame-rate range) is unit-covered by FramePacingTests.
-    - Multi-million-triangle target
     - Stroke latency
   weave-solver:
     - Frozen patch survives solve

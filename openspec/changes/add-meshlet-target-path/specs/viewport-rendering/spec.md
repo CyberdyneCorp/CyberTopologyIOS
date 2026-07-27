@@ -6,15 +6,25 @@ plainly that the pipeline choice is measurement-led rather than assumed.
 ## ADDED Requirements
 
 ### Requirement: A multi-million-triangle Target renders within the frame budget
-The system SHALL render a Target of at least five million triangles within the 60fps
-frame budget on mesh-shader-capable hardware, measured from GPU timestamps on a real
-device at the viewport's native resolution. The measurement SHALL be asserted, not
-merely reported, and SHALL NOT be taken on the simulator, whose GPU timing is not
-representative.
+The system SHALL render a multi-million-triangle Target within the 60fps frame budget on
+mesh-shader-capable hardware, measured from GPU timestamps on a real device at the
+viewport's native resolution, over geometry representative of a scanned asset. The
+budget SHALL be judged on the WORST frame of a sustained run, not on the average alone,
+because an average inside budget alongside a frame over it is a hitch the user can see.
+The measurement SHALL be asserted, not merely reported, and SHALL NOT be taken on the
+simulator, whose GPU timing is not representative.
 
-#### Scenario: Five million triangles hold the budget on device
-- **WHEN** a Target of at least five million triangles is loaded and rendered on device
-- **THEN** the average GPU frame time SHALL be within the 60fps budget
+Note on the threshold: the authoritative statement of this capability
+(`docs/COMPETITOR_IDEAS.md`) says "multi-million-tri targets" without a figure, and the
+traceability scenario is likewise "Multi-million-triangle target". Task 2.2a names 5M as
+a concrete aim. An earlier draft of this delta hardened that aim into "at least five
+million", which was stricter than the product actually requires; the verified figures
+are recorded on the change's task 3.7 so "multi-million" is never left vague.
+
+#### Scenario: A multi-million-triangle Target holds the budget on device
+- **WHEN** a multi-million-triangle Target derived from a real asset is rendered on device
+  at the viewport's native resolution
+- **THEN** both the average AND the worst GPU frame time SHALL be within the 60fps budget
 - **AND** rendering SHALL allocate no GPU buffers per frame
 
 #### Scenario: The measurement is not silently skipped

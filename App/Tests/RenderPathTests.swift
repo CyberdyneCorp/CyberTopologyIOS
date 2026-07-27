@@ -47,24 +47,62 @@ struct RenderPathTests {
         #expect(TargetRenderPathSelection.preferredKind(for: capabilities) == .indexedVertex)
     }
 
-    /// The meshlet pipeline is a follow-up: until it exists, selection must
-    /// resolve every preference to the working indexed vertex path (honest
-    /// seam — never a faked meshlet).
+    /// The meshlet pipeline landed (add-meshlet-target-path), so selection now
+    /// follows the capability rather than resolving everything to the fallback.
+    ///
+    /// This test previously asserted `.indexedVertex` for BOTH cases — it encoded the
+    /// pre-meshlet state, which its name ("Today") said out loud. Updated rather than
+    /// deleted, because the half that still matters is the second case: the fallback
+    /// remains mandated for the simulator and pre-A14 hardware.
     @Test(arguments: [true, false])
-    func availableKindIsIndexedVertexToday(supportsMeshShaders: Bool) {
+    func availableKindFollowsMeshShaderSupport(supportsMeshShaders: Bool) {
         let capabilities = RenderPathCapabilities(
             supportsMeshShaders: supportsMeshShaders, hasUnifiedMemory: true
         )
-        #expect(TargetRenderPathSelection.availableKind(for: capabilities) == .indexedVertex)
+        #expect(
+            TargetRenderPathSelection.availableKind(for: capabilities)
+                == (supportsMeshShaders ? .meshlet : .indexedVertex)
+        )
     }
 
-    @Test func rendererActivatesSelectedPath() throws {
+    /// Selection is not the whole story: the RENDERER must fall back when the mesh
+    /// pipeline will not build, because mesh-shader support is a capability claim and a
+    /// shader-compile failure must never blank the viewport. On the simulator the
+    /// pipeline is always unavailable, which makes this assertable there.
+    @Test func rendererFallsBackWhenTheMeshPipelineIsUnavailable() throws {
+        let renderer = try #require(ViewportRenderer(forcedTargetPathKind: .meshlet))
+        let device = try #require(renderer.device as MTLDevice?)
+        if MeshletRenderPath.unavailabilityReason(device: device) == nil {
+            #expect(renderer.renderPath.kind == .meshlet)
+        } else {
+            #expect(
+                renderer.renderPath.kind == .indexedVertex,
+                "an unbuildable mesh pipeline must fall back, not render nothing"
+            )
+        }
+    }
+
+    /// The renderer activates the SELECTED path, or the indexed fallback when the
+    /// selected one will not build.
+    ///
+    /// Previously this also asserted `.indexedVertex` unconditionally, which encoded the
+    /// pre-meshlet state — and the equality on its own is too strict now, because a
+    /// legitimate fallback (shader compile failure on some future OS) would fail it.
+    /// Both halves are stated instead of one absolute.
+    @Test func rendererActivatesSelectedPathOrFallsBack() throws {
         let renderer = try #require(ViewportRenderer())
-        #expect(
-            renderer.activeRenderPathKind
-                == TargetRenderPathSelection.availableKind(for: renderer.capabilities)
-        )
-        #expect(renderer.activeRenderPathKind == .indexedVertex)
+        let selected = TargetRenderPathSelection.availableKind(for: renderer.capabilities)
+        if renderer.activeRenderPathKind == selected {
+            #expect(renderer.activeRenderPathKind == selected)
+        } else {
+            #expect(selected == .meshlet, "only the meshlet selection may fall back")
+            #expect(renderer.activeRenderPathKind == .indexedVertex)
+            let device = try #require(renderer.device as MTLDevice?)
+            #expect(
+                MeshletRenderPath.unavailabilityReason(device: device) != nil,
+                "fell back even though the mesh pipeline was buildable"
+            )
+        }
     }
 
     // MARK: - Indexed vertex path behavior

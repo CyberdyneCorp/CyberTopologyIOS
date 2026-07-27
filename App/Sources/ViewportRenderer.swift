@@ -37,7 +37,18 @@ final class ViewportRenderer: NSObject {
     /// Internal (not private): the parity and acceptance tests need to know WHICH path
     /// actually ran. A frame-time number is meaningless without it, and a pass on the
     /// fallback must not be readable as the meshlet pipeline existing.
-    let renderPath: TargetRenderPath
+    ///
+    /// Not `let`, because an ARRAY-based load has to switch to the indexed path: meshlet
+    /// clustering needs a `Mesh` (it lives in the engine, design rule D1), so the
+    /// meshlet path cannot draw geometry supplied as raw arrays. Swapping is far better
+    /// than the alternative that shipped briefly — `loadGeometry(positions:)` silently
+    /// rendering NOTHING on mesh-shader hardware, which is a trap for any future caller.
+    private(set) var renderPath: TargetRenderPath
+    /// The kind this renderer should prefer (a forced kind, else the capability choice).
+    private var forcedTargetPathKind: TargetRenderPathKind?
+    var preferredPathKind: TargetRenderPathKind {
+        forcedTargetPathKind ?? TargetRenderPathSelection.availableKind(for: capabilities)
+    }
     /// EditMesh wireframe overlay pipeline (task 2.3).
     let overlayPath: EditMeshOverlayPath
     /// Ghost (proposed) geometry pipeline (task 2.4).
@@ -271,6 +282,9 @@ final class ViewportRenderer: NSObject {
         preferPrivateGeometryStorage: Bool? = nil,
         forcedTargetPathKind: TargetRenderPathKind? = nil
     ) {
+        // Captured so an array load that swapped in the indexed path can restore the
+        // preferred one when a real Mesh arrives.
+        self.forcedTargetPathKind = forcedTargetPathKind
         guard let device, let queue = device.makeCommandQueue() else { return nil }
         let capabilities = RenderPathCapabilities(device: device)
         let pool = GeometryBufferPool(
@@ -356,6 +370,14 @@ final class ViewportRenderer: NSObject {
     /// same object must not snap the view back to frame-to-fit); bounds and
     /// clip planes still update from the new geometry.
     func load(mesh: Mesh, preservingCamera: Bool = false) {
+        // A previous array load may have swapped in the indexed path; a real Mesh can
+        // drive the preferred one again.
+        if renderPath.kind != preferredPathKind,
+            preferredPathKind == .meshlet,
+            let meshlet = MeshletRenderPath(device: device, bufferPool: geometryPool) {
+            renderPath.clear()
+            renderPath = meshlet
+        }
         mesh.withRenderBuffers { buffers in
             loadGeometry(
                 TargetGeometry(
@@ -414,7 +436,19 @@ final class ViewportRenderer: NSObject {
     ) {
         let loaded: Bool
         if let meshletPath = renderPath as? MeshletRenderPath {
-            loaded = sourceMesh.map { meshletPath.load(geometry, from: $0) } ?? false
+            if let sourceMesh {
+                loaded = meshletPath.load(geometry, from: sourceMesh)
+            } else {
+                // No mesh, so no clusters: fall back for this load rather than draw
+                // nothing. Reverts to the meshlet path on the next `load(mesh:)`.
+                meshletPath.clear()
+                if let indexed = IndexedVertexRenderPath(device: device, bufferPool: geometryPool) {
+                    renderPath = indexed
+                    loaded = indexed.load(geometry)
+                } else {
+                    loaded = false
+                }
+            }
         } else {
             loaded = renderPath.load(geometry)
         }

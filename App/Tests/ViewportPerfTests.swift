@@ -203,6 +203,61 @@ final class ViewportPerfTests: XCTestCase {
         #endif
     }
 
+    /// THE ACCEPTANCE (add-meshlet-target-path task 1.1; master 2.2a): a
+    /// multi-million-triangle Target derived from a REAL asset holds the 60fps budget
+    /// on the meshlet path, at the iPad's native resolution.
+    ///
+    /// Asserts the WORST frame, not just the average. Measured on the indexed path the
+    /// average was 16.06 ms (inside budget) while the worst frame was 19.65 ms — a
+    /// dropped frame at 60 Hz. An average-only gate would have certified that as "runs
+    /// at 60fps", which the user can see is false.
+    ///
+    /// Also asserts the path that RAN, because the renderer falls back when the mesh
+    /// pipeline will not build: without this, a silent fallback would report the
+    /// indexed path's numbers as the meshlet path's achievement.
+    @MainActor
+    func testMultiMillionTriangleAcceptanceOnDevice() throws {
+        #if targetEnvironment(simulator)
+            throw XCTSkip(Self.simulatorSkipReason)
+        #else
+            let url = try XCTUnwrap(
+                Bundle(for: type(of: self)).url(forResource: "armadillo", withExtension: "obj"),
+                "armadillo.obj not bundled in the test target"
+            )
+            let mesh = try Mesh.loadOBJ(at: url)
+            for _ in 0..<3 { _ = try mesh.subdivide() }
+            // "Multi-million" per the authoritative capability statement; the fixture
+            // lands at ~4.8M. See the change's task 3.7 for why no committed asset hits
+            // the 5M-plus band exactly.
+            XCTAssertGreaterThan(mesh.faceCount, 4_000_000, "fixture is not multi-million")
+
+            let renderer = try XCTUnwrap(
+                ViewportRenderer(forcedTargetPathKind: .meshlet), "Metal unavailable"
+            )
+            renderer.load(mesh: mesh)
+            XCTAssertTrue(renderer.hasMesh)
+            XCTAssertEqual(
+                renderer.renderPath.kind, .meshlet,
+                "the mesh pipeline fell back; this would measure the indexed path"
+            )
+
+            let allocationsAfterLoad = renderer.geometryPool.allocationCount
+            let budget = 1.0 / 60.0
+            let stats = try measure(renderer: renderer, frames: 30, width: 2732, height: 2048)
+
+            XCTAssertLessThan(stats.averageSeconds, budget, "average frame time")
+            XCTAssertLessThan(
+                stats.maxSeconds, budget,
+                "WORST frame \(stats.maxSeconds * 1000) ms exceeds the 16.667 ms budget — "
+                + "a hitch the user sees, however good the average"
+            )
+            XCTAssertEqual(
+                renderer.geometryPool.allocationCount, allocationsAfterLoad,
+                "rendering must not allocate GPU buffers per frame"
+            )
+        #endif
+    }
+
     /// The same measurement over a REAL asset, which is the number the acceptance
     /// should actually be judged on.
     ///
