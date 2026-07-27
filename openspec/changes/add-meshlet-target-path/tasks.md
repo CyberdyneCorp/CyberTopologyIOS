@@ -146,12 +146,48 @@ machinery for an outcome A problem.
       deliberate change to how open shells look.
       **3.5 (pixel parity) is what would catch any of this going wrong**, which is why it
       runs alongside 3.3 rather than after it.
-- [ ] 3.4 `TargetRenderPathSelection.availableKind` returns `.meshlet` when capabilities
-      allow AND the pipeline built; a shader-compile failure must fall back rather than
-      render nothing.
-- [ ] 3.5 Parity: the meshlet path and the indexed path render the same mesh to
-      equivalent pixels (offscreen classification, as the existing render-path tests do).
-- [ ] 3.6 Re-measure 5M; assert the budget on the meshlet path.
+- [x] 3.4 The renderer builds `MeshletRenderPath` when the capability gate allows and
+      **falls back to the indexed path when the pipeline will not build** — mesh-shader
+      support is a capability claim, and a shader-compile failure on some future OS must
+      not blank the viewport. `MeshletRenderPath.unavailabilityReason(device:)` reports
+      WHY, because a silent fallback is undiagnosable: it is how "the fast path quietly
+      stopped running" becomes a mystery perf regression months later. It earned itself
+      immediately — see 3.8. `availableKind` itself is updated in task 1.4's write-up.
+- [x] 3.5 Parity, DEVICE-ONLY (no mesh shaders on the simulator, so it skips there
+      loudly): the two paths render armadillo and the bunny to under 1% differing pixels.
+      Run ALONGSIDE 3.3 rather than after it, which is what made the result trustworthy —
+      over-aggressive culling shows up as holes, not crashes, and a frame-time number from
+      a path that renders incorrectly is worthless. The test also asserts the forced path
+      was actually used and that the model covers >5% of the frame, so parity cannot pass
+      by comparing a path with itself or two blank frames.
+- [x] 3.6 **RE-MEASURED, iPad Air M3. The meshlet path wins, and the important number is
+      the WORST frame, not the average.** Same mesh (armadillo ×3 = 4,798,848 faces,
+      102,880 clusters) through both paths in one run, with the forced kind asserted so a
+      silent fallback could not compare a path with itself:
+
+      | path | res | avg | fps | worst frame |
+      |---|---|---|---|---|
+      | indexedVertex | 1280×960 | 14.009 ms | 71.4 | 17.359 ms |
+      | indexedVertex | 2732×2048 | 16.055 ms | 62.3 | **19.652 ms** |
+      | meshlet | 1280×960 | 10.821 ms | 92.4 | 12.948 ms |
+      | **meshlet** | **2732×2048** | **13.310 ms** | **75.1** | **15.831 ms** |
+
+      At full resolution the average improves 17% (16.06 → 13.31 ms), but the decisive
+      change is the worst frame: **19.65 ms → 15.83 ms, from a dropped frame at 60 Hz to
+      inside the budget.** Per task 0.6 that is the criterion that actually matters, and
+      it is the one the indexed path failed.
+      **The win is essentially all VERTEX REUSE.** Frustum culling can barely help when
+      the model fills the viewport, and there is no backface culling at all — which
+      confirms the geometry-bound inference drawn from the 4.5×-pixels-for-+13%-frame-time
+      reading, and means the safe subset was sufficient. The normal cones are built and
+      carried but unused, so a future watertight-gated or single-sided decision costs
+      nothing to switch on.
+- [ ] 3.7 **HONEST GAP: the real-asset fixture is 4.80M, not ≥5M.** The spec requirement
+      says at least five million. Measured: 5,242,880 synthetic (met, but synthetic
+      overstates — design decision 1) and 4,798,848 real, which is 96% of target. Reaching
+      ≥5M on real geometry needs a denser committed asset: armadillo ×3 lands at 4.80M and
+      a fourth subdivision overshoots to ~19M, so neither committed fixture hits the band.
+      Do NOT assert the requirement as met until a ≥5M real fixture exists.
 
 ## 4. Outcome C — cluster LOD required
 
@@ -172,3 +208,16 @@ machinery for an outcome A problem.
       only, since they touch the engine).
 - [ ] 5.4 Update `add-cybertopology-app` 2.2a with the measured numbers and the outcome
       taken, and 9.6 with the acceptance result.
+
+## 3.8 Two shader bugs worth recording
+
+- [x] **`global` and `vertex` are RESERVED WORDS in MSL** — an address-space qualifier and
+      a function qualifier. Naming mesh-shader locals either way makes the declaration
+      declare nothing and every following line fail to parse, with the compiler pointing
+      at the *following* lines rather than the offending name.
+- [x] **The failure was SILENT.** The path returned nil, the renderer fell back exactly as
+      designed, and the first parity run reported "indexedVertex is not equal to meshlet"
+      rather than a shader error. That is why `unavailabilityReason` exists now: the
+      robustness that keeps the viewport alive also hides the cause, so the cause needs
+      its own channel. Diagnosing by asking the compiler took one run; guessing at MSL
+      syntax could have taken many.

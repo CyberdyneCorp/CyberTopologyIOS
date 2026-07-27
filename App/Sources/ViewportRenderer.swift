@@ -34,7 +34,10 @@ final class ViewportRenderer: NSObject {
     /// asserting the no-per-frame-reallocation contract).
     let geometryPool: GeometryBufferPool
     /// Active target pipeline strategy.
-    private let renderPath: TargetRenderPath
+    /// Internal (not private): the parity and acceptance tests need to know WHICH path
+    /// actually ran. A frame-time number is meaningless without it, and a pass on the
+    /// fallback must not be readable as the meshlet pipeline existing.
+    let renderPath: TargetRenderPath
     /// EditMesh wireframe overlay pipeline (task 2.3).
     let overlayPath: EditMeshOverlayPath
     /// Ghost (proposed) geometry pipeline (task 2.4).
@@ -260,9 +263,13 @@ final class ViewportRenderer: NSObject {
     /// tests). `preferPrivateGeometryStorage` defaults to the capability
     /// detection (private storage only pays off without unified memory);
     /// tests override it to exercise the staging-blit path on simulator.
+    /// `forcedTargetPathKind` is a TEST SEAM: the parity test must render one mesh
+    /// through BOTH target paths, which is only possible by asking for a specific one.
+    /// Production passes nil and takes the capability-gated choice.
     init?(
         device: MTLDevice? = MTLCreateSystemDefaultDevice(),
-        preferPrivateGeometryStorage: Bool? = nil
+        preferPrivateGeometryStorage: Bool? = nil,
+        forcedTargetPathKind: TargetRenderPathKind? = nil
     ) {
         guard let device, let queue = device.makeCommandQueue() else { return nil }
         let capabilities = RenderPathCapabilities(device: device)
@@ -276,9 +283,15 @@ final class ViewportRenderer: NSObject {
         // resolves to the indexed vertex path; the meshlet strategy will
         // add its own case here without touching the rest of the renderer.
         let path: TargetRenderPath?
-        switch TargetRenderPathSelection.availableKind(for: capabilities) {
-        case .indexedVertex, .meshlet:
+        switch forcedTargetPathKind ?? TargetRenderPathSelection.availableKind(for: capabilities) {
+        case .indexedVertex:
             path = IndexedVertexRenderPath(device: device, bufferPool: pool)
+        case .meshlet:
+            // A pipeline that will not build must FALL BACK, never render nothing —
+            // mesh-shader support is a capability claim, and a shader-compile failure
+            // on some future OS must not blank the viewport.
+            path = MeshletRenderPath(device: device, bufferPool: pool)
+                ?? IndexedVertexRenderPath(device: device, bufferPool: pool)
         }
 
         let depthDescriptor = MTLDepthStencilDescriptor()
@@ -351,6 +364,7 @@ final class ViewportRenderer: NSObject {
                     colors: buffers.colors,
                     indices: buffers.triangleIndices
                 ),
+                sourceMesh: mesh,
                 preservingCamera: preservingCamera
             )
         }
@@ -390,10 +404,23 @@ final class ViewportRenderer: NSObject {
         }
     }
 
-    private func loadGeometry(_ geometry: TargetGeometry, preservingCamera: Bool = false) {
+    /// `sourceMesh` is required by the MESHLET path, which needs the engine's clusters
+    /// and cannot derive them from raw arrays (clustering is a mesh algorithm and lives
+    /// in the engine, design rule D1). Array-based loads therefore cannot drive the
+    /// meshlet path — the synthetic perf harness is the only such caller, and it asks
+    /// for `.indexedVertex` explicitly rather than silently rendering nothing.
+    private func loadGeometry(
+        _ geometry: TargetGeometry, sourceMesh: Mesh? = nil, preservingCamera: Bool = false
+    ) {
+        let loaded: Bool
+        if let meshletPath = renderPath as? MeshletRenderPath {
+            loaded = sourceMesh.map { meshletPath.load(geometry, from: $0) } ?? false
+        } else {
+            loaded = renderPath.load(geometry)
+        }
         guard
             let sceneBounds = SceneBounds(positions: geometry.positions),
-            renderPath.load(geometry)
+            loaded
         else {
             clearMesh()
             return

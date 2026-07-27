@@ -38,6 +38,12 @@ final class GeometryBufferPool {
         case normal
         case color
         case index
+        // Meshlet streams (add-meshlet-target-path). Only the mesh-shader path
+        // uploads these; the indexed path leaves the slots at zero length, so a
+        // document that never uses meshlets pays nothing for them.
+        case meshletDescriptors
+        case meshletVertices
+        case meshletIndices
     }
 
     /// Capacity headroom applied when a slot must grow.

@@ -170,7 +170,12 @@ final class ViewportPerfTests: XCTestCase {
         #if targetEnvironment(simulator)
             throw XCTSkip(Self.simulatorSkipReason)
         #else
-            let renderer = try XCTUnwrap(ViewportRenderer(), "Metal unavailable")
+            // Array-loaded geometry cannot drive the meshlet path (it has no source
+            // Mesh, and clustering lives in the engine), so this asks for the indexed
+            // path explicitly rather than silently rendering nothing.
+            let renderer = try XCTUnwrap(
+                ViewportRenderer(forcedTargetPathKind: .indexedVertex), "Metal unavailable"
+            )
             // 40 tiles x 2 x 256^2 = 5,242,880 triangles.
             let geometry = Self.replicatedGridGeometry(segments: 256, tiles: 40)
             renderer.loadGeometry(
@@ -212,7 +217,6 @@ final class ViewportPerfTests: XCTestCase {
         #if targetEnvironment(simulator)
             throw XCTSkip(Self.simulatorSkipReason)
         #else
-            let renderer = try XCTUnwrap(ViewportRenderer(), "Metal unavailable")
             let url = try XCTUnwrap(
                 Bundle(for: type(of: self)).url(
                     forResource: "armadillo", withExtension: "obj"
@@ -222,20 +226,31 @@ final class ViewportPerfTests: XCTestCase {
             let mesh = try Mesh.loadOBJ(at: url)
             // 100k x 4^3 = ~6.4M triangles. No reprojection: raw density is the point.
             for _ in 0..<3 { _ = try mesh.subdivide() }
-            renderer.load(mesh: mesh)
-            XCTAssertTrue(renderer.hasMesh)
 
-            let capabilities = RenderPathCapabilities(device: renderer.device)
-            for (label, w, h) in [("1280x960", 1280, 960), ("2732x2048 (full iPad)", 2732, 2048)] {
-                let stats = try measure(renderer: renderer, frames: 30, width: w, height: h)
-                print("""
-                [5M-real] \(label)
-                  faces            = \(mesh.faceCount)
-                  avg frame        = \(String(format: "%.3f", stats.averageSeconds * 1000)) ms  (\(String(format: "%.1f", 1.0 / stats.averageSeconds)) fps)
-                  max frame        = \(String(format: "%.3f", stats.maxSeconds * 1000)) ms
-                  60fps budget     = 16.667 ms  -> \(stats.averageSeconds < 1.0 / 60.0 ? "MET" : "MISSED")
-                  path             = \(TargetRenderPathSelection.availableKind(for: capabilities).rawValue)
-                """)
+            // BOTH paths over the same mesh, so the comparison is a like-for-like
+            // measurement rather than two runs of different things.
+            for kind in [TargetRenderPathKind.indexedVertex, .meshlet] {
+                let renderer = try XCTUnwrap(
+                    ViewportRenderer(forcedTargetPathKind: kind), "Metal unavailable"
+                )
+                renderer.load(mesh: mesh)
+                XCTAssertTrue(renderer.hasMesh, "\(kind.rawValue) failed to load")
+                // A fallback would silently compare a path with itself.
+                XCTAssertEqual(renderer.renderPath.kind, kind, "path fell back")
+                let clusters = mesh.meshletCount
+
+                for (label, w, h) in [
+                    ("1280x960", 1280, 960), ("2732x2048 (full iPad)", 2732, 2048),
+                ] {
+                    let stats = try measure(renderer: renderer, frames: 30, width: w, height: h)
+                    print("""
+                    [5M-real] \(kind.rawValue) @ \(label)
+                      faces            = \(mesh.faceCount)   clusters = \(clusters)
+                      avg frame        = \(String(format: "%.3f", stats.averageSeconds * 1000)) ms  (\(String(format: "%.1f", 1.0 / stats.averageSeconds)) fps)
+                      max frame        = \(String(format: "%.3f", stats.maxSeconds * 1000)) ms
+                      60fps budget     = 16.667 ms  -> \(stats.averageSeconds < 1.0 / 60.0 ? "MET" : "MISSED")
+                    """)
+                }
             }
         #endif
     }
