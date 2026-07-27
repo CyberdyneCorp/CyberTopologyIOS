@@ -406,6 +406,20 @@ extension EditorAction {
                     + "protecting. Painting the same faces again thaws them.",
                 demoFrames: ["snowflake", "square.grid.2x2"]
             )
+        case .outliner:
+            GalleryEntry(
+                title: "Outliner",
+                symbol: "list.bullet.indent",
+                gesture: "Command — opens a panel",
+                notes: "Lists every object with its role and topology counts, and lets "
+                    + "you show, solo or lock each one. Hiding and locking are document "
+                    + "state, so each is one undo step; SOLO is a view mode and is not "
+                    + "journaled, which is what lets un-soloing restore exactly the "
+                    + "visibility you had. A locked object can still be viewed, "
+                    + "measured, soloed and renamed — what it cannot be is edited, and "
+                    + "attempts are refused rather than the buttons being greyed out.",
+                demoFrames: ["list.bullet.indent", "eye.slash"]
+            )
         case .toggleLoopInfoPin:
             GalleryEntry(
                 title: "Pin loop info",

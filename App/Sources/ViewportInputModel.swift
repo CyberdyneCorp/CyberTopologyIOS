@@ -176,6 +176,13 @@ final class ViewportInputModel {
     @ObservationIgnored private let defaults: UserDefaults
     /// Presents the batch-commands panel; set by its toolbar action.
     var showsBatchCommands = false
+    /// Task 8.1: the outliner panel. Presented state, not document state.
+    var showsOutliner = false
+    /// Outliner VIEW state — solo and hidden groups. Deliberately here rather than in the
+    /// document: journaling solo would put a camera-like action in the undo stack, and
+    /// storing it as "hide everything else" would destroy the visibility the artist
+    /// configured, so un-soloing could not restore it.
+    var sceneVisibility: SceneVisibility = .everything
 
     func setAutoRelax(_ enabled: Bool) {
         guard enabled != autoRelaxEnabled else { return }
@@ -456,6 +463,9 @@ final class ViewportInputModel {
             return false
         case .batchCommands:
             showsBatchCommands = true
+            return false
+        case .outliner:
+            showsOutliner = true
             return false
         // Phase 5: propose an Auto-Retopo ghost (accepted via the bar/tap).
         case .autoRetopo:

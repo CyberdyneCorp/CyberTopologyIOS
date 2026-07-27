@@ -32,36 +32,41 @@ outliner real, and they are testable headless. No engine work at any point.
 
 ## 3. The lock guarantee
 
-- [ ] 3.1 Refuse payload-changing commands against a locked object at the COMMAND layer,
-      with a stated reason. A disabled button is a UI convention; an enforced refusal is a
-      guarantee, and only the second survives a programmatic caller or a replayed journal.
-- [ ] 3.2 Locking must NOT restrict viewing, measuring, soloing or renaming — those are not
+- [x] 3.1 Refused in `TopoDocument.perform`, the single point every NEW command passes
+      through, via `DocumentCommand.payloadMutatedObjectIDs`. Deliberately NOT in
+      `DocumentCommand.apply`, which is also the undo/redo and journal-REPLAY path: history
+      must replay faithfully, and an object locked AFTER an edge was moved must not
+      retroactively make that edit unreplayable. `compound` reports the UNION so a batch
+      containing one locked member is refused whole rather than half-applied, and the
+      refusal is surfaced as a notice because silently dropping a stroke reads as a broken
+      app.
+- [x] 3.2 Locking must NOT restrict viewing, measuring, soloing or renaming — those are not
       payload changes.
-- [ ] 3.3 Tests: a mesh edit against a locked object is refused AND the payload is
+- [x] 3.3 Tests: a mesh edit against a locked object is refused AND the payload is
       byte-unchanged; renaming a locked object succeeds.
 
 ## 4. Visibility composition
 
-- [ ] 4.1 Renderer draws an object's geometry only when the object is visible AND the face
+- [x] 4.1 Renderer draws an object's geometry only when the object is visible AND the face
       is not hidden. Object-level hiding dominates and must not rewrite face state.
-- [ ] 4.2 Solo treats every non-soloed object as hidden without touching stored visibility.
-- [ ] 4.3 Group hide/show applies to members without rewriting each member's own
+- [x] 4.2 Solo treats every non-soloed object as hidden without touching stored visibility.
+- [x] 4.3 Group hide/show applies to members without rewriting each member's own
       `isHidden`, for the same reason solo does not: un-hiding the group must restore what
       the artist had per object.
-- [ ] 4.4 Tests: hidden object draws nothing; show-after-hide restores the exact face
+- [x] 4.4 Tests: hidden object draws nothing; show-after-hide restores the exact face
       state; solo then un-solo restores per-object visibility exactly.
 
 ## 5. Outliner UI
 
-- [ ] 5.1 List objects with role, name and counts; unknown counts shown as unknown, never 0.
-- [ ] 5.2 Per-row show / solo / lock affordances, and rename.
-- [ ] 5.3 Grouped objects presented together with a per-group show/hide.
-- [ ] 5.4 Reached like every other non-default action, through the Action Gallery, so it
+- [x] 5.1 List objects with role, name and counts; unknown counts shown as unknown, never 0.
+- [x] 5.2 Per-row show / solo / lock affordances, and rename.
+- [x] 5.3 Grouped objects presented together with a per-group show/hide.
+- [x] 5.4 Reached like every other non-default action, through the Action Gallery, so it
       costs no default toolbar slot.
 
 ## 6. Close out
 
-- [ ] 6.1 `openspec validate --changes --strict`; full simulator suite; device run of the
+- [x] 6.1 `openspec validate --changes --strict`; full simulator suite; device run of the
       new suites; engine suite unaffected (no engine change in this task).
-- [ ] 6.2 Update the master 8.1 entry with what shipped and what was deliberately excluded
+- [x] 6.2 Update the master 8.1 entry with what shipped and what was deliberately excluded
       (no scene graph, no per-object transforms, no multi-object editing).

@@ -83,8 +83,10 @@ this is the shape of what is left and why.
 | **5.4c** | open | filling bare Target with no open cage edge — needs the carve path |
 
 Outside Phase 5, this pass also closed **4.3a** (annotation remainders: tags/pins now respect
-the visibility lasso, and the Loop Info chip has a sticky mode) and **9.3** (privacy manifest
-plus a network audit wired into CI). **8.1** (outliner) is next.
+the visibility lasso, and the Loop Info chip has a sticky mode), **9.3** (privacy manifest plus
+a network audit wired into CI), and **8.1** (scene outliner: show/solo/lock, groups, per-object
+stats — with the lock enforced as a command-layer refusal rather than a greyed-out button, and
+solo kept as view state so un-soloing restores exactly what was configured).
 | 5.6 | ✅ | ambient assist — satisfied by tap-to-fill; hover half declined |
 | 5.7 | ✅ | benchmark corrections landed; competitor harnesses declined |
 

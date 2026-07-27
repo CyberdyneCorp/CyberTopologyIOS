@@ -254,6 +254,31 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
         }
     }
 
+    /// Object ids whose PAYLOAD this command would change, so a caller can refuse it
+    /// against a locked object (task 8.1; spec: scene-pipeline / "Locking an object
+    /// refuses edits rather than hiding controls").
+    ///
+    /// Deliberately not a `isEdit` boolean: the lock is per object, so the caller has to
+    /// know WHICH objects a command touches. `compound` reports the union, so a batch
+    /// containing one locked target is refused whole rather than half-applied.
+    ///
+    /// `objectStateEdit` reports nothing: renaming, hiding, locking and grouping are
+    /// manifest changes, and the spec explicitly keeps them available on a locked object.
+    /// `addObject`/`removeObject` report nothing either — they are not edits TO an
+    /// existing object's geometry, and refusing to delete a locked object would make it
+    /// impossible to remove, which is not what a lock means.
+    public var payloadMutatedObjectIDs: Set<UUID> {
+        switch self {
+        case .meshEdit(let edit):
+            return [edit.objectID]
+        case .compound(_, let commands):
+            return commands.reduce(into: Set<UUID>()) { $0.formUnion($1.payloadMutatedObjectIDs) }
+        case .addObject, .removeObject, .annotationEdit, .setSymmetry, .setStage,
+            .objectStateEdit:
+            return []
+        }
+    }
+
     /// The payload bytes this command leaves `object` holding, or nil when
     /// it does not touch that object's geometry.
     ///

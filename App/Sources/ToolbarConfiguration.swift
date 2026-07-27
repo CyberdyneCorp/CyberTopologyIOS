@@ -86,6 +86,8 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     /// because the chip is deliberately `allowsHitTesting(false)` — an inspector must
     /// never intercept the next stroke, and a hit-testable corner would.
     case toggleLoopInfoPin
+    /// Task 8.1: opens the scene outliner (show / solo / lock, groups, per-object stats).
+    case outliner
     // add-weave-region-selection: Weave Fill arms the fill tool; clearWeaveFill drops
     // a pending proposal and its painted extent (journals nothing either way).
     case weaveFill
@@ -133,8 +135,8 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     /// the panel whose commands do the journaling.
     var isImmediateCommand: Bool {
         switch self {
-        case .clearPins, .clearLoopTags, .clearFrozen, .toggleLoopInfoPin, .toggleSymmetry,
-            .applySymmetry, .resymmetrize, .toggleAutoRelax, .batchCommands:
+        case .clearPins, .clearLoopTags, .clearFrozen, .toggleLoopInfoPin, .outliner,
+            .toggleSymmetry, .applySymmetry, .resymmetrize, .toggleAutoRelax, .batchCommands:
             true
         default:
             false

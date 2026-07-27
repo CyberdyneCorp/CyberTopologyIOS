@@ -51,12 +51,37 @@ final class TopoDocument: UIDocument, ObservableObject {
     /// Records `command` in the undo journal and applies it. All mutating
     /// document operations go through here (task 1.4; phase 2+ tools adopt
     /// the same path).
-    func perform(_ command: DocumentCommand) {
+    @discardableResult
+    func perform(_ command: DocumentCommand) -> Bool {
+        // LOCK ENFORCEMENT (task 8.1). Refused here rather than by disabling buttons: a
+        // disabled control is a UI convention, while a refusal at the single point every
+        // NEW command passes through also stops a programmatic caller and a test driving
+        // the session directly. Deliberately NOT in `DocumentCommand.apply`, which is
+        // also the undo/redo and journal-replay path — history must replay faithfully,
+        // and an object locked AFTER an edge was moved must not retroactively make that
+        // edit unreplayable.
+        if let blocked = lockedObjectBlocking(command) {
+            lastRefusal = "\(blocked.name) is locked — unlock it in the outliner to edit"
+            return false
+        }
+        lastRefusal = nil
         updateBundle { bundle in
             bundle.journal.record(command)
             command.apply(to: &bundle)
         }
+        return true
     }
+
+    /// The locked object a command would edit, or nil when it edits none.
+    private func lockedObjectBlocking(_ command: DocumentCommand) -> DocumentManifest.Object? {
+        let touched = command.payloadMutatedObjectIDs
+        guard !touched.isEmpty else { return nil }
+        return bundle.manifest.objects.first { touched.contains($0.id) && $0.isLocked }
+    }
+
+    /// Why the last `perform` was refused, or nil when it succeeded. A refusal has to be
+    /// SAYABLE — silently dropping a stroke reads as the app being broken.
+    private(set) var lastRefusal: String?
 
     /// Interpretation-chip alternative swap (task 3.5, spec:
     /// pencil-interaction / "One-tap misrecognition fix"): atomically

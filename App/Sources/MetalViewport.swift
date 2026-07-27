@@ -79,8 +79,17 @@ struct MetalViewport: UIViewRepresentable {
 
     /// Which object the viewport renders: the first Target, or the first
     /// EditMesh when the document has no Target yet.
-    static func renderableObject(in manifest: DocumentManifest) -> DocumentManifest.Object? {
-        manifest.objects.first { $0.role == .target } ?? manifest.objects.first
+    /// The object the viewport draws, honouring outliner visibility (task 8.1).
+    ///
+    /// `visibility` composes object-level state with solo and group hiding; a hidden
+    /// Target falls through to the next VISIBLE object rather than to nothing, so hiding
+    /// the Target reveals the EditMesh instead of blanking the viewport — which is what
+    /// hiding a reference surface is for.
+    static func renderableObject(
+        in manifest: DocumentManifest, visibility: SceneVisibility = .everything
+    ) -> DocumentManifest.Object? {
+        let visible = manifest.visibleObjects(visibility)
+        return visible.first { $0.role == .target } ?? visible.first
     }
 
     func makeCoordinator() -> Coordinator {
@@ -733,8 +742,24 @@ struct MetalViewport: UIViewRepresentable {
             syncMesh(from: bundle)
         }
 
+        /// Outliner VIEW state (task 8.1): solo and hidden groups. Not document state and
+        /// not journaled — see `SceneVisibility`.
+        var sceneVisibility: SceneVisibility = .everything {
+            didSet {
+                guard sceneVisibility != oldValue, let renderer, let bundle = bundleProvider?()
+                else { return }
+                // Visibility changed with no document change, so the identity/payload guard
+                // in syncRenderMesh would short-circuit. Clear the cached identity to force
+                // a re-resolve.
+                renderedObjectID = nil
+                syncRenderMesh(from: bundle, renderer: renderer)
+            }
+        }
+
         private func syncRenderMesh(from bundle: DocumentBundle, renderer: ViewportRenderer) {
-            let object = MetalViewport.renderableObject(in: bundle.manifest)
+            let object = MetalViewport.renderableObject(
+                in: bundle.manifest, visibility: sceneVisibility
+            )
             let payload = object.flatMap { bundle.payloads[$0.payloadFile] }
             guard object?.id != renderedObjectID || payload != renderedPayload else { return }
             // A payload-only change of the SAME object is a mesh edit:

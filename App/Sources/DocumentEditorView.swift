@@ -573,6 +573,29 @@ struct DocumentEditorView: View {
                 onDismiss: { inputModel.showsBatchCommands = false }
             )
         }
+        .sheet(isPresented: Binding(
+            get: { inputModel.showsOutliner },
+            set: { inputModel.showsOutliner = $0 }
+        )) {
+            // Scene outliner (task 8.1). Visibility, lock, group and rename journal one
+            // `objectStateEdit` each; solo and group hiding are view state on the model.
+            OutlinerView(
+                manifest: document.bundle.manifest,
+                visibility: Binding(
+                    get: { inputModel.sceneVisibility },
+                    set: { inputModel.sceneVisibility = $0 }
+                ),
+                onEdit: { edit in
+                    // A no-op must not enter the undo stack, and a refusal (locked object)
+                    // has to be SAYABLE — silently dropping it reads as a broken control.
+                    guard !edit.isNoOp else { return true }
+                    let accepted = document.perform(.objectStateEdit(edit))
+                    if !accepted { inputModel.autoRetopoNotice = document.lastRefusal }
+                    return accepted
+                },
+                onClose: { inputModel.showsOutliner = false }
+            )
+        }
         .overlay(alignment: .topTrailing) {
             // Loop-tag palette + Loop Info inspector (task 4.3). The
             // palette picks the colour the next tag is authored in; the
