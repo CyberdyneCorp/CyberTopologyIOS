@@ -1,0 +1,404 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index 1a0a36c..076c393 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -367,6 +367,22 @@ const uint32_t* cyber_mesh_tagged_edge_indices_ptr(const CyberMesh* mesh,
+  * identical position, and the prescribed interface edge set is preserved.
+  * What it does NOT guarantee: that the interface is free of singularities. That
+  * is measured and reported (cyber_mesh_region_report), never enforced. */
++/* Sets the EXTERNAL surface the next REGION solve projects its interior onto
++ * (add-region-external-reference). Without it the region path builds its reference
++ * from the mesh it is REWRITING, which for a Weave Fill is the cage plus a grown
++ * seed band -- so the solve reprojects onto its own approximation and loses any
++ * Target detail finer than that band (measured: 0.42 quads mean, 1.26 quads MAX
++ * interior deviation on rippled geometry).
++ *
++ * `reference` is BORROWED and must outlive the solve. NULL clears. Passing `mesh`
++ * itself is refused: that is already the default, so accepting it would look like
++ * it did something. Ignored by a whole-mesh solve, whose input is the surface.
++ *
++ * The surface is built lazily and CACHED on the reference handle, and dropped
++ * whenever that handle is mutated -- construction is ~636us per 1k faces, so a
++ * multi-million-triangle Target costs seconds and a fill cannot pay that per call. */
++CyberStatus cyber_mesh_set_region_reference(CyberMesh* mesh, const CyberMesh* reference);
++
+ CyberStatus cyber_mesh_set_solve_region(CyberMesh* mesh, const uint32_t* face_ids, size_t count);
+ 
+ /* Per-vertex prescribed TOTAL valence overrides for the next region solve, so a
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index 48b8496..e275105 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -115,6 +115,20 @@ struct CyberMesh {
+     std::vector<std::uint32_t> solveRegionFaces;
+     std::unordered_map<std::uint32_t, int> regionValence;
+     std::optional<cyber::remesh::RegionReport> regionReport;
++    // External projection surface for the next region solve
++    // (add-region-external-reference): the Target, so the region's interior follows
++    // real detail rather than the seed band's approximation. Borrowed, not owned —
++    // the caller guarantees the reference outlives the solve, exactly as it already
++    // must for the snapper handles it passes elsewhere.
++    const CyberMesh* regionReference = nullptr;
++    // CACHED reference surface for when THIS handle is used as someone's reference.
++    // Mandatory rather than an optimisation: construction is ~636 us per 1k faces,
++    // so ~3 s at 4.8M, and a Weave Fill solves synchronously on the main actor.
++    // Cleared by invalidateRenderCache, which every mutating op already calls — the
++    // surface is derived from geometry, so anything that changes geometry must drop
++    // it. Keyed on the smoothing angle too, since the surface depends on it.
++    mutable std::unique_ptr<cyber::remesh::ReferenceSurface> referenceSurface;
++    mutable float referenceSurfaceSmoothing = -1.0f;
+     mutable CyberRenderCache render;  // lazy; see ensureRenderCache
+ };
+ 
+@@ -128,6 +142,26 @@ std::string& errorSlot() {
+ void setError(std::string message) { errorSlot() = std::move(message); }
+ void clearError() { errorSlot().clear(); }
+ 
++/// Builds (once) the reference surface for a handle being used as someone else's
++/// projection target. Same lazy-cache shape as `ensureMeshlets`, and for the same
++/// reason: a BVH over a multi-million-triangle Target is not free, and only the
++/// region path wants one.
++const cyber::remesh::ReferenceSurface* ensureReferenceSurface(const CyberMesh* mesh,
++                                                             float smoothNormalDegrees) {
++    if (mesh == nullptr) {
++        return nullptr;
++    }
++    if (mesh->referenceSurface != nullptr &&
++        mesh->referenceSurfaceSmoothing == smoothNormalDegrees) {
++        return mesh->referenceSurface.get();
++    }
++    mesh->referenceSurface =
++        std::make_unique<cyber::remesh::ReferenceSurface>(mesh->mesh, smoothNormalDegrees);
++    mesh->referenceSurfaceSmoothing = smoothNormalDegrees;
++    return mesh->referenceSurface.get();
++}
++
++
+ CyberStatus mapIoError(const cyber::io::Error& error) {
+     setError(error.message);
+     switch (error.code) {
+@@ -370,10 +404,16 @@ CyberStatus cyber_remesh(const CyberMesh* in, const CyberRemeshParams* params,
+         if (quadMethod == CYBER_QUAD_QUADCOVER) {
+             fallback = []() { return cyber::remesh::makeFieldAlignedQuadrangulator(); };
+         }
++        // The external reference is only meaningful for a region solve; a whole-mesh
++        // solve's input IS the surface, so building one would be pure cost.
++        const cyber::remesh::ReferenceSurface* regionReference =
++            (!regionFaces.empty() && in->regionReference != nullptr)
++                ? ensureReferenceSurface(in->regionReference, cppParams.smoothNormalDegrees)
++                : nullptr;
+         cyber::remesh::PipelineResult result = cyber::remesh::remesh(
+             in->mesh, cppParams, &sink, &token,
+             [quadMethod, makeQuad]() { return makeQuad(quadMethod); }, fallback, regionFaces,
+-            in->regionValence.empty() ? nullptr : &in->regionValence);
++            in->regionValence.empty() ? nullptr : &in->regionValence, regionReference);
+ 
+         switch (result.status) {
+             case cyber::remesh::RunStatus::Success:
+@@ -1057,6 +1097,23 @@ CyberStatus copyIds(const Container& src, Project project, uint32_t* out_ids, si
+ 
+ }  // namespace
+ 
++CyberStatus cyber_mesh_set_region_reference(CyberMesh* mesh, const CyberMesh* reference) {
++    if (mesh == nullptr) {
++        setError("cyber_mesh_set_region_reference: null mesh");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    // Self-reference would mean "project onto the mesh being rewritten", which is
++    // exactly the default. Refuse it rather than accept a call that reads as doing
++    // something and does nothing.
++    if (reference == mesh) {
++        setError("cyber_mesh_set_region_reference: reference must not be the mesh itself");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    mesh->regionReference = reference;  // nullptr clears
++    clearError();
++    return CYBER_OK;
++}
++
+ CyberStatus cyber_mesh_set_solve_region(CyberMesh* mesh, const uint32_t* face_ids, size_t count) {
+     if (mesh == nullptr || (face_ids == nullptr && count > 0)) {
+         setError("cyber_mesh_set_solve_region: null argument");
+@@ -1564,7 +1621,14 @@ namespace {
+ // Drops the (possibly built) render cache after a mutation. Assigning a
+ // fresh value releases the old vectors, so stale geometry can never leak
+ // into a rebuilt cache.
+-void invalidateRenderCache(CyberMesh* mesh) { mesh->render = CyberRenderCache{}; }
++void invalidateRenderCache(CyberMesh* mesh) {
++    mesh->render = CyberRenderCache{};
++    // The reference surface is derived from geometry, so it dies with the cache. This
++    // is why it lives here rather than behind its own hook: every mutating op already
++    // calls this, so a new mutating op cannot forget to invalidate it.
++    mesh->referenceSurface.reset();
++    mesh->referenceSurfaceSmoothing = -1.0f;
++}
+ 
+ const cyber::retopo::SurfaceSnapper* snapperOf(const CyberSnapper* snapper) {
+     return snapper == nullptr ? nullptr : &snapper->snapper;
+diff --git a/src/core/include/cyber/core/pipeline.hpp b/src/core/include/cyber/core/pipeline.hpp
+index a310f68..3307fd7 100644
+--- a/src/core/include/cyber/core/pipeline.hpp
++++ b/src/core/include/cyber/core/pipeline.hpp
+@@ -11,6 +11,7 @@
+ #include "cyber/core/mesh.hpp"
+ #include "cyber/core/progress.hpp"
+ #include "cyber/core/quadrangulate.hpp"
++#include "cyber/core/reference_surface.hpp"
+ #include "cyber/core/region_solve.hpp"
+ #include "cyber/core/remesh_params.hpp"
+ 
+@@ -97,13 +98,26 @@ struct PipelineResult {
+ //
+ // `regionValenceOverrides` maps a VertexId::value to a caller-prescribed total
+ // valence so an authored pole on the interface is not reported as irregular.
++//
++// `regionReference` (add-region-external-reference) is an EXTERNAL surface the
++// region's interior is projected onto. Without it the region path builds its
++// reference from the mesh it is REWRITING, which for a Weave Fill is the cage
++// plus a grown seed band — so the solve refines that seed and reprojects onto
++// its own approximation, losing any Target detail finer than the band. Measured:
++// 0.42 quads mean and 1.26 quads MAX interior deviation on rippled geometry.
++// nullptr keeps the previous behaviour byte-for-byte. An explicitly supplied
++// reference that cannot be projected onto is REFUSED rather than silently
++// replaced by the working mesh, which would make the difference invisible from
++// outside. Interface vertices are unaffected either way: they are never smoothed
++// (Invariant P), so exact landing does not depend on which surface is used.
+ using QuadrangulatorFactory = std::function<std::unique_ptr<IQuadrangulator>()>;
+ [[nodiscard]] PipelineResult remesh(
+     const Mesh& input, const Parameters& rawParams, ProgressSink* progress = nullptr,
+     const CancelToken* cancel = nullptr, const QuadrangulatorFactory& quadrangulator = {},
+     const QuadrangulatorFactory& fallbackQuadrangulator = {},
+     std::span<const FaceId> regionFaces = {},
+-    const std::unordered_map<Index, int>* regionValenceOverrides = nullptr);
++    const std::unordered_map<Index, int>* regionValenceOverrides = nullptr,
++    const ReferenceSurface* regionReference = nullptr);
+ 
+ // Cleanup policy from the canonical parameters, applied per island result:
+ // KeepLargest keeps only the biggest connected patch, KeepAll keeps
+diff --git a/src/core/src/pipeline.cpp b/src/core/src/pipeline.cpp
+index 4853d3a..844b775 100644
+--- a/src/core/src/pipeline.cpp
++++ b/src/core/src/pipeline.cpp
+@@ -503,7 +503,8 @@ void countFaces(const Mesh& mesh, Statistics& stats) {
+ PipelineResult remeshRegion(const Mesh& input, const Parameters& params, int effectiveQuads,
+                             std::span<const FaceId> regionFaces,
+                             const std::unordered_map<Index, int>* valenceOverrides,
+-                            ProgressSink* progress, const CancelToken* cancel,
++                            const ReferenceSurface* externalReference, ProgressSink* progress,
++                            const CancelToken* cancel,
+                             const QuadrangulatorFactory& quadrangulator, PipelineResult result) {
+     const auto fail = [&result](std::string message) {
+         result.status = RunStatus::Error;
+@@ -569,7 +570,21 @@ PipelineResult remeshRegion(const Mesh& input, const Parameters& params, int eff
+     // interior region vertex can snap to the wrong sheet. Interface vertices are
+     // immune (never smoothed, Invariant P), so it degrades interior quality
+     // rather than the landing guarantee.
+-    const ReferenceSurface reference(work, params.smoothNormalDegrees);
++    // An EXTERNAL reference (add-region-external-reference) is the Target itself, so
++    // the interior follows real detail instead of the seed band's approximation of it.
++    // Built only when absent, because constructing one over a multi-million-triangle
++    // Target costs ~636 us per 1k faces (~3 s at 4.8M) and the caller caches it.
++    ReferenceSurface ownedReference;
++    const ReferenceSurface* referencePtr = externalReference;
++    if (referencePtr == nullptr) {
++        ownedReference = ReferenceSurface(work, params.smoothNormalDegrees);
++        referencePtr = &ownedReference;
++    } else if (referencePtr->empty()) {
++        // Refuse rather than fall back to `work`: a silent fallback would make an
++        // unusable reference indistinguishable from a working one from outside.
++        return fail("region reference surface is unusable (empty)");
++    }
++    const ReferenceSurface& reference = *referencePtr;
+     IsotropicOptions iso;
+     iso.targetEdgeLength = lengthResult.edgeLength;
+     iso.adaptivity = params.adaptivity;
+@@ -672,7 +687,8 @@ PipelineResult remesh(const Mesh& input, const Parameters& rawParams, ProgressSi
+                       const CancelToken* cancel, const QuadrangulatorFactory& quadrangulator,
+                       const QuadrangulatorFactory& fallbackQuadrangulator,
+                       std::span<const FaceId> regionFaces,
+-                      const std::unordered_map<Index, int>* regionValenceOverrides) {
++                      const std::unordered_map<Index, int>* regionValenceOverrides,
++                      const ReferenceSurface* regionReference) {
+     PipelineResult result;
+ 
+     // Stage 0: parameters (validated at every entry point — spec). A region
+@@ -705,7 +721,7 @@ PipelineResult remesh(const Mesh& input, const Parameters& rawParams, ProgressSi
+     // Entirely behind this guard, so the whole-mesh path below is untouched.
+     if (!regionFaces.empty()) {
+         return remeshRegion(input, params, effectiveQuads, regionFaces, regionValenceOverrides,
+-                            progress, cancel, quadrangulator, result);
++                            regionReference, progress, cancel, quadrangulator, result);
+     }
+ 
+     // Stage 1: guarded target edge length.
+diff --git a/tests/core/test_region_solve.cpp b/tests/core/test_region_solve.cpp
+index 7eb0bc4..2d890a4 100644
+--- a/tests/core/test_region_solve.cpp
++++ b/tests/core/test_region_solve.cpp
+@@ -525,3 +525,166 @@ TEST_CASE("the refuse tier catches a broken prescription") {
+         CHECK(r.corruptedFrozenFaces.size() >= 1);
+     }
+ }
++
++// ---- External reference surface (openspec add-region-external-reference, 5.4b) ----
++//
++// A region solve builds its ReferenceSurface from the mesh it is REWRITING, so a fill
++// refines its grown seed band and reprojects onto that approximation. Supplying the
++// Target instead was measured at 0.42 quads mean / 1.26 quads MAX interior deviation
++// better on rippled geometry; these lock the contract rather than the numbers.
++
++namespace {
++
++/// A dense rippled surface: detail far finer than a coarse cage's spacing, which is
++/// the only geometry that can exhibit the defect at all. A smooth fixture cannot --
++/// that is why 5.4b's originally filed 0.031-quad figure understated it tenfold.
++Mesh rippledTarget(std::size_t n) {
++    return makeGrid(n, [](float u, float v) {
++        return 0.12f * std::sin(9.0f * u) * std::cos(9.0f * v);
++    });
++}
++Mesh rippledCage() { return rippledTarget(kN); }
++
++remesh::Parameters regionParams(float edge) {
++    remesh::Parameters p;
++    p.targetQuadCount = 400;
++    p.edgeScale = 1.0f;
++    p.sharpEdgeDegrees = 0.0f;
++    p.smoothNormalDegrees = 0.0f;
++    (void)edge;
++    return p;
++}
++
++/// Mean/max distance of the SOLVED INTERIOR vertices from `truth`.
++std::pair<double, double> interiorDeviation(const Mesh& solved, const remesh::RegionSolve& region,
++                                           const remesh::ReferenceSurface& truth) {
++    double mean = 0.0, worst = 0.0;
++    std::size_t n = 0;
++    for (Index i = 0; i < solved.vertexCapacity(); ++i) {
++        const VertexId v{i};
++        if (!solved.isAlive(v) || region.pinned(v)) {
++            continue;  // interior only: interface vertices are never smoothed
++        }
++        const Vec3 p = solved.position(v);
++        const double e = static_cast<double>(length(p - truth.project(p)));
++        mean += e;
++        worst = std::fmax(worst, e);
++        ++n;
++    }
++    return {n ? mean / static_cast<double>(n) : 0.0, worst};
++}
++
++}  // namespace
++
++TEST_CASE("an external reference pulls the region's interior onto the Target") {
++    const Mesh target = rippledTarget(96);
++    const remesh::ReferenceSurface targetRef(target, 0.0f);
++    REQUIRE(!targetRef.empty());
++
++    const Mesh cage = rippledCage();
++    const auto faces = centreBlock();
++    const float baseEdge = meanEdgeLength(cage);
++    const remesh::Parameters params = regionParams(baseEdge);
++
++    const remesh::PipelineResult self =
++        remesh::remesh(cage, params, nullptr, nullptr, {}, {}, faces, nullptr, nullptr);
++    const remesh::PipelineResult external =
++        remesh::remesh(cage, params, nullptr, nullptr, {}, {}, faces, nullptr, &targetRef);
++    REQUIRE(self.status == remesh::RunStatus::Success);
++    REQUIRE(external.status == remesh::RunStatus::Success);
++
++    // On a scratch copy for the same reason: buildRegionSolve mutates its argument.
++    Mesh probe = cage;
++    const auto builtSelf = remesh::buildRegionSolve(probe, faces, 0.0f, {});
++    REQUIRE(builtSelf.status == remesh::RegionSolveStatus::Ok);
++    const auto [selfMean, selfMax] = interiorDeviation(self.mesh, builtSelf.region, targetRef);
++    const auto [extMean, extMax] = interiorDeviation(external.mesh, builtSelf.region, targetRef);
++
++    // The property, not the measured constant: projecting onto the Target must put the
++    // interior CLOSER to the Target than projecting onto the seed's approximation of it.
++    CHECK(extMean < selfMean);
++    CHECK(extMax < selfMax);
++}
++
++TEST_CASE("no external reference is byte-identical to before the parameter existed") {
++    const Mesh cage = rippledCage();
++    const auto faces = centreBlock();
++    const remesh::Parameters params = regionParams(meanEdgeLength(cage));
++
++    // Defaulted vs explicit nullptr: the capability must be inert when unused, or it
++    // changes existing output by merely existing.
++    const remesh::PipelineResult a =
++        remesh::remesh(cage, params, nullptr, nullptr, {}, {}, faces, nullptr);
++    const remesh::PipelineResult b =
++        remesh::remesh(cage, params, nullptr, nullptr, {}, {}, faces, nullptr, nullptr);
++    REQUIRE(a.status == remesh::RunStatus::Success);
++    REQUIRE(b.status == remesh::RunStatus::Success);
++    REQUIRE(a.mesh.faceCount() == b.mesh.faceCount());
++    for (Index i = 0; i < a.mesh.vertexCapacity(); ++i) {
++        const VertexId v{i};
++        if (!a.mesh.isAlive(v)) {
++            continue;
++        }
++        REQUIRE(b.mesh.isAlive(v));
++        CHECK(bitwiseEqual(a.mesh.position(v), b.mesh.position(v)));
++    }
++}
++
++TEST_CASE("an external reference does not weaken exact landing") {
++    const Mesh target = rippledTarget(96);
++    const remesh::ReferenceSurface targetRef(target, 0.0f);
++    const Mesh cage = rippledCage();
++    const auto faces = centreBlock();
++
++    // buildRegionSolve takes Mesh& and TAGS interface edges as feature edges, so it
++    // must run on a scratch copy: probing the mesh first and then solving it would
++    // hand the pipeline an already-tagged input, which it refuses.
++    std::map<Index, Vec3> before;
++    {
++        Mesh probe = cage;
++        const auto built = remesh::buildRegionSolve(probe, faces, 0.0f, {});
++        REQUIRE(built.status == remesh::RegionSolveStatus::Ok);
++        for (const auto& entry : built.region.requiredInRegion) {
++            const VertexId v{entry.first};
++            before[v.value] = probe.position(v);
++        }
++    }
++
++    const remesh::PipelineResult out = remesh::remesh(
++        cage, regionParams(meanEdgeLength(cage)), nullptr, nullptr, {}, {}, faces, nullptr,
++        &targetRef);
++    REQUIRE(out.status == remesh::RunStatus::Success);
++
++    // 5.3's guarantee is bitwise and must survive projecting the interior elsewhere.
++    for (const auto& [id, position] : before) {
++        const VertexId v{id};
++        REQUIRE(out.mesh.isAlive(v));
++        CHECK(bitwiseEqual(out.mesh.position(v), position));
++    }
++}
++
++TEST_CASE("an unusable external reference is refused, not silently ignored") {
++    const remesh::ReferenceSurface empty;  // default-constructed: nothing to project onto
++    REQUIRE(empty.empty());
++    const Mesh cage = rippledCage();
++    const remesh::PipelineResult out =
++        remesh::remesh(cage, regionParams(meanEdgeLength(cage)), nullptr, nullptr, {}, {},
++                       centreBlock(), nullptr, &empty);
++    // Falling back to the working mesh would make an unusable reference
++    // indistinguishable from a working one from outside the engine.
++    CHECK(out.status == remesh::RunStatus::Error);
++}
++
++TEST_CASE("a whole-mesh solve ignores an external reference") {
++    const Mesh target = rippledTarget(96);
++    const remesh::ReferenceSurface targetRef(target, 0.0f);
++    const Mesh input = rippledCage();
++    const remesh::Parameters params = regionParams(meanEdgeLength(input));
++
++    const remesh::PipelineResult plain = remesh::remesh(input, params);
++    const remesh::PipelineResult withRef =
++        remesh::remesh(input, params, nullptr, nullptr, {}, {}, {}, nullptr, &targetRef);
++    REQUIRE(plain.status == remesh::RunStatus::Success);
++    REQUIRE(withRef.status == remesh::RunStatus::Success);
++    CHECK(plain.mesh.faceCount() == withRef.mesh.faceCount());
++}

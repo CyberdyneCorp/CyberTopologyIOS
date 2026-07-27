@@ -184,7 +184,7 @@ struct MetalViewport: UIViewRepresentable {
         /// snap projection for every verb. Rebuilt when the Target object
         /// changes (Targets are immutable, so identity suffices).
         private var targetObjectID: UUID?
-        private var targetMesh: Mesh?
+        private(set) var targetMesh: Mesh?
         private(set) var targetSnapper: SurfaceSnapper?
         /// Pending Auto-Retopo ghost (Phase 5, add-weave-solver-pipeline): the
         /// proposed EditMesh from a Weave solve, held until the user accepts
@@ -764,6 +764,12 @@ struct MetalViewport: UIViewRepresentable {
             }
             targetMesh = mesh
             targetSnapper = try? SurfaceSnapper(target: mesh)
+            // `targetMesh` is also the projection surface region solves use (openspec
+            // add-region-external-reference). It MUST stay this cached handle rather than
+            // a per-fill `bundle.mesh(for:)`: that deserialises a FRESH handle each call
+            // and the engine caches the projection surface PER HANDLE, so resolving the
+            // Target per fill would pay the whole BVH build every time — ~3 s at 4.8M
+            // faces, on the main actor, where a fill runs synchronously.
         }
 
         /// Loads the first EditMesh into the wireframe overlay pipeline

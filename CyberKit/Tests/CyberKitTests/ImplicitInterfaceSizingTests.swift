@@ -146,3 +146,115 @@ struct ImplicitInterfaceSizingTests {
         )
     }
 }
+
+/// External projection surface for a region solve (openspec add-region-external-reference,
+/// 5.4b). The engine tests own the DEVIATION property; these own the Swift contract —
+/// that the side-channel is wired, inert when unset, and refuses what it should.
+@Suite("Region solves can project onto an external reference")
+struct RegionExternalReferenceTests {
+    private func mesh(_ obj: String) throws -> Mesh {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("extref-\(UUID().uuidString).obj")
+        try obj.write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        return try Mesh.loadOBJ(at: url)
+    }
+
+    /// A rippled grid: detail finer than a coarse cage, the only geometry where the
+    /// defect is visible at all.
+    private func rippled(_ n: Int) throws -> Mesh {
+        var obj = ""
+        for i in 0...n {
+            for j in 0...n {
+                let u = 2 * Float(i) / Float(n) - 1
+                let v = 2 * Float(j) / Float(n) - 1
+                obj += "v \(u) \(v) \(0.12 * sin(9 * u) * cos(9 * v))\n"
+            }
+        }
+        for i in 0..<n {
+            for j in 0..<n {
+                let f = { (a: Int, b: Int) in a * (n + 1) + b + 1 }
+                obj += "f \(f(i, j)) \(f(i + 1, j)) \(f(i + 1, j + 1)) \(f(i, j + 1))\n"
+            }
+        }
+        return try mesh(obj)
+    }
+
+    private var centreBlock: [UInt32] {
+        var faces: [UInt32] = []
+        for i in 1...4 {
+            for j in 1...4 { faces.append(UInt32(i * 6 + j)) }
+        }
+        return faces
+    }
+
+    /// A SMALL explicit budget. `RemeshParameters()` carries the engine's raw default of
+    /// 50 000 target quads, and `remeshedRegion` does not derive one — that is
+    /// `RegionWeaveSolver`'s job — so the bare initialiser asks for 50 000 quads inside a
+    /// 16-face region and the solve runs effectively forever.
+    private var params: RemeshParameters {
+        var p = RemeshParameters()
+        p.targetQuads = 64
+        return p
+    }
+
+    @Test("Setting and clearing a reference is accepted")
+    func setAndClear() throws {
+        let cage = try rippled(6)
+        let target = try rippled(24)
+        try cage.setRegionReference(target)
+        try cage.setRegionReference(nil)
+    }
+
+    @Test("A mesh cannot be its own reference")
+    func selfReferenceRefused() throws {
+        let cage = try rippled(6)
+        // Projecting onto the mesh being rewritten IS the default, so accepting this
+        // would be a call that looks like it does something and does nothing.
+        #expect(throws: (any Error).self) { try cage.setRegionReference(cage) }
+    }
+
+    @Test("A reference changes the solve; clearing it restores the original result")
+    func referenceChangesTheSolveAndClears() throws {
+        let plainCage = try rippled(6)
+        let plain = try #require(
+            try plainCage.remeshedRegion(faces: centreBlock, parameters: params)
+        )
+
+        let referencedCage = try rippled(6)
+        let target = try rippled(24)
+        try referencedCage.setRegionReference(target)
+        let referenced = try #require(
+            try referencedCage.remeshedRegion(faces: centreBlock, parameters: params)
+        )
+        // If the side-channel were not wired, these would be identical — which is
+        // exactly how a stored-and-never-read parameter looks from outside.
+        #expect(try plain.payloadData() != referenced.payloadData())
+
+        // And clearing must genuinely restore the default, not leave a sticky reference.
+        let clearedCage = try rippled(6)
+        try clearedCage.setRegionReference(target)
+        try clearedCage.setRegionReference(nil)
+        let cleared = try #require(
+            try clearedCage.remeshedRegion(faces: centreBlock, parameters: params)
+        )
+        #expect(try cleared.payloadData() == plain.payloadData())
+    }
+
+    @Test("A reference does not disturb the interface")
+    func interfaceUnaffected() throws {
+        let cage = try rippled(6)
+        let target = try rippled(24)
+        try cage.setRegionReference(target)
+        let solved = try #require(
+            try cage.remeshedRegion(faces: centreBlock, parameters: params)
+        )
+        let report = try #require(solved.regionReport())
+        // Exact landing is 5.3's shipped guarantee and must not depend on which surface
+        // the INTERIOR was projected onto.
+        #expect(!report.interfaceVertices.isEmpty)
+        for vertex in report.interfaceVertices {
+            #expect(solved.vertexPosition(vertex) == cage.vertexPosition(vertex))
+        }
+    }
+}

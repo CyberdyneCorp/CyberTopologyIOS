@@ -106,6 +106,21 @@ extension MetalViewport.Coordinator {
             currentCageAnnotations(), mesh: seed.mesh, regionFaces: seed.seedFaces
         )
 
+        // The TARGET is the projection surface for the region's interior (openspec
+        // add-region-external-reference): without it the solve refines the grown seed and
+        // reprojects onto that approximation, losing Target detail finer than the band
+        // (measured 0.42 quads mean / 1.26 quads max on rippled geometry).
+        //
+        // Rides the SOURCE handle, exactly as the solve region and orientation guides do,
+        // because `Mesh` is not `Sendable` and could not be carried through the
+        // `WeaveSolving` seam. `targetMesh` is the renderer's CACHED handle — the engine
+        // caches the built surface per handle, so a freshly deserialised Target would pay
+        // the full BVH build on every fill.
+        try? seed.mesh.setRegionReference(targetMesh)
+        // Cleared so a later solve on this handle cannot silently inherit it, and so the
+        // borrowed Target handle is not held past the solve.
+        defer { try? seed.mesh.setRegionReference(nil) }
+
         let ghost: SolverGhost?
         do {
             ghost = try weaveSolver.solve(

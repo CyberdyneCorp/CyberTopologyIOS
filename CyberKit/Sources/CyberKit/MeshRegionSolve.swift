@@ -127,12 +127,38 @@ extension Mesh {
         return Mesh(owning: out)
     }
 
+    /// The external surface the next region solve projects its interior onto
+    /// (openspec add-region-external-reference). nil clears.
+    ///
+    /// Without one, the region path builds its reference from the mesh it is
+    /// REWRITING — for a Weave Fill that is the cage plus a grown seed band, so the
+    /// solve refines the seed and reprojects onto its own approximation, losing any
+    /// Target detail finer than the band. Measured on rippled geometry: 0.42 quads
+    /// mean and 1.26 quads MAX interior deviation, i.e. the worst interior vertex
+    /// sits more than a full quad edge off the surface it should lie on.
+    ///
+    /// Interface vertices are unaffected — they are never smoothed (Invariant P) — so
+    /// exact landing does not depend on which surface is used.
+    ///
+    /// The engine builds the surface lazily and CACHES it on the reference handle,
+    /// dropping it whenever that handle is mutated. That is not an optimisation:
+    /// construction costs ~636 µs per 1k faces, so seconds on a multi-million-triangle
+    /// Target, and a fill solves synchronously on the main actor.
+    public func setRegionReference(_ reference: Mesh?) throws {
+        try check(cyber_mesh_set_region_reference(handle, reference?.handle))
+    }
+
     /// Region-scoped remesh: rewrites only `faces`, leaving every other face's
     /// geometry, ring and element id untouched. `self` is never modified.
     ///
+    /// The projection surface rides the HANDLE — set `setRegionReference` on the source
+    /// before calling, exactly as orientation guides are set. It is deliberately not a
+    /// parameter here: `Mesh` is not `Sendable`, so threading it through the `WeaveSolving`
+    /// seam would force a non-Sendable stored property into a Sendable solver.
+    ///
     /// Returns nil when cancelled. Throws when the engine refuses the region —
-    /// disconnected, whole-mesh, coincident duplicates, inconsistent winding —
-    /// or when a solve would have broken exact landing.
+    /// disconnected, whole-mesh, coincident duplicates, inconsistent winding — or
+    /// when a solve would have broken exact landing.
     public func remeshedRegion(
         faces: [UInt32],
         parameters: RemeshParameters = RemeshParameters(),

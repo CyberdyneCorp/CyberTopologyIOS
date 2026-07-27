@@ -25,44 +25,50 @@
 
 ## 1. Engine (patch 0008), only if 0.4 says proceed
 
-- [ ] 1.1 Region path accepts an external `ReferenceSurface` instead of always constructing
+- [x] 1.1 Region path accepts an external `ReferenceSurface` instead of always constructing
       one from the working mesh. Absent ⇒ today's behaviour exactly.
-- [ ] 1.2 Interface vertices stay untouched — they are never smoothed (Invariant P), so this
+- [x] 1.2 Interface vertices stay untouched — they are never smoothed (Invariant P), so this
       should fall out, and a test must prove it did.
-- [ ] 1.3 An unusable reference is refused with a reason, never a silent fallback to the
+- [x] 1.3 An unusable reference is refused with a reason, never a silent fallback to the
       working mesh. A silent fallback would make the feature untestable from outside.
-- [ ] 1.4 Fold into the patch stack as a numbered patch, per the engine's discipline. Do NOT
+- [x] 1.4 Fold into the patch stack as a numbered patch, per the engine's discipline. Do NOT
       leave raw submodule edits: `build_engine.sh` refuses a tree the patch stack does not
       fit, which is the correct behaviour and not to be worked around.
 
 ## 2. C API and CyberKit
 
-- [ ] 2.1 Entry point carrying the reference by mesh handle, riding the handle like
+- [x] 2.1 Entry point carrying the reference by mesh handle, riding the handle like
       `cyber_mesh_set_solve_region` — established pattern, cleared after the solve.
-- [ ] 2.2 `Mesh.remeshedRegion` gains the parameter; `RegionWeaveSolver` passes the Target.
-- [ ] 2.3 Caching keyed on the reference handle. **MANDATORY, not conditional** — 0.3
+- [x] 2.2 **NOT a parameter — the reference rides the HANDLE.** `Mesh` is not `Sendable`, so
+      storing the Target on `RegionWeaveSolver` fails to compile: a Sendable solver cannot
+      hold it, and the `WeaveSolving` seam cannot carry it. `Mesh.setRegionReference` follows
+      the side-channel `setSolveRegion` / `setRegionValence` / `setOrientationGuides` already
+      use, which is the more consistent design anyway — the type system pushed toward the
+      pattern the codebase already had.
+- [x] 2.3 Caching keyed on the reference handle. **MANDATORY, not conditional** — 0.3
       measured ~3.0 s of BVH build at 4.8M faces, and a fill runs synchronously on the main
       actor, so an uncached build would freeze the UI for seconds on every fill.
 
 ## 3. App
 
-- [ ] 3.1 `WeaveFillSession` supplies the Target. It already resolves and caches a
-      `SurfaceSnapper` over it, so the Target handle is in hand — but note the snapper and
-      the engine's `ReferenceSurface` are different types over the same geometry, and
-      building both per fill would pay the BVH cost twice.
+- [x] 3.1 `WeaveFillSession` supplies the renderer's CACHED `targetMesh`, set on the seed
+      handle around the solve and cleared after. **The obvious wiring would have defeated the
+      cache entirely**: `bundle.mesh(for:)` deserialises a FRESH handle per call and the
+      engine caches per handle, so resolving the Target inside each fill would have paid the
+      full ~3 s BVH build every time — precisely the cost the cache exists to avoid.
 
 ## 4. Tests
 
-- [ ] 4.1 Detail finer than the seed band is followed: interior vertices land closer to the
+- [x] 4.1 Detail finer than the seed band is followed: interior vertices land closer to the
       Target than with the working-mesh reference. Asserted against the measurement from 0.2,
       not against a guessed threshold.
-- [ ] 4.2 **No external reference is byte-identical** to before — the inertness property.
-- [ ] 4.3 Interface vertices keep ids and bitwise positions with a reference supplied.
-- [ ] 4.4 An unusable reference refuses.
-- [ ] 4.5 Whole-mesh solves unchanged; no interface golden regenerated.
+- [x] 4.2 **No external reference is byte-identical** to before — the inertness property.
+- [x] 4.3 Interface vertices keep ids and bitwise positions with a reference supplied.
+- [x] 4.4 An unusable reference refuses.
+- [x] 4.5 Whole-mesh solves unchanged; no interface golden regenerated.
 
 ## 5. Close out
 
-- [ ] 5.1 `openspec validate --changes --strict`; simulator; engine host suite; device run.
-- [ ] 5.2 Update the master 5.4b entry with the measured before/after, and state plainly that
+- [x] 5.1 `openspec validate --changes --strict`; simulator; engine host suite; device run.
+- [x] 5.2 Update the master 5.4b entry with the measured before/after, and state plainly that
       the no-cage-boundary half is NOT included and still needs the carve path.
