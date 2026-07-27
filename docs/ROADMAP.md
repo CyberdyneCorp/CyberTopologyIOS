@@ -65,6 +65,48 @@ The differentiator lands. TestFlight to ~50 invited retopo artists under NDA.
 - Benchmark run vs AutoRemesher / Quadriflow / Instant Meshes published internally — the "better than" marketing claim becomes a measured number before we say it publicly.
 - **Exit criteria:** frozen-patch bit-identity holds on every alpha document; full-body character done in the hybrid flow (hand loops + Weave fill) in under 1 hour; determinism verified simulator-vs-device.
 
+#### Phase 5 status — 9 of 15 closed
+
+Per-task detail lives in [`tasks.md`](../openspec/changes/add-cybertopology-app/tasks.md);
+this is the shape of what is left and why.
+
+| item | state | what it is |
+|---|---|---|
+| 5.1, 5.1a | ✅ | solver API + region-scoped solve, float-free interface goldens |
+| 5.2, 5.2a | ✅ | constraint plumbing — **five of six kinds honoured end to end** |
+| 5.3 | ✅ | prescribed-boundary guarantee, **exact landing only** |
+| 5.4, 5.4a | ✅ | ghost accept/override, Weave Fill (tap + paint), live re-solve |
+| 5.5, 5.5a | ✅ | global density presets + implicit sizing from a prescribed interface |
+| **5.2b** | open | density BRUSH + RADIAL symmetry — engine work, scoped and decided |
+| **5.3a** | **blocked** | interior-only singularities — **four refuted attempts** |
+| **5.4b** | open | region solves reference the working mesh, not the Target |
+| **5.6** | decision | ambient hover assist — needs a product call, not code |
+| **5.7** | open | competitive benchmark — gated on 5.3a, needs new harnesses |
+
+**5.3a is the phase's hard blocker and the one that gates the marketing claim.** Face count
+at an interface vertex is `n(b) − k(b)`. Four approaches have now been built and MEASURED,
+and none converged: greedy ring-first pairing (changed the failure count by exactly zero),
+degree-constrained pairing (deadlocks — a merge decrements both endpoints, so adjacent
+interface vertices compete), degree-pairing plus a fan lock, and forcing `k(b) = 0` by
+feature-locking interface-adjacent edges. The fourth is the most informative: the locking
+worked, and conformance got strictly worse everywhere, because `q_in(b)` counts the QUADS
+the cage expects while `k(b) = 0` guarantees triangles. What remains is a genuine
+degree-constrained b-matching over the interface ring — `maximumTrianglePairing` is
+blossom-free — which is a substantial piece of combinatorial optimisation and should not be
+started without deciding it is worth the cost. **Until it lands, do not claim Weave places
+no singularity on a prescribed interface**, and 5.7's Table 2 stays unpublishable.
+
+**5.6 is a product decision, not a wiring gap.** Tap-to-fill already delivers this
+requirement's content; what remains is showing a proposal on boundary HOVER without being
+asked, which means solving speculatively — a real cost-per-hover and an unrequested ghost.
+
+**5.7 is larger than a measurement run.** Three corrections must land first: the published
+"Instant Meshes" column is our own retired extractor (`wjakob/instant-meshes` has never been
+run and no harness exists), every published number came from a `CYBER_WITH_QUADCOVER=ON`
+preset the iPad does not use, and wall-clock and determinism are unmeasured. The defensible
+differentiator is that on a frozen-patch interface the competitors are UNDEFINED rather than
+worse — which is exactly the table 5.3a gates.
+
 ### v0.3 — Public beta (target: Jun 2027) — "The pipeline's second stage"
 
 Open TestFlight. This is the release that starts the clock against CozyBlanket Pro.
