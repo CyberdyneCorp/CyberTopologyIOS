@@ -122,6 +122,8 @@ targets:
       - path: CyberKit/Tests/CyberKitTests/MeshletOpsTests.swift
       # Authored constraints reaching a region solve: public-API + inline fixtures.
       - path: CyberKit/Tests/CyberKitTests/ConstraintBridgeTests.swift
+      # Implicit sizing from a prescribed interface (5.5a): public-API + inline fixtures.
+      - path: CyberKit/Tests/CyberKitTests/ImplicitInterfaceSizingTests.swift
       # Context-aware create-face: public-API + inline mesh, runs on device too.
       - path: CyberKit/Tests/CyberKitTests/ContextAwareCreateFaceTests.swift
       # Relax boundary preservation: public-API + inline mesh, runs on device too.
