@@ -1,5 +1,14 @@
 # Tasks: add-interface-singularity-guarantee
 
+> **OUTCOME: REFUTED at task 0.4. Tasks 1-5 are NOT started.**
+> Locking interface-adjacent edges forces `k(b) = 0` exactly as predicted — and that makes
+> conformance strictly WORSE on every fixture at every density (`lshape` 0 -> 12 irregular,
+> `grid66_center` 3 -> 14, `sphere_cap` 0 -> 14; best case 16 -> 16), because `q_in(b)`
+> counts the quads the cage expects while `k(b) = 0` guarantees triangles. Seam quality
+> collapses too: `lshape` and `cross` lose every quad in the solved region. Numbers,
+> reasoning and a reproducible harness: `spike/RESULTS.md`, `spike/interface_lock_spike.cpp`.
+> This is the FOURTH refuted attempt at 5.3a. The fallbacks are deliberately not started.
+
 **Spike-gated, and the spike can refute the whole approach.** Three earlier attempts at
 this failed by trying to control `k(b)` (merges at an interface vertex); this one controls
 `n(b)` (the fan) and forces `k(b) = 0`. Do not build the gate promotion (task 3) before
@@ -7,21 +16,22 @@ task 0 says the residual is small enough for refusal to be usable.
 
 ## 0. Spike: does forcing k(b)=0 plus fan normalisation actually converge?
 
-- [ ] 0.1 On a throwaway branch, after the isotropic stage in the region branch, mark every
+- [x] 0.1 On a throwaway branch, after the isotropic stage in the region branch, mark every
       edge INCIDENT to an interface vertex as a feature edge. `collectPairEdges` already
       skips feature edges, so this alone should drive `k(b)` to zero — verify that directly
       by measuring `faces(b) − n(b)` per interface vertex, which must be 0 for every one.
-- [ ] 0.2 Report the fan error `n(b) − q_in(b)` per interface vertex on all four fixtures
+- [x] 0.2 Report the fan error `n(b) − q_in(b)` per interface vertex on all four fixtures
       (grid66_center, lshape, cross, sphere_cap) at prescribed density. **This is the number
       the whole approach rests on**: with `k(b) = 0`, conformance IS `n(b) = q_in(b)`.
-- [ ] 0.3 Add a fan-normalisation pass: while `n(b) ≠ q_in(b)`, flip a `(b, interior)` edge
-      to move the fan by one, preferring flips that do not disturb another interface vertex.
-      Deterministic ordering (ascending vertex id, then ascending edge id).
-- [ ] 0.4 Re-measure conformance. **Falsifier:** if the residual on `lshape` is not
+- [x] 0.3 **NOT BUILT — 0.1/0.2 made it moot.** With `k(b) = 0` the fan must collapse from
+      the isotropic stage's 5-6 triangles to a prescription of 2-3 at EVERY interface vertex
+      simultaneously. That is a large topological change, not a local flip, so the pass this
+      task describes could not close the gap even if written.
+- [x] 0.4 Re-measure conformance. **Falsifier:** if the residual on `lshape` is not
       materially better than the current 5-of-16, the local hypothesis is wrong and this
       change stops — the fallbacks are the boundary-staircase lattice (construct-correct,
       narrower) or a real b-matching solver, and neither should be started speculatively.
-- [ ] 0.5 Also measure what locking costs: interface-adjacent edges can no longer be
+- [x] 0.5 Also measure what locking costs: interface-adjacent edges can no longer be
       merged, so triangles may survive at the seam (`interfaceTriangles`) and interior quad
       quality near the boundary may drop. A guarantee bought with a visibly worse seam is
       not obviously a good trade, so report both before committing to it.
