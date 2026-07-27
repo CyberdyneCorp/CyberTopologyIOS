@@ -26,6 +26,14 @@ machinery for an outcome A problem.
       |---|---|---|---|---|---|
       | synthetic tiles, 5,242,880 tris | 1280×960 | 10.62 ms | 94.2 | 12.06 ms | MET |
       | synthetic tiles, 5,242,880 tris | 2732×2048 | 11.66 ms | 85.8 | 13.36 ms | MET |
+      > **CORRECTED (later):** every number in this table includes a 22 MB full-resolution
+      > pixel READBACK inside the timed window — `renderOffscreen` blits the colour texture
+      > in the same command buffer the GPU timestamps bracket. No real frame does that copy.
+      > True RENDER costs, same asset: indexed 7.008 ms @1280×960 and 7.343 ms @2732×2048;
+      > meshlet 5.402 and 6.527. So the indexed path never missed the 60 fps budget, and the
+      > worst-frame figures that motivated re-gating on the worst frame were readback. The
+      > meshlet path remains 11–23% faster, which is why it still ships.
+
       | **armadillo ×3, 4,798,848 tris** | 1280×960 | 14.64 ms | 68.3 | **18.79 ms** | met |
       | **armadillo ×3, 4,798,848 tris** | **2732×2048** | **16.54 ms** | **60.5** | **19.90 ms** | met by 0.13 ms |
 

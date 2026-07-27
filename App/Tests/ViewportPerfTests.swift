@@ -94,15 +94,31 @@ final class ViewportPerfTests: XCTestCase {
     private func measure(
         renderer: ViewportRenderer, frames: Int, width: Int, height: Int
     ) throws -> FrameTimeProbe.Statistics {
-        // Warm-up frame (pipeline/heap priming), then measure.
-        XCTAssertNotNil(renderer.renderOffscreen(width: width, height: height))
+        // Warm-up frame (pipeline/heap priming), then measure. TIMING-ONLY renders: the
+        // 22 MB readback per frame at 2732x2048 was pure waste for a frame-time
+        // measurement, and it dominated this suite's runtime.
+        XCTAssertTrue(renderer.renderOffscreenForTiming(width: width, height: height))
         renderer.frameProbe.reset()
-        for _ in 0..<frames {
+        for frame in 0..<frames {
             // Per-frame autorelease pool: the Metal command buffer and the 22 MB readback
             // array are autoreleased, so without this they accumulate for the whole loop
             // and the footprint grows monotonically until the OS kills the process.
             autoreleasepool {
-                XCTAssertNotNil(renderer.renderOffscreen(width: width, height: height))
+                // Frame-level trace, flushed, so a SIGKILL leaves evidence of WHICH frame
+                // it died on. Frame 0 and 1 are the interesting ones (first use of freshly
+                // allocated render targets at this size); after that every 10th is enough
+                // to distinguish "died immediately" from "died part-way through".
+                if frame < 2 || frame % 10 == 0 {
+                    let memory = Self.memoryMB()
+                    print(
+                        String(
+                            format: "[frame] %4dx%-4d #%02d  footprint %7.1f MB  avail %7.1f MB",
+                            width, height, frame, memory.footprint, memory.availableToProcess
+                        )
+                    )
+                    fflush(stdout)
+                }
+                XCTAssertTrue(renderer.renderOffscreenForTiming(width: width, height: height))
             }
         }
         var stats = renderer.frameProbe.statistics()
@@ -140,14 +156,29 @@ final class ViewportPerfTests: XCTestCase {
         return (footprint, Double(os_proc_available_memory()) / mb)
     }
 
+    /// The OS's own thermal assessment, which is the direct way to settle whether
+    /// sustained load is throttling this device rather than inferring it from frame times.
+    /// Frame times at 1280x960 were IDENTICAL hot and cool (14.35 vs 14.27 ms), so
+    /// throughput throttling was already doubtful — this says what the OS thinks.
+    static func thermalStateName() -> String {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: return "nominal"
+        case .fair: return "fair"
+        case .serious: return "serious"
+        case .critical: return "critical"
+        @unknown default: return "unknown"
+        }
+    }
+
     /// Prints the footprint at a labelled point, flushed so the last line before a
     /// SIGKILL survives — an unflushed buffer is exactly what loses the evidence.
     static func reportMemory(_ label: String) {
         let (footprint, available) = memoryMB()
         print(
             String(
-                format: "[mem] %-38s footprint %8.1f MB   available %8.1f MB",
-                (label as NSString).utf8String!, footprint, available
+                format: "[mem] %-38s footprint %8.1f MB   available %8.1f MB   thermal %@",
+                (label as NSString).utf8String!, footprint, available,
+                thermalStateName() as NSString
             )
         )
         fflush(stdout)

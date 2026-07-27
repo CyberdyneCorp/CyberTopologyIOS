@@ -1,0 +1,28 @@
+diff --git a/src/core/include/cyber/core/meshlet.hpp b/src/core/include/cyber/core/meshlet.hpp
+index 45f38b6..94f2a46 100644
+--- a/src/core/include/cyber/core/meshlet.hpp
++++ b/src/core/include/cyber/core/meshlet.hpp
+@@ -19,10 +19,19 @@
+ //     its bounding sphere (frustum) and its NORMAL CONE (backfacing). On a closed
+ //     mesh roughly half the clusters face away from any given camera.
+ //
+-// Measured motivation (iPad Air M3, 4.8M-triangle real asset): 14.64 ms at
+-// 1280x960 rising only to 16.54 ms at 2732x2048 — 4.5x the pixels for +13% frame
+-// time. The Target is geometry-bound, not fill-bound, which is precisely the case
+-// these two mechanisms address.
++// Measured motivation (iPad Air M3, 4.8M-triangle real asset), RENDER cost only:
++// indexed 7.01 ms at 1280x960 and 7.34 ms at 2732x2048; meshlet 5.40 ms and
++// 6.53 ms. 4.5x the pixels for a few percent of frame time, so the Target is
++// geometry-bound rather than fill-bound — precisely the case these two mechanisms
++// address — and the meshlet path is 11-23% faster on the same geometry.
++//
++// CORRECTED figures. Every earlier number here (14.64 / 16.54 ms) was measured with
++// a 22 MB full-resolution pixel READBACK inside the timed window: the offscreen
++// harness blitted the colour texture to a shared buffer in the SAME command buffer
++// the GPU timestamps bracket, so the probe legitimately timed render + readback and
++// it was reported as "frame time". No real frame performs that copy. The corrected
++// numbers are ~2.3x lower, and they retire the claim that the indexed path missed
++// the 60 fps budget on a real asset — it never did.
+ //
+ // Deliberately NO cluster LOD (no simplification, no level selection, so no
+ // crack-free-boundary problem). The measured gap was ~20-25%; LOD is a separate,

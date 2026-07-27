@@ -1084,8 +1084,28 @@ final class ViewportRenderer: NSObject {
         return targets
     }
 
-    func renderOffscreen(
+    /// Renders offscreen for TIMING only, skipping the pixel readback.
+    ///
+    /// `renderOffscreen` blits the colour texture into a shared buffer and copies it into
+    /// a Swift array — at 2732x2048 that is a 22 MB blit plus a 22 MB allocation PER FRAME,
+    /// and a frame-time measurement throws every one of those pixels away. Skipping it
+    /// removes the dominant cost of a long measurement loop and, more importantly, takes a
+    /// large allocation out of the TIMED WINDOW, which is the same class of measurement
+    /// contamination that made the acceptance budget look marginal until the render targets
+    /// were cached.
+    ///
+    /// Returns whether the frame was encoded and completed. Callers that need pixels (the
+    /// screenshot probes, the parity comparisons) keep using `renderOffscreen`.
+    @discardableResult
+    func renderOffscreenForTiming(
         width: Int, height: Int, at time: Double = CACurrentMediaTime()
+    ) -> Bool {
+        renderOffscreen(width: width, height: height, at: time, readingBackPixels: false) != nil
+    }
+
+    func renderOffscreen(
+        width: Int, height: Int, at time: Double = CACurrentMediaTime(),
+        readingBackPixels: Bool = true
     ) -> [UInt8]? {
         flushPendingGeometryRefresh()
         setViewportSize(CGSize(width: width, height: height))
@@ -1121,19 +1141,28 @@ final class ViewportRenderer: NSObject {
 
         encodeFrame(into: pass, commandBuffer: commandBuffer, at: time)
 
-        guard let blit = commandBuffer.makeBlitCommandEncoder() else { return nil }
-        blit.copy(
-            from: colorTexture, sourceSlice: 0, sourceLevel: 0,
-            sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-            sourceSize: MTLSize(width: width, height: height, depth: 1),
-            to: readback, destinationOffset: 0,
-            destinationBytesPerRow: bytesPerRow, destinationBytesPerImage: bytesPerRow * height
-        )
-        blit.endEncoding()
+        if readingBackPixels {
+            guard let blit = commandBuffer.makeBlitCommandEncoder() else { return nil }
+            blit.copy(
+                from: colorTexture, sourceSlice: 0, sourceLevel: 0,
+                sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                sourceSize: MTLSize(width: width, height: height, depth: 1),
+                to: readback, destinationOffset: 0,
+                destinationBytesPerRow: bytesPerRow,
+                destinationBytesPerImage: bytesPerRow * height
+            )
+            blit.endEncoding()
+        }
         frameProbe.attach(to: commandBuffer)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
 
+        guard readingBackPixels else {
+            // A timing caller gets a non-nil marker rather than pixels. Deliberately an
+            // EMPTY array, not a fabricated buffer: anyone who ignores the flag and reads
+            // it finds nothing there instead of silently comparing garbage.
+            return []
+        }
         let pointer = readback.contents().bindMemory(
             to: UInt8.self, capacity: bytesPerRow * height
         )
