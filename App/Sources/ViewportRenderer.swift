@@ -1047,12 +1047,21 @@ final class ViewportRenderer: NSObject {
     /// returns BGRA8 rows (bytesPerRow = 4 × width). Renders into a private
     /// texture and blits into a shared buffer because simulator Metal
     /// requires private render targets.
-    func renderOffscreen(
-        width: Int, height: Int, at time: Double = CACurrentMediaTime()
-    ) -> [UInt8]? {
-        flushPendingGeometryRefresh()
-        setViewportSize(CGSize(width: width, height: height))
+    /// Cached offscreen render targets, keyed on size. Rebuilt only when the requested
+    /// size changes, so a repeated capture at one size allocates once.
+    private struct OffscreenTargets {
+        var width: Int
+        var height: Int
+        var color: MTLTexture
+        var depth: MTLTexture
+        var readback: MTLBuffer
+    }
+    private var cachedOffscreen: OffscreenTargets?
 
+    private func offscreenTargets(width: Int, height: Int) -> OffscreenTargets? {
+        if let cached = cachedOffscreen, cached.width == width, cached.height == height {
+            return cached
+        }
         let colorDescriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: Self.colorPixelFormat, width: width, height: height, mipmapped: false
         )
@@ -1063,14 +1072,41 @@ final class ViewportRenderer: NSObject {
         )
         depthDescriptor.usage = [.renderTarget]
         depthDescriptor.storageMode = .private
+        guard let color = device.makeTexture(descriptor: colorDescriptor),
+            let depth = device.makeTexture(descriptor: depthDescriptor),
+            let readback = device.makeBuffer(length: width * 4 * height)
+        else { return nil }
+        let targets = OffscreenTargets(
+            width: width, height: height, color: color, depth: depth, readback: readback
+        )
+        cachedOffscreen = targets
+        return targets
+    }
 
+    func renderOffscreen(
+        width: Int, height: Int, at time: Double = CACurrentMediaTime()
+    ) -> [UInt8]? {
+        flushPendingGeometryRefresh()
+        setViewportSize(CGSize(width: width, height: height))
+
+        // REUSED across calls at the same size. Allocating a fresh colour texture, depth
+        // texture and readback buffer per call costs ~67 MB at 2732x2048, and a 30-frame
+        // measurement loop did exactly that: measured footprint climbed ~800 MB per
+        // full-resolution measure and never came back, driving the process from 117 MB to
+        // 4 GB and to within 1 GB of the limit — which is why
+        // testFiveMillionRealAssetMeasurementOnDevice died with `signal kill` on runs that
+        // started with less headroom.
+        //
+        // It also corrupted what the measurement MEANT: 67 MB of Metal allocation landed
+        // INSIDE the timed window on every frame, which is a plausible source of the
+        // worst-frame outliers that made the acceptance budget look marginal.
         let bytesPerRow = width * 4
-        guard
-            let colorTexture = device.makeTexture(descriptor: colorDescriptor),
-            let depthTexture = device.makeTexture(descriptor: depthDescriptor),
-            let readback = device.makeBuffer(length: bytesPerRow * height),
+        guard let targets = offscreenTargets(width: width, height: height),
             let commandBuffer = commandQueue.makeCommandBuffer()
         else { return nil }
+        let colorTexture = targets.color
+        let depthTexture = targets.depth
+        let readback = targets.readback
 
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = colorTexture

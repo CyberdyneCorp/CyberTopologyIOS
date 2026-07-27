@@ -1,5 +1,7 @@
 import CyberKit
+import Foundation
 import XCTest
+import os
 @testable import CyberTopology
 
 /// Device-only viewport frame-time harness (design D9: performance
@@ -96,7 +98,12 @@ final class ViewportPerfTests: XCTestCase {
         XCTAssertNotNil(renderer.renderOffscreen(width: width, height: height))
         renderer.frameProbe.reset()
         for _ in 0..<frames {
-            XCTAssertNotNil(renderer.renderOffscreen(width: width, height: height))
+            // Per-frame autorelease pool: the Metal command buffer and the 22 MB readback
+            // array are autoreleased, so without this they accumulate for the whole loop
+            // and the footprint grows monotonically until the OS kills the process.
+            autoreleasepool {
+                XCTAssertNotNil(renderer.renderOffscreen(width: width, height: height))
+            }
         }
         var stats = renderer.frameProbe.statistics()
         let deadline = Date(timeIntervalSinceNow: 5)
@@ -107,6 +114,43 @@ final class ViewportPerfTests: XCTestCase {
         let final = try XCTUnwrap(stats, "probe recorded no samples")
         XCTAssertEqual(final.sampleCount, frames, "missing frame samples")
         return final
+    }
+
+    /// App memory footprint and the OS's remaining allowance, in MB.
+    ///
+    /// Added to settle WHY `testFiveMillionRealAssetMeasurementOnDevice` was dying with
+    /// `signal kill` at `meshlet @ 2732x2048`. Two hypotheses had already been offered
+    /// without evidence — clustering cost (refuted: linear, 3.4 s at 5.1M) and memory —
+    /// so this measures rather than guesses again. `signal kill` with no jetsam line in
+    /// the log is consistent with either an OOM termination or a watchdog, and the
+    /// footprint-versus-allowance pair distinguishes them: if footprint climbs toward
+    /// `os_proc_available_memory` reaching zero, it is memory.
+    static func memoryMB() -> (footprint: Double, availableToProcess: Double) {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size
+        )
+        let status = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        let mb = 1024.0 * 1024.0
+        let footprint = status == KERN_SUCCESS ? Double(info.phys_footprint) / mb : -1
+        return (footprint, Double(os_proc_available_memory()) / mb)
+    }
+
+    /// Prints the footprint at a labelled point, flushed so the last line before a
+    /// SIGKILL survives — an unflushed buffer is exactly what loses the evidence.
+    static func reportMemory(_ label: String) {
+        let (footprint, available) = memoryMB()
+        print(
+            String(
+                format: "[mem] %-38s footprint %8.1f MB   available %8.1f MB",
+                (label as NSString).utf8String!, footprint, available
+            )
+        )
+        fflush(stdout)
     }
 
     /// Baseline: 80k-triangle grid through the real engine OBJ path.
@@ -278,26 +322,41 @@ final class ViewportPerfTests: XCTestCase {
                 ),
                 "armadillo.obj not bundled in the test target"
             )
+            Self.reportMemory("start")
             let mesh = try Mesh.loadOBJ(at: url)
+            Self.reportMemory("armadillo loaded")
             // 100k x 4^3 = ~6.4M triangles. No reprojection: raw density is the point.
-            for _ in 0..<3 { _ = try mesh.subdivide() }
+            for level in 0..<3 {
+                _ = try mesh.subdivide()
+                Self.reportMemory("subdivided x\(level + 1) (\(mesh.faceCount) faces)")
+            }
 
             // BOTH paths over the same mesh, so the comparison is a like-for-like
             // measurement rather than two runs of different things.
             for kind in [TargetRenderPathKind.indexedVertex, .meshlet] {
+                // Each path in its own pool so the FIRST renderer's GPU buffers are
+                // actually released before the second is built. Measured: without this the
+                // footprint carried 2.99 GB from the indexed path straight into the
+                // meshlet path, so both paths' buffers were resident at once.
+                try autoreleasepool {
                 let renderer = try XCTUnwrap(
                     ViewportRenderer(forcedTargetPathKind: kind), "Metal unavailable"
                 )
+                Self.reportMemory("\(kind.rawValue): renderer created")
                 renderer.load(mesh: mesh)
+                Self.reportMemory("\(kind.rawValue): mesh loaded")
                 XCTAssertTrue(renderer.hasMesh, "\(kind.rawValue) failed to load")
                 // A fallback would silently compare a path with itself.
                 XCTAssertEqual(renderer.renderPath.kind, kind, "path fell back")
                 let clusters = mesh.meshletCount
+                Self.reportMemory("\(kind.rawValue): \(clusters) clusters built")
 
                 for (label, w, h) in [
                     ("1280x960", 1280, 960), ("2732x2048 (full iPad)", 2732, 2048),
                 ] {
+                    Self.reportMemory("\(kind.rawValue) @ \(label): before measure")
                     let stats = try measure(renderer: renderer, frames: 30, width: w, height: h)
+                    Self.reportMemory("\(kind.rawValue) @ \(label): after measure")
                     print("""
                     [5M-real] \(kind.rawValue) @ \(label)
                       faces            = \(mesh.faceCount)   clusters = \(clusters)
@@ -306,6 +365,7 @@ final class ViewportPerfTests: XCTestCase {
                       60fps budget     = 16.667 ms  -> \(stats.averageSeconds < 1.0 / 60.0 ? "MET" : "MISSED")
                     """)
                 }
+                }  // autoreleasepool: releases this path's renderer before the next
             }
         #endif
     }
