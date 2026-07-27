@@ -34,6 +34,8 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
     case triangulate
     case clearLoopTags
     case clearPins
+    /// add-weave-constraint-authoring: thaw every frozen face.
+    case clearFrozen
 
     var id: String { rawValue }
 
@@ -46,6 +48,7 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
         case .triangulate: "Triangulate"
         case .clearLoopTags: "Clear Loop Tags"
         case .clearPins: "Clear Pins"
+        case .clearFrozen: "Clear Frozen"
         }
     }
 
@@ -58,6 +61,7 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
         case .triangulate: "triangle"
         case .clearLoopTags: "tag.slash"
         case .clearPins: "pin.slash"
+        case .clearFrozen: "snowflake.slash"
         }
     }
 
@@ -81,6 +85,9 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
             "Removes every loop tag in one undoable step."
         case .clearPins:
             "Removes every pin in one undoable step."
+        case .clearFrozen:
+            "Thaws every frozen face in one undoable step, so the next Weave "
+                + "solve is free to rewrite them again."
         }
     }
 
@@ -206,6 +213,8 @@ extension MeshEditController {
             return clearAllLoopTags()
         case .clearPins:
             return clearAllPins()
+        case .clearFrozen:
+            return clearAllFrozen()
         case .snapAllToTarget:
             return runBatchMeshEdit(command) { mesh, context in
                 let report = try mesh.snapAllToTarget(

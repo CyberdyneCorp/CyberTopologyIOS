@@ -212,11 +212,12 @@ struct ToolbarConfigurationTests {
         // The gallery SHALL list every action (verbs + 3.4 grammar + 4.1
         // build tools + 4.2 camera-as-manipulator tools + 4.3 annotation
         // actions + 4.4 symmetry commands + 4.5 Auto Relax and the batch
-        // panel + Phase 5 Auto-Retopo + Weave Fill and its clear) with help
+        // panel + Phase 5 Auto-Retopo + Weave Fill and its clear + Freeze Flip
+        // and its clear) with help
         // content and a demo-media slot; an empty field here would render as a
         // blank help panel. The count is asserted deliberately: adding an action
         // without a gallery entry should FAIL here rather than ship a blank panel.
-        #expect(EditorAction.allCases.count == 36)
+        #expect(EditorAction.allCases.count == 38)
         for action in EditorAction.allCases {
             let entry = action.gallery
             #expect(!entry.title.isEmpty, "\(action) title")

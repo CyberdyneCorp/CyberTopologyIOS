@@ -97,12 +97,24 @@ extension MetalViewport.Coordinator {
             parameters.remesh.targetQuads = budget
         }
 
+        // Authored pins and colour-tagged loops reach the solver here (openspec
+        // add-weave-constraint-authoring). Safe to key against `seed.mesh`: `grow`
+        // builds it from `cage.duplicated()`, the ID-PRESERVING copy, so annotation
+        // ids still address the same elements. A payload round-trip would renumber
+        // them and silently constrain the wrong geometry.
+        let annotations = Self.regionAnnotations(
+            currentCageAnnotations(), mesh: seed.mesh, regionFaces: seed.seedFaces
+        )
+
         let ghost: SolverGhost?
         do {
             ghost = try weaveSolver.solve(
                 source: seed.mesh, region: .faces(seed.seedFaces),
                 constraints: WeaveConstraints(
+                    frozenFaces: annotations.frozenFaces,
+                    taggedLoops: annotations.taggedLoops,
                     guideStrokes: meshEditor.authoredGuides.map { GuideStroke(points: $0) },
+                    pinnedVertices: annotations.pinnedVertices,
                     symmetry: bundleProvider?().manifest.symmetry
                 ),
                 params: parameters, onProgress: nil, isCancelled: { false }
@@ -203,6 +215,63 @@ extension MetalViewport.Coordinator {
             let object = bundle.manifest.objects.first(where: { $0.role == .editMesh })
         else { return nil }
         return try? bundle.mesh(for: object)
+    }
+
+    /// The EditMesh's authored annotations, or nil when the document has none.
+    /// Read from the MANIFEST object because that is where annotations live — the
+    /// live mesh handle carries geometry, not document state.
+    func currentCageAnnotations() -> MeshAnnotations? {
+        guard let bundle = bundleProvider?(),
+            let object = bundle.manifest.objects.first(where: { $0.role == .editMesh })
+        else { return nil }
+        return object.annotations
+    }
+
+    /// Annotations narrowed to the faces actually being solved.
+    ///
+    /// Constraints outside the region are dropped rather than passed through: they
+    /// constrain geometry the solve does not touch, and reporting them as inputs would
+    /// misstate what shaped the result.
+    ///
+    /// **Tagged edges are grouped by COLOUR, not walked into topological loops.** That is
+    /// faithful rather than lazy: both solver backends map a tagged loop to one
+    /// `(midpoint, tangent)` orientation sample PER EDGE, so the partition of a colour's
+    /// edges into loops has no observable effect on the solve. Writing loop-walking code
+    /// whose output nothing can distinguish would be untestable by construction. A backend
+    /// that needs genuine loop order must do the walk itself and say why.
+    static func regionAnnotations(
+        _ annotations: MeshAnnotations?, mesh: Mesh, regionFaces: [UInt32]
+    ) -> (pinnedVertices: [UInt32], taggedLoops: [TaggedLoop], frozenFaces: [UInt32]) {
+        guard let annotations, !annotations.isEmpty else { return ([], [], []) }
+
+        var regionVertices: Set<UInt32> = []
+        for face in regionFaces {
+            regionVertices.formUnion(mesh.faceVertices(face))
+        }
+        guard !regionVertices.isEmpty else { return ([], [], []) }
+
+        // Frozen faces are already face ids, so they narrow by membership directly.
+        let regionSet = Set(regionFaces)
+        let frozen = annotations.frozenFaces.filter { regionSet.contains($0) }
+
+        let pins = annotations.pinnedVertices.filter { regionVertices.contains($0) }
+
+        // An edge counts as inside when BOTH endpoints are: one endpoint on the region
+        // means the edge straddles the interface, where the cage already dictates flow.
+        // A stale edge id resolves to no endpoints and is skipped, never fatal.
+        var byColor: [UInt8: [UInt32]] = [:]
+        for (color, edges) in annotations.taggedEdgesByColor() {
+            let inside = edges.filter { edge in
+                guard let ends = mesh.edgeEndpoints(of: edge) else { return false }
+                return regionVertices.contains(ends.0) && regionVertices.contains(ends.1)
+            }
+            if !inside.isEmpty { byColor[color] = inside }
+        }
+        // Ascending colour order so the constraint set is deterministic.
+        let loops = byColor.keys.sorted().map { color in
+            TaggedLoop(edges: byColor[color] ?? [], colorIndex: Int(color))
+        }
+        return (pins, loops, frozen)
     }
 
     /// The payload bytes identifying the cage a proposal was derived from.

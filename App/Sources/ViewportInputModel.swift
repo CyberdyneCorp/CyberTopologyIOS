@@ -413,6 +413,7 @@ final class ViewportInputModel {
     func runCommand(_ action: EditorAction) -> Bool {
         switch action {
         case .clearPins: return meshEditor?.clearAllPins() ?? false
+        case .clearFrozen: return meshEditor?.clearAllFrozen() ?? false
         case .clearLoopTags: return meshEditor?.clearAllLoopTags() ?? false
         // Task 4.4: symmetry commands. The toggle journals a
         // `setSymmetry`; the two bakes journal one `meshEdit` each.

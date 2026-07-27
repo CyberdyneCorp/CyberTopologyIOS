@@ -77,6 +77,10 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     case pinFlip
     case clearPins
     case clearLoopTags
+    // add-weave-constraint-authoring: Freeze Flip is a stroke tool; clearFrozen is an
+    // immediate command, also hosted by the batch panel beside clearPins.
+    case freezeFlip
+    case clearFrozen
     // add-weave-region-selection: Weave Fill arms the fill tool; clearWeaveFill drops
     // a pending proposal and its painted extent (journals nothing either way).
     case weaveFill
@@ -124,8 +128,8 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     /// the panel whose commands do the journaling.
     var isImmediateCommand: Bool {
         switch self {
-        case .clearPins, .clearLoopTags, .toggleSymmetry, .applySymmetry, .resymmetrize,
-            .toggleAutoRelax, .batchCommands:
+        case .clearPins, .clearLoopTags, .clearFrozen, .toggleSymmetry, .applySymmetry,
+            .resymmetrize, .toggleAutoRelax, .batchCommands:
             true
         default:
             false
@@ -146,6 +150,7 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
         case .drawStrip: .drawStrip
         case .transformVertices: .transformVertices
         case .pinFlip: .pinFlip
+        case .freezeFlip: .freezeFlip
         case .weaveFill: .weaveFill
         default: nil
         }

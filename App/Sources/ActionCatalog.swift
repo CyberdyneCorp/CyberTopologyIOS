@@ -393,6 +393,27 @@ extension EditorAction {
                     + "the document.",
                 demoFrames: ["xmark.square.dashed", "square.dashed"]
             )
+        case .freezeFlip:
+            GalleryEntry(
+                title: "Freeze flip",
+                symbol: "snowflake",
+                gesture: "Tool — paint across the faces to protect",
+                notes: "A frozen face is left out of the patch a Weave solve "
+                    + "rewrites, so topology you built by hand survives a "
+                    + "re-solve instead of being replaced. Freezing is a solver "
+                    + "constraint, not visibility: a frozen face stays visible, "
+                    + "because you generally want to see what you are "
+                    + "protecting. Painting the same faces again thaws them.",
+                demoFrames: ["snowflake", "square.grid.2x2"]
+            )
+        case .clearFrozen:
+            GalleryEntry(
+                title: "Clear frozen",
+                symbol: "snowflake.slash",
+                gesture: "Command",
+                notes: "Thaws every frozen face in one undo step.",
+                demoFrames: ["snowflake.slash", "square.grid.2x2"]
+            )
         case .pinFlip:
             GalleryEntry(
                 title: "Pin flip",

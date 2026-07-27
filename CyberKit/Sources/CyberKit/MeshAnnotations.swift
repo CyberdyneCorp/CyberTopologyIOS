@@ -51,10 +51,20 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
     /// `PinSet`, passed on every brush call) and render as distinct
     /// markers in the EditMesh overlay.
     public private(set) var pinnedVertices: [UInt32]
+    /// Frozen faces, sorted ascending (deterministic encoding). A frozen face
+    /// is excluded from the region a Weave solve rewrites, so hand-built
+    /// topology survives a re-solve untouched (openspec
+    /// add-weave-constraint-authoring; spec: "Frozen faces are authorable").
+    ///
+    /// Distinct from `hiddenFaces`: hiding is a VIEW concern, freezing is a
+    /// SOLVER constraint. A face can be frozen and visible, which is the
+    /// normal case — you generally want to see what you are protecting.
+    public private(set) var frozenFaces: [UInt32]
 
     public init(
         taggedEdges: [UInt32] = [], tagColorIndices: [UInt8] = [],
-        hiddenFaces: [UInt32] = [], pinnedVertices: [UInt32] = []
+        hiddenFaces: [UInt32] = [], pinnedVertices: [UInt32] = [],
+        frozenFaces: [UInt32] = []
     ) {
         // Sort tags and their colors together so the parallel arrays stay
         // aligned no matter what order the caller supplies, and DEDUPLICATE
@@ -79,6 +89,32 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
         self.tagColorIndices = edges.map { byEdge[$0]! }
         self.hiddenFaces = Array(Set(hiddenFaces)).sorted()
         self.pinnedVertices = Array(Set(pinnedVertices)).sorted()
+        self.frozenFaces = Array(Set(frozenFaces)).sorted()
+    }
+
+    /// This state with only the named fields replaced.
+    ///
+    /// Every transform below goes through here rather than calling `init` with an
+    /// explicit list of all five fields. That is not style: with eight
+    /// reconstruction sites, adding a field means adding it to eight argument
+    /// lists, and MISSING one silently drops document state — freezing faces and
+    /// then toggling a pin would quietly clear the frozen set. Routing through one
+    /// helper makes the next field addition safe by construction, and
+    /// `everyTransformPreservesFrozenFaces` asserts it stays that way.
+    /// Not `private`: `reconciled(through:)` lives in another file and must also
+    /// route through here, for the same reason.
+    func replacing(
+        taggedEdges: [UInt32]? = nil, tagColorIndices: [UInt8]? = nil,
+        hiddenFaces: [UInt32]? = nil, pinnedVertices: [UInt32]? = nil,
+        frozenFaces: [UInt32]? = nil
+    ) -> MeshAnnotations {
+        MeshAnnotations(
+            taggedEdges: taggedEdges ?? self.taggedEdges,
+            tagColorIndices: tagColorIndices ?? self.tagColorIndices,
+            hiddenFaces: hiddenFaces ?? self.hiddenFaces,
+            pinnedVertices: pinnedVertices ?? self.pinnedVertices,
+            frozenFaces: frozenFaces ?? self.frozenFaces
+        )
     }
 
     /// Pads/truncates `colors` to `count` entries, clamping out-of-palette
@@ -93,6 +129,7 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
 
     public var isEmpty: Bool {
         taggedEdges.isEmpty && hiddenFaces.isEmpty && pinnedVertices.isEmpty
+            && frozenFaces.isEmpty
     }
 
     /// Palette index of `edge`, or nil when it carries no tag.
@@ -131,10 +168,7 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
         var pairs = Dictionary(uniqueKeysWithValues: zip(taggedEdges, tagColorIndices))
         for edge in incoming { pairs[edge] = color }
         let edges = Array(pairs.keys)
-        return MeshAnnotations(
-            taggedEdges: edges, tagColorIndices: edges.map { pairs[$0]! },
-            hiddenFaces: hiddenFaces, pinnedVertices: pinnedVertices
-        )
+        return replacing(taggedEdges: edges, tagColorIndices: edges.map { pairs[$0]! })
     }
 
     /// This state with the tags on `edges` removed (individual clear —
@@ -142,16 +176,13 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
     public func clearingTags(on edges: [UInt32]) -> MeshAnnotations {
         let removing = Set(edges)
         let kept = zip(taggedEdges, tagColorIndices).filter { !removing.contains($0.0) }
-        return MeshAnnotations(
-            taggedEdges: kept.map(\.0), tagColorIndices: kept.map(\.1),
-            hiddenFaces: hiddenFaces, pinnedVertices: pinnedVertices
-        )
+        return replacing(taggedEdges: kept.map(\.0), tagColorIndices: kept.map(\.1))
     }
 
     /// This state with EVERY loop tag cleared (en-masse clear; hosted by
     /// the task-4.5 batch-commands panel).
     public func clearingAllTags() -> MeshAnnotations {
-        MeshAnnotations(hiddenFaces: hiddenFaces, pinnedVertices: pinnedVertices)
+        replacing(taggedEdges: [], tagColorIndices: [])
     }
 
     // MARK: - Pins
@@ -172,52 +203,60 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
         } else {
             pinned.formUnion(incoming)
         }
-        return MeshAnnotations(
-            taggedEdges: taggedEdges, tagColorIndices: tagColorIndices,
-            hiddenFaces: hiddenFaces, pinnedVertices: Array(pinned)
-        )
+        return replacing(pinnedVertices: Array(pinned))
     }
 
     /// This state with EVERY pin cleared (the spec's batch "clear pins").
     public func clearingAllPins() -> MeshAnnotations {
-        MeshAnnotations(
-            taggedEdges: taggedEdges, tagColorIndices: tagColorIndices,
-            hiddenFaces: hiddenFaces
-        )
+        replacing(pinnedVertices: [])
+    }
+
+    // MARK: - Frozen faces
+
+    /// True when `face` is frozen.
+    public func isFrozen(_ face: UInt32) -> Bool { frozenFaces.contains(face) }
+
+    /// This state with `faces` flipped: an all-frozen selection thaws, anything
+    /// else freezes — the same toggle shape pins and tags use, so a second flip
+    /// over the same faces always undoes the first.
+    public func togglingFrozen(on faces: [UInt32]) -> MeshAnnotations {
+        let incoming = Set(faces)
+        guard !incoming.isEmpty else { return self }
+        var frozen = Set(frozenFaces)
+        if incoming.isSubset(of: frozen) {
+            frozen.subtract(incoming)
+        } else {
+            frozen.formUnion(incoming)
+        }
+        return replacing(frozenFaces: Array(frozen))
+    }
+
+    /// This state with every face thawed.
+    public func clearingAllFrozen() -> MeshAnnotations {
+        replacing(frozenFaces: [])
     }
 
     // MARK: - Visibility
 
     /// This state with `faces` added to the hidden set.
     public func hiding(faces: [UInt32]) -> MeshAnnotations {
-        MeshAnnotations(
-            taggedEdges: taggedEdges, tagColorIndices: tagColorIndices,
-            hiddenFaces: Array(Set(hiddenFaces).union(faces)),
-            pinnedVertices: pinnedVertices
-        )
+        replacing(hiddenFaces: Array(Set(hiddenFaces).union(faces)))
     }
 
     /// This state with visibility inverted against the full live-face set.
     public func invertingVisibility(allFaces: [UInt32]) -> MeshAnnotations {
-        MeshAnnotations(
-            taggedEdges: taggedEdges, tagColorIndices: tagColorIndices,
-            hiddenFaces: Array(Set(allFaces).subtracting(hiddenFaces)),
-            pinnedVertices: pinnedVertices
-        )
+        replacing(hiddenFaces: Array(Set(allFaces).subtracting(hiddenFaces)))
     }
 
     /// This state with every face shown again.
     public func showingAll() -> MeshAnnotations {
-        MeshAnnotations(
-            taggedEdges: taggedEdges, tagColorIndices: tagColorIndices,
-            pinnedVertices: pinnedVertices
-        )
+        replacing(hiddenFaces: [])
     }
 
     // MARK: - Codable
 
     private enum CodingKeys: String, CodingKey {
-        case taggedEdges, tagColorIndices, hiddenFaces, pinnedVertices
+        case taggedEdges, tagColorIndices, hiddenFaces, pinnedVertices, frozenFaces
     }
 
     /// Explicit decode so pre-4.3 documents (no pins, no tag colors) round
@@ -230,7 +269,8 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
                 [UInt8].self, forKey: .tagColorIndices) ?? [],
             hiddenFaces: try container.decodeIfPresent([UInt32].self, forKey: .hiddenFaces) ?? [],
             pinnedVertices: try container.decodeIfPresent(
-                [UInt32].self, forKey: .pinnedVertices) ?? []
+                [UInt32].self, forKey: .pinnedVertices) ?? [],
+            frozenFaces: try container.decodeIfPresent([UInt32].self, forKey: .frozenFaces) ?? []
         )
     }
 }

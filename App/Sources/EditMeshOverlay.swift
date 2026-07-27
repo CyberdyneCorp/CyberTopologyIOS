@@ -284,10 +284,20 @@ struct AnnotationRenderState: Equatable {
     /// document's symmetry settings, not per-element annotations — but
     /// they ride the same world-space buffer and pass.
     var symmetryRims: [TagGroup] = []
+    /// Frozen-face outlines (openspec add-weave-constraint-authoring): the
+    /// perimeter of every frozen face, as one line-list group. Face OUTLINES
+    /// rather than a filled tint because the overlay has no triangle pass — and
+    /// an outline still reads correctly through the x-ray pass, where a fill
+    /// would just muddy whatever is behind it.
+    var frozenOutlines: [TagGroup] = []
 
-    /// Every line-list group in draw order: tags first, rims on top (the
-    /// rim must stay readable where it crosses a tagged loop).
-    var lineGroups: [TagGroup] { tagGroups + symmetryRims }
+    /// The colour frozen faces outline in: a cold pale blue, distinct from the
+    /// yellow pin markers and from every loop-tag palette entry.
+    static let frozenColor = SIMD3<Float>(0.60, 0.85, 1.00)
+
+    /// Every line-list group in draw order: frozen outlines under tags (a tagged
+    /// loop crossing a frozen patch must stay readable), rims on top.
+    var lineGroups: [TagGroup] { frozenOutlines + tagGroups + symmetryRims }
 
     var isEmpty: Bool { pinPoints.isEmpty && lineGroups.allSatisfy { $0.segments.isEmpty } }
 
@@ -302,9 +312,29 @@ struct AnnotationRenderState: Equatable {
         annotations: MeshAnnotations,
         edgeEndpoints: (UInt32) -> (UInt32, UInt32)?,
         vertexPosition: (UInt32) -> SIMD3<Float>?,
+        faceVertices: (UInt32) -> [UInt32] = { _ in [] },
         color: (UInt8) -> SIMD3<Float> = LoopTagPalette.color
     ) -> AnnotationRenderState {
         var state = AnnotationRenderState()
+
+        // Frozen faces as closed perimeters. A face whose ring has gone stale
+        // renders as nothing, exactly like a stale pin or tag.
+        var frozen: [Float] = []
+        for face in annotations.frozenFaces {
+            let ring = faceVertices(face)
+            guard ring.count >= 3 else { continue }
+            let positions = ring.compactMap(vertexPosition)
+            guard positions.count == ring.count else { continue }
+            for index in positions.indices {
+                let start = positions[index]
+                let end = positions[(index + 1) % positions.count]
+                frozen.append(contentsOf: [start.x, start.y, start.z])
+                frozen.append(contentsOf: [end.x, end.y, end.z])
+            }
+        }
+        if !frozen.isEmpty {
+            state.frozenOutlines = [TagGroup(color: Self.frozenColor, segments: frozen)]
+        }
         for vertex in annotations.pinnedVertices {
             guard let position = vertexPosition(vertex) else { continue }
             state.pinPoints.append(contentsOf: [position.x, position.y, position.z])

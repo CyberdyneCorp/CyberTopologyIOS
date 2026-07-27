@@ -26,6 +26,12 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
     /// Pin Flip (task 4.3): flips pins per vertex, per swept run, or —
     /// on a HOLD over an interior edge — for the whole edge loop.
     case pinFlip
+    /// Freeze Flip (openspec add-weave-constraint-authoring): flips the frozen
+    /// state of the faces under the stroke. A frozen face is excluded from the
+    /// region a Weave solve rewrites, so hand-built topology survives a re-solve.
+    /// Freezing is a SOLVER constraint, not visibility — a frozen face stays
+    /// visible, since you generally want to see what you are protecting.
+    case freezeFlip
     /// Guide (add-guide-stroke-authoring): a stroke on the Target is captured
     /// as a world-space guide polyline that steers the next Auto-Retopo's edge
     /// flow. Needs only a Target (no EditMesh) and journals nothing — guides are
@@ -52,7 +58,7 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
         case .patchClone, .extendBoundary, .transformVertices:
             return true
         case .buildQuad, .buildTriangle, .mergePair, .pathDistribute,
-            .surfaceCut, .drawStrip, .pinFlip, .guide, .weaveFill:
+            .surfaceCut, .drawStrip, .pinFlip, .freezeFlip, .guide, .weaveFill:
             // Weave Fill is stroke-driven: the camera never manipulates the
             // proposal, the fill point and painted extent do.
             return false
@@ -135,6 +141,8 @@ extension MeshEditController {
             handleWeaveFillStroke(stroke, samples: samples)
         case .pinFlip:
             commitPinFlipStroke(stroke, samples: samples)
+        case .freezeFlip:
+            commitFreezeFlipStroke(stroke, samples: samples)
         case .guide:
             commitGuideStroke(stroke, samples: samples)
         }
@@ -506,6 +514,8 @@ extension MeshEditController {
             probeTransformVertices(vertices: vertices, context: context)
         case .pinFlip:
             probePinLoopHold(vertices: vertices, context: context)
+        case .freezeFlip:
+            probeFreezeFlip(vertices: vertices, context: context)
         case .guide:
             break  // guide capture has no screenshot probe
         }
@@ -698,6 +708,24 @@ extension MeshEditController {
                 driveProbeHold(at: screen)
                 if lastCommit != nil { return }
             }
+        }
+    }
+
+    /// Freeze Flip: a short stroke across a face's interior, so the probe journals a
+    /// real `tool.freezeFlip` through the same begin/continue/end path a Pencil takes.
+    ///
+    /// Deliberately NOT skipped. Leaving this as a `break` compiled fine and read as
+    /// "freezing has no distinct hold gesture", but
+    /// `visualVerificationProbesJournalEveryTool` requires every tool to journal
+    /// through its probe — and it was right to: a tool with no exercised path is a tool
+    /// nothing verifies.
+    private func probeFreezeFlip(vertices: [ProbeVertex], context: Context) {
+        guard let mesh = context.editMesh, let project = context.project else { return }
+        for face in mesh.liveFaceIDs() {
+            guard let centroid = mesh.faceCentroid(face), let screen = project(centroid)
+            else { continue }
+            driveProbeHold(at: screen)
+            if lastCommit != nil { return }
         }
     }
 

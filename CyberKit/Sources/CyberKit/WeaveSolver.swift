@@ -243,12 +243,12 @@ public struct EngineRemeshSolver: WeaveSolving {
             )
         }
         guard let ghostMesh else { return nil }  // cancelled
-        // Symmetry: clip the fresh cage to the working side and mirror it, so
-        // the output is exactly symmetric about the plane. Only the first mirror
-        // axis is honoured this slice (multi-axis / radial are deferred).
+        // Symmetry: clip the fresh cage to the working ORTHANT and mirror it, so
+        // the output is exactly symmetric about every enabled plane. RADIAL is
+        // still deferred (5.2b) — it does not reduce to half-space clipping.
         if let symmetry = constraints.symmetry, symmetry.isEnabled,
-            let axis = symmetry.mirrorAxes.first {
-            try Self.makeSymmetric(ghostMesh, settings: symmetry, axis: axis)
+            !symmetry.mirrorAxes.isEmpty {
+            try Self.makeSymmetric(ghostMesh, settings: symmetry)
         }
         return SolverGhost(mesh: ghostMesh, addedFaces: ghostMesh.liveFaceIDs())
     }
@@ -298,22 +298,32 @@ public struct EngineRemeshSolver: WeaveSolving {
         return min(max(base * density.targetEdgeLength, 0.05), 100)
     }
 
-    /// Makes `cage` mirror-symmetric about `axis`: keep only the faces WHOLLY on
-    /// the working side (delete any face with a vertex on the far side), snap the
-    /// seam onto the plane, then reflect + weld the working side — so every kept
-    /// face is mirrored and the result is symmetric. Clipping by whole-face
-    /// (not centroid) is what makes it symmetric: a face straddling the plane is
-    /// not "wholly on the working side", so `applySymmetry` would leave it
-    /// un-mirrored. Mutates `cage` (a fresh remesh handle — never the source).
-    private static func makeSymmetric(
-        _ cage: Mesh, settings: SymmetrySettings, axis: SymmetrySettings.Axis
-    ) throws {
-        let normal = axis.normal
+    /// Makes `cage` mirror-symmetric about EVERY enabled mirror axis: keep only the
+    /// faces wholly inside the working orthant (delete any face with a vertex on the
+    /// far side of ANY enabled plane), snap each seam onto its plane, then reflect +
+    /// weld — so the kept wedge is mirrored into all `2^n` subsets and the result is
+    /// symmetric about every plane at once.
+    ///
+    /// Clipping by whole-face (not centroid) is what makes it symmetric: a face
+    /// straddling a plane is not wholly on the working side, so `applySymmetry` would
+    /// leave it un-mirrored.
+    ///
+    /// Multi-axis needs no new mirroring machinery — `applySymmetry(_:snapping:)`
+    /// already reduces over `mirrorAxes` and mirrors a quadrant into all four. The
+    /// only thing that was single-axis was this CLIP, which is why the axes had to
+    /// become an intersection of half-spaces rather than one.
+    ///
+    /// Mutates `cage` (a fresh remesh handle — never the source).
+    private static func makeSymmetric(_ cage: Mesh, settings: SymmetrySettings) throws {
+        let axes = settings.mirrorAxes
+        guard !axes.isEmpty else { return }
         let origin = settings.origin
         func onFarSide(_ vertex: UInt32) -> Bool {
             guard let position = cage.vertexPosition(vertex) else { return false }
-            let side = simd_dot(position - origin, normal)
-            return settings.workingSidePositive ? side < 0 : side > 0
+            return axes.contains { axis in
+                let side = simd_dot(position - origin, axis.normal)
+                return settings.workingSidePositive ? side < 0 : side > 0
+            }
         }
         var doomed: [UInt32] = []
         for face in cage.liveFaceIDs()
@@ -321,9 +331,15 @@ public struct EngineRemeshSolver: WeaveSolving {
             doomed.append(face)
         }
         // Nothing to mirror if the clip would empty the cage — leave it as-is.
+        // (Preserved from the single-axis version, including that an already-clipped
+        // cage is left alone rather than mirrored.)
         guard !doomed.isEmpty, doomed.count < cage.faceCount else { return }
         _ = try cage.deleteFaces(doomed)
-        _ = try cage.snapToSymmetryPlane(settings, axis: axis)
-        _ = try cage.applySymmetry(settings, axis: axis)
+        // Snap each seam onto its OWN plane before mirroring, so a vertex sitting on
+        // two planes — the orthant's edge — is welded onto both rather than one.
+        for axis in axes {
+            _ = try cage.snapToSymmetryPlane(settings, axis: axis)
+        }
+        _ = try cage.applySymmetry(settings)
     }
 }

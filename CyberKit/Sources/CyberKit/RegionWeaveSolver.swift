@@ -38,11 +38,19 @@ public struct RegionWeaveSolver: WeaveSolving {
         // and never read. A face the caller froze must end up on the prescribed
         // side of the interface, not inside the solved patch.
         let frozen = Set(constraints.frozenFaces)
-        let regionFaces = requested.filter { !frozen.contains($0) }
+
+        // Authored pins reach the solve here (openspec add-weave-constraint-authoring).
+        let pins = Self.resolvePins(
+            source: source, requested: requested, frozen: frozen,
+            pinned: constraints.pinnedVertices, overrides: constraints.interfaceValence
+        )
+        let regionFaces = pins.regionFaces
         guard !regionFaces.isEmpty else {
             throw CyberKitError(
                 code: .invalidArgument,
-                message: "region is empty after removing frozen faces"
+                message: pins.interiorPinned.isEmpty
+                    ? "region is empty after removing frozen faces"
+                    : "region is empty: every face is frozen or held by an authored pin"
             )
         }
 
@@ -68,7 +76,7 @@ public struct RegionWeaveSolver: WeaveSolving {
             try source.remeshedRegion(
                 faces: regionFaces,
                 parameters: parameters,
-                valenceOverrides: constraints.interfaceValence,
+                valenceOverrides: pins.valence,
                 onProgress: onProgress.map { report in
                     { fraction, stage in
                         report(SolverProgress(fraction: Double(fraction), stage: stage))
@@ -88,6 +96,101 @@ public struct RegionWeaveSolver: WeaveSolving {
             residualTriangles: report?.interfaceTriangles ?? 0,
             interiorIndexBudget: report?.interiorIndexBudget ?? 0
         )
+    }
+
+    /// How an authored pin is honoured, and what it costs.
+    ///
+    /// The region remesh path has NO position-pin mechanism: pins exist in the C API
+    /// only for the mutating brush entry points, and `remeshedRegion` takes valence
+    /// overrides and nothing else. So a pin is expressed through machinery that IS
+    /// proven rather than through an engine change bolted on to carry it.
+    ///
+    /// - An **interior** pin (every incident face inside the region) has its one-ring
+    ///   frozen. The vertex then lies wholly outside the solved region, so its position
+    ///   AND its valence survive exactly — by the same exclusion that protects a frozen
+    ///   patch, not by a new guarantee that would need its own proof.
+    ///
+    ///   This is deliberately STRONGER than the annotation's brush meaning ("immune to
+    ///   Move / Relax / Auto Relax"): the faces AROUND the pin are not re-solved either.
+    ///   A weaker reading — hold the vertex, re-solve its neighbourhood — has nothing in
+    ///   the engine to implement it today, and quietly dropping the pin is precisely the
+    ///   stored-and-never-read failure this change exists to end. Callers who want the
+    ///   neighbourhood re-solved should not pin it.
+    ///
+    /// - An **interface** pin cannot be frozen out of the way and does not need to be:
+    ///   exact landing already holds its position bitwise. It becomes a valence
+    ///   prescription at its authored valence, so a pole the artist placed on purpose is
+    ///   not reported as irregular. An explicit caller override always wins — the caller
+    ///   said what it wanted, and a pin is the weaker signal.
+    ///
+    /// - A pin **outside** the region is ignored: it constrains geometry no solve touches.
+    ///
+    /// Deterministic: pins are classified in ascending id against the region as it stood
+    /// BEFORE any pin froze anything, so the result cannot depend on iteration order.
+    /// One pass is sufficient — an interior pin's ring is frozen whole, so a second pass
+    /// could only relabel it, never protect it differently.
+    /// Public because the spec requires the interior/interface decision to be observable
+    /// rather than implicit: a caller showing the user which pins will hold position and
+    /// which were reinterpreted as valence prescriptions needs the same answer the solve
+    /// will use. Same reason `prescribedQuadBudget` is public.
+    public static func resolvePins(
+        source: Mesh, requested: [UInt32], frozen: Set<UInt32>, pinned: [UInt32],
+        overrides: [UInt32: Int]
+    ) -> PinResolution {
+        var result = PinResolution(
+            regionFaces: requested.filter { !frozen.contains($0) }, valence: overrides
+        )
+        let pinnedSet = Set(pinned)
+        guard !pinnedSet.isEmpty else { return result }
+
+        // Incident faces per pinned vertex, over ALL live faces: a pin's classification
+        // depends on faces outside the region too, so a region-only walk would call an
+        // interface pin interior and freeze a ring that was never the caller's to freeze.
+        var incident: [UInt32: [UInt32]] = [:]
+        for face in source.liveFaceIDs() {
+            for vertex in source.faceVertices(face) where pinnedSet.contains(vertex) {
+                incident[vertex, default: []].append(face)
+            }
+        }
+
+        let regionSet = Set(result.regionFaces)
+        var extraFrozen: Set<UInt32> = []
+        for vertex in pinned.sorted() {
+            // A stale id resolves to no faces. Annotations are documented as skippable
+            // when they go stale, never fatal, so this is a `continue` and not a throw.
+            guard let faces = incident[vertex], !faces.isEmpty else { continue }
+            let inRegion = faces.filter { regionSet.contains($0) }
+            if inRegion.isEmpty {
+                continue  // outside the region
+            }
+            if inRegion.count == faces.count {
+                extraFrozen.formUnion(faces)
+                result.interiorPinned.append(vertex)
+            } else {
+                result.interfacePinned.append(vertex)
+                if result.valence[vertex] == nil, let valence = source.vertexFaceCount(vertex) {
+                    result.valence[vertex] = valence
+                }
+            }
+        }
+        if !extraFrozen.isEmpty {
+            // Filter `requested` in its original order rather than subtracting sets, so
+            // the face order handed to the engine stays stable.
+            result.regionFaces = result.regionFaces.filter { !extraFrozen.contains($0) }
+        }
+        return result
+    }
+
+    /// What `resolvePins` decided, kept observable so a caller can tell a pin that was
+    /// honoured as a freeze from one reinterpreted as a valence prescription — the
+    /// distinction is invisible in the solved mesh otherwise.
+    public struct PinResolution: Equatable, Sendable {
+        public var regionFaces: [UInt32]
+        public var valence: [UInt32: Int]
+        /// Pins whose one-ring was frozen out of the region.
+        public var interiorPinned: [UInt32] = []
+        /// Pins already on the interface, honoured as valence prescriptions.
+        public var interfacePinned: [UInt32] = []
     }
 
     /// A quad budget derived from the region's own area and the spacing of the

@@ -249,6 +249,41 @@ extension MeshEditController {
         applyAnnotationEditNow(verb: "batch.clearPins") { $0.clearingAllPins() }
     }
 
+    /// Thaws every frozen face as ONE journaled entry (openspec
+    /// add-weave-constraint-authoring), mirroring `clearAllPins`.
+    @discardableResult
+    func clearAllFrozen() -> Bool {
+        applyAnnotationEditNow(verb: "batch.clearFrozen") { $0.clearingAllFrozen() }
+    }
+
+    /// Freeze Flip: flips the frozen state of every face the stroke crosses.
+    ///
+    /// Flip semantics, like Pin Flip: an all-frozen selection thaws, so a second pass
+    /// over the same patch always undoes the first. Faces rather than vertices, because
+    /// freezing is what the SOLVER consumes — `WeaveConstraints.frozenFaces` — and a
+    /// vertex-keyed freeze would need an arbitrary rule to decide which incident faces
+    /// it meant.
+    func commitFreezeFlipStroke(_ stroke: ToolStroke, samples: [StrokeSample]) {
+        let context = stroke.context
+        guard let mesh = context.editMesh, !samples.isEmpty else { return }
+        let pickRadius = context.sceneRadius * Self.vertexPickRadiusFraction
+
+        // Every distinct face under the stroke, in first-touched order so the journaled
+        // verb is deterministic for the same stroke.
+        var faces: [UInt32] = []
+        var seen: Set<UInt32> = []
+        for sample in samples {
+            guard let hit = surfacePoint(at: point(of: sample), in: context),
+                let face = mesh.nearestFace(to: hit, maxDistance: pickRadius)
+            else { continue }
+            if seen.insert(face.face).inserted { faces.append(face.face) }
+        }
+        guard !faces.isEmpty else { return }
+        applyAnnotationEdit(verb: "tool.freezeFlip", context: context) {
+            $0.togglingFrozen(on: faces)
+        }
+    }
+
     /// Journals an annotation transform against the CURRENT context,
     /// reporting whether anything changed (the menu items disable
     /// themselves off the same answer rather than journaling no-ops).
