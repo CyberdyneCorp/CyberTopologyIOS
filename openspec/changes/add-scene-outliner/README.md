@@ -1,0 +1,3 @@
+# add-scene-outliner
+
+Phase 8's 8.1: show / solo / lock, groups and per-object stats. The largest remaining item with no engine dependency — `Object.counts` already exists so stats are a readout, and the journal already gives undo once the new state moves through a command. The design questions it answers are how object visibility composes with the lasso's per-face visibility (object-level dominates, and never rewrites face state), why solo is a view mode rather than stored state (so un-soloing restores exactly what the artist had), and why lock refuses at the command layer rather than by disabling buttons (a refusal is a guarantee; a disabled button is a convention).
