@@ -81,6 +81,9 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     // immediate command, also hosted by the batch panel beside clearPins.
     case freezeFlip
     case clearFrozen
+    /// add-uv-seam-authoring: Seam Flip arms the seam tool; clearSeams sews every seam.
+    case seamFlip
+    case clearSeams
     /// Task 4.3a: freezes the Loop Info chip so it can be READ while both hands are
     /// on the model. Reached through the gallery rather than by tapping the chip,
     /// because the chip is deliberately `allowsHitTesting(false)` — an inspector must
@@ -147,7 +150,7 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
             // and only isImmediateCommand routes there. It stayed reachable through its
             // dedicated affordances in DocumentEditorView, which is why nobody noticed.
             // `ToolbarRoutingTests` now asserts the invariant generally, not just this case.
-            .autoRetopo, .unwrapUVs:
+            .autoRetopo, .unwrapUVs, .clearSeams:
             true
         default:
             false
@@ -169,6 +172,7 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
         case .transformVertices: .transformVertices
         case .pinFlip: .pinFlip
         case .freezeFlip: .freezeFlip
+        case .seamFlip: .seamFlip
         case .weaveFill: .weaveFill
         default: nil
         }

@@ -132,6 +132,63 @@ struct AnnotationRemaindersTests {
         #expect(withoutFaces.pinPoints == withFaces.pinPoints)
     }
 
+    // MARK: - UV seams in the overlay (6.2)
+
+    @Test("A seam draws in its own colour, distinct from tags and frozen outlines")
+    func seamsDrawDistinctly() throws {
+        let mesh = try grid66()
+        let edge = try #require((0..<UInt32(mesh.edgeCount)).first {
+            mesh.edgeEndpoints(of: $0) != nil
+        })
+        let state = AnnotationRenderState.build(
+            annotations: MeshAnnotations(seamEdges: [edge]),
+            edgeEndpoints: { mesh.edgeEndpoints(of: $0) },
+            vertexPosition: { mesh.vertexPosition($0) },
+            faceVertices: { mesh.faceVertices($0) },
+            liveFaces: { mesh.liveFaceIDs() }
+        )
+        #expect(state.seamSegments.count == 1)
+        #expect(state.seamSegments[0].color == AnnotationRenderState.seamColor)
+        // A seam is a CUT and a tag is a FLOW hint; sharing a palette entry would make two
+        // different meanings indistinguishable on screen.
+        #expect(state.seamSegments[0].color != LoopTagPalette.color(0))
+        #expect(state.seamSegments[0].color != AnnotationRenderState.frozenColor)
+        #expect(!state.isEmpty)
+    }
+
+    @Test("A seam on a hidden face stops drawing, like tags and pins")
+    func hiddenFacesSuppressSeams() throws {
+        let mesh = try grid66()
+        let edge = try #require((0..<UInt32(mesh.edgeCount)).first {
+            mesh.edgeEndpoints(of: $0) != nil
+        })
+        let hidden = AnnotationRenderState.build(
+            annotations: MeshAnnotations(
+                hiddenFaces: mesh.liveFaceIDs(), seamEdges: [edge]
+            ),
+            edgeEndpoints: { mesh.edgeEndpoints(of: $0) },
+            vertexPosition: { mesh.vertexPosition($0) },
+            faceVertices: { mesh.faceVertices($0) },
+            liveFaces: { mesh.liveFaceIDs() }
+        )
+        // The same defect 4.3a fixed for tags: standalone world-space geometry that never
+        // consulted the hidden-face set kept drawing over whatever was behind it.
+        #expect(hidden.seamSegments.isEmpty)
+    }
+
+    @Test("Seam flip and clear seams are reachable and correctly classified")
+    func seamActionsAreReachable() {
+        // A TOOL, not an immediate command: it is stroke-driven, so it must arm rather than
+        // render a CommandButton that fires once.
+        #expect(EditorAction.seamFlip.tool == .seamFlip)
+        #expect(!EditorAction.seamFlip.isImmediateCommand)
+        #expect(!EditorAction.seamFlip.gallery.notes.isEmpty)
+
+        // The clear IS an immediate command, so its slot must route to CommandButton.
+        #expect(EditorAction.clearSeams.isImmediateCommand)
+        #expect(EditorAction.clearSeams.tool == nil)
+    }
+
     // MARK: - Clause: the Loop Info chip must be readable with both hands on the model
 
     private func sampleInfo(_ length: Float) -> LoopInfoChipState.Info {

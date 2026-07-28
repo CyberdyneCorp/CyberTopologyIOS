@@ -36,6 +36,8 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
     case clearPins
     /// add-weave-constraint-authoring: thaw every frozen face.
     case clearFrozen
+    /// add-uv-seam-authoring: sew every UV seam.
+    case clearSeams
 
     var id: String { rawValue }
 
@@ -49,6 +51,7 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
         case .clearLoopTags: "Clear Loop Tags"
         case .clearPins: "Clear Pins"
         case .clearFrozen: "Clear Frozen"
+        case .clearSeams: "Clear Seams"
         }
     }
 
@@ -62,6 +65,7 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
         case .clearLoopTags: "tag.slash"
         case .clearPins: "pin.slash"
         case .clearFrozen: "snowflake.slash"
+        case .clearSeams: "scissors.badge.ellipsis"
         }
     }
 
@@ -88,6 +92,9 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
         case .clearFrozen:
             "Thaws every frozen face in one undoable step, so the next Weave "
                 + "solve is free to rewrite them again."
+        case .clearSeams:
+            "Sews every UV seam in one undoable step, so the next unwrap chooses "
+                + "its own seams again."
         }
     }
 
@@ -215,6 +222,8 @@ extension MeshEditController {
             return clearAllPins()
         case .clearFrozen:
             return clearAllFrozen()
+        case .clearSeams:
+            return clearAllSeams()
         case .snapAllToTarget:
             return runBatchMeshEdit(command) { mesh, context in
                 let report = try mesh.snapAllToTarget(

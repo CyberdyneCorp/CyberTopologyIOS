@@ -442,6 +442,7 @@ final class ViewportInputModel {
         switch action {
         case .clearPins: return meshEditor?.clearAllPins() ?? false
         case .clearFrozen: return meshEditor?.clearAllFrozen() ?? false
+        case .clearSeams: return meshEditor?.clearAllSeams() ?? false
         // Not a document edit and nothing to journal: the chip is view state.
         case .toggleLoopInfoPin: return toggleLoopInfoPinned()
         case .clearLoopTags: return meshEditor?.clearAllLoopTags() ?? false

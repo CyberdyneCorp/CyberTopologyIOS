@@ -27,7 +27,7 @@ struct ToolbarRoutingTests {
     private static let runnable: [EditorAction] = [
         .clearPins, .clearLoopTags, .clearFrozen, .toggleLoopInfoPin, .outliner,
         .toggleSymmetry, .applySymmetry, .resymmetrize, .toggleAutoRelax, .batchCommands,
-        .autoRetopo, .unwrapUVs,
+        .autoRetopo, .unwrapUVs, .clearSeams,
     ]
 
     @Test("Every runnable command is reachable from a toolbar slot")

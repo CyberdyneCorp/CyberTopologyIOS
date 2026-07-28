@@ -393,6 +393,27 @@ extension EditorAction {
                     + "the document.",
                 demoFrames: ["xmark.square.dashed", "square.dashed"]
             )
+        case .seamFlip:
+            GalleryEntry(
+                title: "Seam flip",
+                symbol: "scissors",
+                gesture: "Tool — draw along the edges to cut",
+                notes: "Marks UV seams along the edges you draw over. Drawing the same "
+                    + "edges again sews them back. An unwrap then cuts along exactly "
+                    + "your seams instead of choosing its own — so if the result is too "
+                    + "distorted, add another seam and unwrap again. The distortion "
+                    + "heatmap in the UV stage shows where to put it.",
+                demoFrames: ["scissors", "square.grid.3x3.topleft.filled"]
+            )
+        case .clearSeams:
+            GalleryEntry(
+                title: "Clear seams",
+                symbol: "scissors.badge.ellipsis",
+                gesture: "Command",
+                notes: "Sews every seam in one undo step, so the next unwrap goes back "
+                    + "to choosing its own seams.",
+                demoFrames: ["scissors.badge.ellipsis", "square.dashed"]
+            )
         case .freezeFlip:
             GalleryEntry(
                 title: "Freeze flip",

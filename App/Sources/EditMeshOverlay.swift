@@ -290,6 +290,15 @@ struct AnnotationRenderState: Equatable {
     /// an outline still reads correctly through the x-ray pass, where a fill
     /// would just muddy whatever is behind it.
     var frozenOutlines: [TagGroup] = []
+    /// UV seam edges (openspec add-uv-seam-authoring), as one line-list group. Drawn in a
+    /// warm orange so a seam reads as a CUT rather than as another coloured tag — the two
+    /// mean different things (a tag steers retopology flow, a seam cuts the atlas) and
+    /// sharing a palette entry would make them indistinguishable on screen.
+    var seamSegments: [TagGroup] = []
+
+    /// The colour seams draw in: distinct from the tag palette and from the cold blue
+    /// frozen outlines.
+    static let seamColor = SIMD3<Float>(1.00, 0.45, 0.10)
 
     /// The colour frozen faces outline in: a cold pale blue, distinct from the
     /// yellow pin markers and from every loop-tag palette entry.
@@ -297,7 +306,10 @@ struct AnnotationRenderState: Equatable {
 
     /// Every line-list group in draw order: frozen outlines under tags (a tagged
     /// loop crossing a frozen patch must stay readable), rims on top.
-    var lineGroups: [TagGroup] { frozenOutlines + tagGroups + symmetryRims }
+    var lineGroups: [TagGroup] {
+        // Seams above tags: where an edge is both, the cut is the more consequential fact.
+        frozenOutlines + tagGroups + seamSegments + symmetryRims
+    }
 
     var isEmpty: Bool { pinPoints.isEmpty && lineGroups.allSatisfy { $0.segments.isEmpty } }
 
@@ -372,6 +384,20 @@ struct AnnotationRenderState: Equatable {
             guard let position = vertexPosition(vertex) else { continue }
             state.pinPoints.append(contentsOf: [position.x, position.y, position.z])
         }
+        // Seams, filtered by the same visibility rule tags and pins use: an annotation on
+        // a lassoed-away face must not go on drawing over whatever is behind it.
+        var seams: [Float] = []
+        for edge in annotations.seamEdges {
+            guard let (a, b) = edgeEndpoints(edge), edgeVisible(a, b),
+                let start = vertexPosition(a), let end = vertexPosition(b)
+            else { continue }
+            seams.append(contentsOf: [start.x, start.y, start.z])
+            seams.append(contentsOf: [end.x, end.y, end.z])
+        }
+        if !seams.isEmpty {
+            state.seamSegments = [TagGroup(color: Self.seamColor, segments: seams)]
+        }
+
         let groups = annotations.taggedEdgesByColor()
         for index in groups.keys.sorted() {
             var segments: [Float] = []

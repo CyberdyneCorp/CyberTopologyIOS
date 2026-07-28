@@ -32,6 +32,10 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
     /// Freezing is a SOLVER constraint, not visibility — a frozen face stays
     /// visible, since you generally want to see what you are protecting.
     case freezeFlip
+    /// Seam Flip (openspec add-uv-seam-authoring): toggles UV seams along the stroke.
+    /// Draw to cut, draw again to sew — the same semantics the engine's own `SeamSet`
+    /// describes. An unwrap then cuts along exactly these instead of auto-seaming.
+    case seamFlip
     /// Guide (add-guide-stroke-authoring): a stroke on the Target is captured
     /// as a world-space guide polyline that steers the next Auto-Retopo's edge
     /// flow. Needs only a Target (no EditMesh) and journals nothing — guides are
@@ -58,7 +62,7 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
         case .patchClone, .extendBoundary, .transformVertices:
             return true
         case .buildQuad, .buildTriangle, .mergePair, .pathDistribute,
-            .surfaceCut, .drawStrip, .pinFlip, .freezeFlip, .guide, .weaveFill:
+            .surfaceCut, .drawStrip, .pinFlip, .freezeFlip, .seamFlip, .guide, .weaveFill:
             // Weave Fill is stroke-driven: the camera never manipulates the
             // proposal, the fill point and painted extent do.
             return false
@@ -143,6 +147,8 @@ extension MeshEditController {
             commitPinFlipStroke(stroke, samples: samples)
         case .freezeFlip:
             commitFreezeFlipStroke(stroke, samples: samples)
+        case .seamFlip:
+            commitSeamFlipStroke(stroke, samples: samples)
         case .guide:
             commitGuideStroke(stroke, samples: samples)
         }
@@ -516,6 +522,8 @@ extension MeshEditController {
             probePinLoopHold(vertices: vertices, context: context)
         case .freezeFlip:
             probeFreezeFlip(vertices: vertices, context: context)
+        case .seamFlip:
+            probeSeamFlip(vertices: vertices, context: context)
         case .guide:
             break  // guide capture has no screenshot probe
         }
@@ -704,6 +712,28 @@ extension MeshEditController {
                     let edge = mesh.nearestEdge(to: hit, maxDistance: pickRadius),
                     mesh.isBoundaryEdge(edge.edge) == false,
                     !mesh.edgeLoopVertices(from: edge.edge).isEmpty
+                else { continue }
+                driveProbeHold(at: screen)
+                if lastCommit != nil { return }
+            }
+        }
+    }
+
+    /// Seam Flip: a stroke along an interior edge, so the probe journals a real
+    /// `tool.seamFlip` through the same begin/continue/end path a Pencil takes.
+    ///
+    /// Required, not optional: `visualVerificationProbesJournalEveryTool` asserts every
+    /// tool journals through its probe, and it was right to reject the `break` I first
+    /// wrote for freezeFlip — a tool with no exercised path is a tool nothing verifies.
+    private func probeSeamFlip(vertices: [ProbeVertex], context: Context) {
+        guard let mesh = context.editMesh, let project = context.project else { return }
+        let pickRadius = context.sceneRadius * Self.vertexPickRadiusFraction
+        for from in vertices {
+            for to in vertices where to.id != from.id {
+                let midpoint = (from.position + to.position) * 0.5
+                guard let screen = project(midpoint),
+                    let hit = surfacePoint(at: screen, in: context),
+                    mesh.nearestEdge(to: hit, maxDistance: pickRadius) != nil
                 else { continue }
                 driveProbeHold(at: screen)
                 if lastCommit != nil { return }

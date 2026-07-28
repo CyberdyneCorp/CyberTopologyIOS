@@ -33,23 +33,27 @@ Engine change is one field. The work is in the document state and the authoring 
 - [x] 3.2 The unwrap passes the document's seams.
 - [x] 3.3 Tests: a seam ring changes the chart count; no seams matches the previous result.
 
-## 4. Authoring surface — NOT DONE, and the honest remainder of this slice
+## 4. Authoring surface
 
-- [ ] 4.1 A seam tool that toggles seams along a stroke, journaled as ONE entry. The document
-      state, the engine path and the plumbing are all live and tested — `togglingSeams` exists
-      and the unwrap reads `annotations.seamEdges` — so what is missing is the stroke handler
-      that turns a Pencil gesture into edge ids. That is the same shape as
-      `commitFreezeFlipStroke` and is not blocked on anything.
-- [ ] 4.2 Seams drawn distinctly in the EditMesh overlay, respecting hidden faces the way
-      tags and pins now do.
-- [ ] 4.3 Reached through the Action Gallery.
-
-**Shipping the channel without the gesture is deliberate**: seams are honoured end to end and
-provably not supplemented, so the hard half is verified. Nothing claims an artist can draw one
-yet.
+- [x] 4.1 `seamFlip`, a stroke TOOL (not an immediate command — it is stroke-driven, so it
+      must arm rather than fire once), toggling seams along every edge the stroke crosses,
+      journaled as ONE `tool.seamFlip` entry. EDGES rather than faces or vertices, because a
+      seam IS an edge set — that is what `computeIslands` treats as uncrossable and what
+      `MeshAnnotations.seamEdges` stores; picking a vertex would need an arbitrary rule for
+      which incident edge it meant.
+- [x] 4.2 Seams drawn in a warm orange, distinct from the tag palette AND from the cold-blue
+      frozen outlines, because a seam is a CUT while a tag is a FLOW hint and sharing a
+      colour would make two different meanings indistinguishable. Filtered by the same
+      hidden-face rule 4.3a added for tags and pins, asserted by test — otherwise a seam on a
+      lassoed-away face would keep drawing over whatever is behind it.
+- [x] 4.3 Reached through the Action Gallery, with `clearSeams` as an immediate command and a
+      batch-panel row beside Clear Frozen.
+- [x] 4.4 A screenshot probe, because `visualVerificationProbesJournalEveryTool` requires
+      every tool to journal through one — the assertion that correctly rejected the `break`
+      first written for `freezeFlip`.
 
 ## 5. Close out
 
-- [ ] 5.1 `openspec validate --changes --strict`; engine, simulator and device suites.
-- [ ] 5.2 Update the master 6.2 entry: what shipped, and that corner pinning plus the
+- [x] 5.1 `openspec validate --changes --strict`; engine, simulator and device suites.
+- [x] 5.2 Update the master 6.2 entry: what shipped, and that corner pinning plus the
       X-gesture are 6.2b. Correct 6.1's "no API to supply seams" claim.

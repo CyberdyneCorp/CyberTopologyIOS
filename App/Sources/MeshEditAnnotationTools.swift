@@ -281,6 +281,41 @@ extension MeshEditController {
         applyAnnotationEditNow(verb: "batch.clearPins") { $0.clearingAllPins() }
     }
 
+    /// Sews every seam as ONE journaled entry (openspec add-uv-seam-authoring).
+    @discardableResult
+    func clearAllSeams() -> Bool {
+        applyAnnotationEditNow(verb: "batch.clearSeams") { $0.clearingAllSeams() }
+    }
+
+    /// Seam Flip: toggles UV seams along every edge the stroke crosses.
+    ///
+    /// Draw to cut, draw again to sew — flip semantics, matching the engine's own
+    /// `SeamSet.toggle` and the shape pins, tags and frozen faces already use.
+    ///
+    /// EDGES rather than faces or vertices, because a seam is an edge set: that is what
+    /// `computeIslands` treats as uncrossable and what `MeshAnnotations.seamEdges` stores.
+    /// Picking a vertex would need an arbitrary rule to decide which incident edge it meant.
+    func commitSeamFlipStroke(_ stroke: ToolStroke, samples: [StrokeSample]) {
+        let context = stroke.context
+        guard let mesh = context.editMesh, !samples.isEmpty else { return }
+        let pickRadius = context.sceneRadius * Self.vertexPickRadiusFraction
+
+        // Every distinct edge under the stroke, in first-touched order so the journaled
+        // verb is deterministic for the same stroke.
+        var edges: [UInt32] = []
+        var seen: Set<UInt32> = []
+        for sample in samples {
+            guard let hit = surfacePoint(at: point(of: sample), in: context),
+                let edge = mesh.nearestEdge(to: hit, maxDistance: pickRadius)
+            else { continue }
+            if seen.insert(edge.edge).inserted { edges.append(edge.edge) }
+        }
+        guard !edges.isEmpty else { return }
+        applyAnnotationEdit(verb: "tool.seamFlip", context: context) {
+            $0.togglingSeams(on: edges)
+        }
+    }
+
     /// Thaws every frozen face as ONE journaled entry (openspec
     /// add-weave-constraint-authoring), mirroring `clearAllPins`.
     @discardableResult
