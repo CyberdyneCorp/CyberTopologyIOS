@@ -71,6 +71,8 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     case extendBoundary
     case drawStrip
     case transformVertices
+    /// 6.3b: on-surface island UV transform.
+    case transformIslandUV
     // Task 4.3 annotations (spec: retopology-tools / "Pins immune to
     // smoothing", "Loop tags"). Pin Flip is a stroke tool; the two clears
     // are immediate commands, also hosted by the 4.5 batch panel.
@@ -178,6 +180,7 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
         case .extendBoundary: .extendBoundary
         case .drawStrip: .drawStrip
         case .transformVertices: .transformVertices
+        case .transformIslandUV: .transformIslandUV
         case .pinFlip: .pinFlip
         case .freezeFlip: .freezeFlip
         case .seamFlip: .seamFlip

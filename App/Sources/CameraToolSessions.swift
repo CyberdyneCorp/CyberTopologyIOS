@@ -410,3 +410,41 @@ enum PlacementPreviewGeometry {
         )
     }
 }
+
+/// On-surface island UV transform (openspec add-uv-on-surface-transform, 6.3b; spec: uv-workflow /
+/// "On-surface UV manipulation").
+///
+/// A camera-as-manipulator plan like the three above, so it needs NO new input arbitration: the
+/// arbiter's `cameraFeedsArmedTool` already blurs pen-authors/fingers-navigate for exactly this, and
+/// owns the verdict.
+///
+/// The transform is ACCUMULATED and applied on COMMIT rather than live, and that is a deliberate
+/// choice rather than a shortcut. A UV change is invisible in the 3D viewport until a textured
+/// render path exists (nothing in the app samples a texture yet), so live application would buy no
+/// feedback at all — while repeatedly applying centroid-relative deltas does NOT compose exactly,
+/// so it would trade a real correctness risk for nothing. One commit, one exact transform.
+struct UVIslandTransformPlan: Equatable {
+    /// A representative face of the island being transformed, resolved at arm time.
+    var face: UInt32
+    /// The island's surface centroid, used to convert camera motion into a 2D delta.
+    var pivot: SIMD3<Float>
+    /// Accumulated channels, each from a distinct gesture so none can be mistaken for another.
+    var scale: Float = 1
+    var rollAngle: Float = 0
+    var orbitDelta: SIMD2<Float> = .zero
+
+    /// Converts the camera's screen-lock displacement of `pivot` into a normalized 2D delta.
+    ///
+    /// Projected onto the camera's own right/up axes and divided by the scene radius, so the mapping
+    /// is independent of model scale: the same finger travel moves the island the same distance in
+    /// UV space on a large model and a small one.
+    mutating func orbitChanged(
+        displacement: SIMD3<Float>, right: SIMD3<Float>, up: SIMD3<Float>, sceneRadius: Float
+    ) {
+        guard sceneRadius > 0 else { return }
+        orbitDelta = SIMD2(
+            simd_dot(displacement, right) / sceneRadius,
+            simd_dot(displacement, up) / sceneRadius
+        )
+    }
+}

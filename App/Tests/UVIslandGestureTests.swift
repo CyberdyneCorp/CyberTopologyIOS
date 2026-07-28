@@ -174,4 +174,92 @@ struct UVIslandGestureTests {
         let layout = UVLayoutGeometry.Layout(rings: [], overflowCorners: 0, distortion: [])
         #expect(layout.ringIndex(at: SIMD2(0.5, 0.5)) == nil)
     }
+
+    // MARK: - On-surface (UV3D) camera-as-manipulator transform (6.3b)
+
+    @Test("The three on-surface channels map to distinct transform components")
+    func onSurfaceChannelsAreDistinct() {
+        // Each gesture drives ONE component, so none can be mistaken for another: pinch scales,
+        // twist rotates, orbit moves.
+        let pinched = UVIslandGesture.onSurfaceTransform(
+            pinchScale: 1.5, rollRadians: 0, orbitDelta: .zero
+        )
+        #expect(pinched.scale == 1.5)
+        #expect(pinched.radians == 0)
+        #expect(pinched.translate == .zero)
+
+        let twisted = UVIslandGesture.onSurfaceTransform(
+            pinchScale: 1, rollRadians: 0.4, orbitDelta: .zero
+        )
+        #expect(twisted.radians == 0.4)
+        #expect(twisted.scale == 1)
+        #expect(twisted.translate == .zero)
+
+        let orbited = UVIslandGesture.onSurfaceTransform(
+            pinchScale: 1, rollRadians: 0, orbitDelta: SIMD2(0.3, -0.2)
+        )
+        #expect(orbited.translate.x == 0.3 * UVIslandGesture.orbitToUVGain)
+        #expect(orbited.translate.y == -0.2 * UVIslandGesture.orbitToUVGain)
+        #expect(orbited.scale == 1)
+    }
+
+    @Test("An untouched on-surface session yields the IDENTITY, so it journals nothing")
+    func untouchedSessionIsIdentity() {
+        // A session armed and committed without moving the camera must leave no undo entry —
+        // `runTransformIsland` declines the identity, and this is what makes that reachable.
+        #expect(
+            UVIslandGesture.onSurfaceTransform(
+                pinchScale: 1, rollRadians: 0, orbitDelta: .zero
+            ) == UVIslandGesture.Transform()
+        )
+    }
+
+    @Test("A non-positive pinch scale never reaches the engine")
+    func onSurfaceScaleIsAlwaysPositive() {
+        // The engine refuses a non-positive scale outright; a gesture must never be the thing that
+        // asks for one, even if the camera reported something degenerate.
+        for bad in [Float(0), -1, -0.0] {
+            let transform = UVIslandGesture.onSurfaceTransform(
+                pinchScale: bad, rollRadians: 0, orbitDelta: .zero
+            )
+            #expect(transform.scale > 0)
+        }
+    }
+
+    @Test("Orbit delta is normalized by scene radius, so model scale does not change the feel")
+    func orbitDeltaIsScaleInvariant() {
+        // The same camera displacement on a model ten times larger must move the island ten times
+        // LESS in UV space — i.e. the same fraction of the model equals the same UV distance.
+        var small = UVIslandTransformPlan(face: 0, pivot: .zero)
+        small.orbitChanged(
+            displacement: SIMD3(1, 0, 0), right: SIMD3(1, 0, 0), up: SIMD3(0, 1, 0),
+            sceneRadius: 1
+        )
+        var large = UVIslandTransformPlan(face: 0, pivot: .zero)
+        large.orbitChanged(
+            displacement: SIMD3(1, 0, 0), right: SIMD3(1, 0, 0), up: SIMD3(0, 1, 0),
+            sceneRadius: 10
+        )
+        #expect(abs(small.orbitDelta.x - 1) < 1e-6)
+        #expect(abs(large.orbitDelta.x - 0.1) < 1e-6)
+    }
+
+    @Test("A degenerate scene radius leaves the orbit delta alone rather than dividing by zero")
+    func degenerateSceneRadiusIsSafe() {
+        var plan = UVIslandTransformPlan(face: 0, pivot: .zero)
+        plan.orbitChanged(
+            displacement: SIMD3(5, 5, 5), right: SIMD3(1, 0, 0), up: SIMD3(0, 1, 0),
+            sceneRadius: 0
+        )
+        #expect(plan.orbitDelta == .zero)
+    }
+
+    @Test("The on-surface tool is a CAMERA manipulator, which is why it needs no new arbitration")
+    func toolIsACameraManipulator() {
+        // `InputArbiter.cameraFeedsArmedTool` already blurs pen-authors/fingers-navigate for exactly
+        // this class of tool, and owns that verdict — so the pinch reuses an established seam rather
+        // than competing with the camera.
+        #expect(RetopoTool.transformIslandUV.isCameraManipulator)
+        #expect(EditorAction.transformIslandUV.tool == .transformIslandUV)
+    }
 }

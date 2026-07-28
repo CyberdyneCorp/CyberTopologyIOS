@@ -59,6 +59,41 @@ enum UVIslandGesture {
     /// than a violent one.
     static let minimumLeverArm: Float = 1e-3
 
+    /// UV units the island moves per full screen-width of camera orbit, for the on-surface
+    /// (UV3D) transform.
+    ///
+    /// One UV unit per screen traverse: the artist drags across the viewport and the island crosses
+    /// the atlas. A larger gain would make the island uncontrollable at cage scale; a smaller one
+    /// would need several drags to cross the square.
+    static let orbitToUVGain: Float = 1.0
+
+    /// The transform an ON-SURFACE (UV3D) camera-as-manipulator gesture produces.
+    ///
+    /// The camera is the input device here — that is the established camera-as-manipulator pattern
+    /// (`InputArbiter.cameraFeedsArmedTool`), and it is why this needs no new input arbitration:
+    /// while a session is armed, camera motion BOTH moves the camera and drives the tool, and the
+    /// arbiter owns that verdict.
+    ///
+    /// The three channels are deliberately distinct gestures rather than one overloaded drag, so
+    /// none of them can be mistaken for another:
+    ///   * pinch  (camera distance)  -> SCALE, via the same `PlacementMath.pinchScale` every other
+    ///     camera tool uses, so a pinch means the same thing across tools.
+    ///   * two-finger rotate (roll)  -> ROTATION.
+    ///   * orbit (screen-space drag) -> TRANSLATION.
+    static func onSurfaceTransform(
+        pinchScale: Float, rollRadians: Float, orbitDelta: SIMD2<Float>
+    ) -> Transform {
+        // A non-positive pinch scale is impossible from `pinchScale` (it clamps to 0.2...5), but
+        // guarded anyway: the engine refuses a non-positive scale outright, and a gesture must
+        // never be the thing that asks for one.
+        let scale = pinchScale > 0 ? pinchScale : 1
+        return Transform(
+            translate: orbitDelta * orbitToUVGain,
+            radians: rollRadians,
+            scale: scale
+        )
+    }
+
     static func transform(
         mode: Mode, from start: SIMD2<Float>, to current: SIMD2<Float>, about centre: SIMD2<Float>
     ) -> Transform {

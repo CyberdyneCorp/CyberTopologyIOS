@@ -23,6 +23,8 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
     case extendBoundary
     case drawStrip
     case transformVertices
+    /// 6.3b: on-surface island UV transform (camera-as-manipulator).
+    case transformIslandUV
     /// Pin Flip (task 4.3): flips pins per vertex, per swept run, or —
     /// on a HOLD over an interior edge — for the whole edge loop.
     case pinFlip
@@ -59,7 +61,7 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
     /// follows the stroke itself).
     var isCameraManipulator: Bool {
         switch self {
-        case .patchClone, .extendBoundary, .transformVertices:
+        case .patchClone, .extendBoundary, .transformVertices, .transformIslandUV:
             return true
         case .buildQuad, .buildTriangle, .mergePair, .pathDistribute,
             .surfaceCut, .drawStrip, .pinFlip, .freezeFlip, .seamFlip, .guide, .weaveFill:
@@ -134,7 +136,7 @@ extension MeshEditController {
             applyPathDistribute(stroke, first: first, last: last)
         case .surfaceCut:
             applySurfaceCut(stroke, samples: samples)
-        case .patchClone, .extendBoundary, .transformVertices:
+        case .patchClone, .extendBoundary, .transformVertices, .transformIslandUV:
             // Camera-as-manipulator tools (task 4.2): the stroke selects
             // (or, as a tap on an armed session, commits) — the camera
             // does the manipulation between strokes.
@@ -518,6 +520,8 @@ extension MeshEditController {
             probeDrawStrip(vertices: vertices, context: context)
         case .transformVertices:
             probeTransformVertices(vertices: vertices, context: context)
+        case .transformIslandUV:
+            probeTransformIslandUV(vertices: vertices, context: context)
         case .pinFlip:
             probePinLoopHold(vertices: vertices, context: context)
         case .freezeFlip:
@@ -625,6 +629,25 @@ extension MeshEditController {
     /// they lock to the screen and move over the model, commit (re-snap).
     private func probeTransformVertices(vertices: [ProbeVertex], context: Context) {
         guard vertices.count >= 2 else { return }
+        driveProbeStroke(
+            verb: .pencil, through: [vertices[0].screen, vertices[1].screen]
+        )
+        guard cameraSession != nil else { return }
+        feedProbeCameraOrbit(context: context, steps: 4)
+        commitCameraToolSession()
+    }
+
+    /// Visual-verification probe for the on-surface island UV transform (6.3b).
+    ///
+    /// UNWRAPS first when there is no layout. The tool legitimately refuses a mesh with no UVs, so a
+    /// probe that skipped that step could only ever exercise the refusal — and the guard test
+    /// (`visualVerificationProbesJournalEveryTool`) is there precisely to stop a tool shipping with
+    /// a probe that journals nothing.
+    private func probeTransformIslandUV(vertices: [ProbeVertex], context: Context) {
+        guard vertices.count >= 2 else { return }
+        if context.editMesh?.hasUVLayout != true {
+            guard runUnwrapUVs() else { return }
+        }
         driveProbeStroke(
             verb: .pencil, through: [vertices[0].screen, vertices[1].screen]
         )

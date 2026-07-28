@@ -427,6 +427,18 @@ extension EditorAction {
                     + "the same pixels.",
                 demoFrames: ["arrow.up.left.and.arrow.down.right", "square.grid.2x2"]
             )
+        case .transformIslandUV:
+            GalleryEntry(
+                title: "Island UVs on surface",
+                symbol: "hand.point.up.left",
+                gesture: "Tool — draw on an island, then move the camera",
+                notes: "Draw over a shell to grab its UVs, then the camera becomes the handle: "
+                    + "orbit to move the island in the UV square, pinch to scale it, twist to "
+                    + "rotate it. Nothing changes until you tap to commit, and the whole "
+                    + "adjustment is one undo. Needs an unwrap first — there is nothing to move "
+                    + "before the mesh has UVs.",
+                demoFrames: ["hand.point.up.left", "square.grid.2x2"]
+            )
         case .stackMirroredUVs:
             GalleryEntry(
                 title: "Stack mirrored UVs",

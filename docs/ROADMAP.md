@@ -124,7 +124,7 @@ landing, where rivals are undefined rather than slower — which needs no compet
 
 ### v0.3 — Public beta (target: Jun 2027) — "The pipeline's second stage"
 
-#### Phase 6 status — 9 of 10 closed (6.1, 6.1a, 6.2b, 6.3, 6.4, 6.5, 6.6, 6.7, 6.7a done; 6.2 all but its 2D half; 6.3b open)
+#### Phase 6 status — 10 of 11 closed (6.1, 6.1a, 6.2b, 6.3, 6.3b, 6.4, 6.5, 6.6, 6.7, 6.7a done; 6.2 all but its 2D half; 6.3c open)
 
 The entry point landed as `add-uv-stage-foundation`: engine UV READBACK (the real gate — the
 atlas could write per-corner UVs that nothing could read, so a 2D view was impossible), the
@@ -180,9 +180,15 @@ edit was destroying stored UV sets (the OBJ payload round trip drops non-`vt` co
 handle was rebuilt from payload bytes in three places that skipped the sidecar), and storing the
 active set's data in the sidecar let a stale copy overwrite newer edits.
 
-One follow-up remains: **6.3b** (UV3D on-surface pinch). Its arbitration mechanism turned out to
-already exist as `cameraFeedsArmedTool`, so the real gap is that NO textured render path exists for
-the "live texture feedback" it is specified against. The seam half of 6.2's original scoping claim was wrong
+**6.3b landed**, and its recorded blocker turned out not to exist: `cameraFeedsArmedTool` already
+provides the camera-as-manipulator routing, three tools already use it, and there was never a
+conflict with "finger strokes never author" (which is about strokes creating geometry). That makes
+**five** Phase 6 tasks where checking the code beat trusting my own task text.
+
+One follow-up remains: **6.3c** (live texture feedback + UV2D per-vertex mode). This one is a real
+new subsystem rather than a mis-scoped blocker — no shader in the app samples a texture and neither
+the Target nor the overlay vertex stream carries UVs, so it needs a new render path with
+corner-expanded vertices, a shader pair and its own offscreen harness. The seam half of 6.2's original scoping claim was wrong
 and is recorded as such.
 
 Open TestFlight. This is the release that starts the clock against CozyBlanket Pro.

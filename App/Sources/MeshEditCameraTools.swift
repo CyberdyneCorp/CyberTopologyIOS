@@ -40,6 +40,7 @@ extension MeshEditController {
             case patchClone(PatchClonePlan)
             case extendBoundary(ExtendBoundaryPlan)
             case transformVertices(TransformVerticesPlan)
+            case transformIslandUV(UVIslandTransformPlan)
         }
 
         var tool: RetopoTool
@@ -123,6 +124,12 @@ extension MeshEditController {
                 status: "\(plan.vertices.count) vertices locked to screen — orbit to move",
                 mode: nil, flipped: nil, canCommit: true
             )
+        case .transformIslandUV:
+            return CameraToolBanner(
+                tool: .transformIslandUV,
+                status: "island UVs — orbit to move, pinch to scale, twist to rotate",
+                mode: nil, flipped: nil, canCommit: true
+            )
         }
     }
 
@@ -186,6 +193,8 @@ extension MeshEditController {
             beginExtendBoundarySession(context: context, points: points, isHold: isTap)
         case .transformVertices:
             beginTransformVerticesSession(context: context, points: points)
+        case .transformIslandUV:
+            beginIslandUVTransformSession(context: context, points: points)
         default:
             break
         }
@@ -391,6 +400,41 @@ extension MeshEditController {
         cameraSession = session
     }
 
+    /// Arms an on-surface island UV transform (6.3b): the stroke picks the island, the camera
+    /// becomes the manipulator.
+    ///
+    /// Resolves the island by the FACE under the stroke, then addresses it by that face id for the
+    /// rest of the session — the same convention every other localized UV operation uses, because
+    /// an island INDEX means nothing to a caller that has not reproduced the engine's partition.
+    private func beginIslandUVTransformSession(context: Context, points: [SIMD2<Float>]) {
+        guard let mesh = context.editMesh, context.editPayload != nil,
+            let camera = context.camera
+        else { return }
+        // Refused up front rather than at commit: without a layout there is nothing to transform,
+        // and arming a session that can only fail is worse than not arming one.
+        guard mesh.hasUVLayout else { return }
+
+        var face: UInt32?
+        var pivot = SIMD3<Float>.zero
+        for hit in strokeSurfaceHits(samples: points, context: context) {
+            let radius = context.sceneRadius * Self.vertexPickRadiusFraction
+            guard let pick = mesh.nearestFace(to: hit, maxDistance: radius) else { continue }
+            face = pick.face
+            pivot = mesh.faceCentroid(pick.face) ?? hit
+            break
+        }
+        guard let face else { return }
+        cameraSession = CameraToolSession(
+            tool: .transformIslandUV,
+            plan: .transformIslandUV(UVIslandTransformPlan(face: face, pivot: pivot)),
+            initialView: camera.viewMatrix(),
+            initialDistance: camera.distance,
+            currentView: camera.viewMatrix(),
+            currentDistance: camera.distance,
+            currentForward: camera.basis.forward
+        )
+    }
+
     // MARK: - Camera feed (the manipulator)
 
     /// A camera pose change while the arbiter's camera→tool gate is open:
@@ -433,6 +477,26 @@ extension MeshEditController {
             session.plan = .transformVertices(plan)
             cameraSession = session
             applyTransformSessionDelta()
+        case .transformIslandUV(var plan):
+            plan.scale = PlacementMath.pinchScale(
+                initialDistance: session.initialDistance,
+                currentDistance: session.currentDistance
+            )
+            plan.orbitChanged(
+                displacement: PlacementMath.displacement(
+                    of: plan.pivot,
+                    initialView: session.initialView,
+                    currentView: session.currentView
+                ),
+                right: camera.basis.right,
+                up: camera.basis.up,
+                sceneRadius: contextProvider?()?.sceneRadius ?? 1
+            )
+            session.plan = .transformIslandUV(plan)
+            cameraSession = session
+            // No preview refresh: nothing in the 3D view shows a UV change yet, so there is
+            // nothing to redraw. See UVIslandTransformPlan for why this commits rather than
+            // applying live.
         }
         publishCameraSession()
     }
@@ -459,6 +523,12 @@ extension MeshEditController {
             session.plan = .transformVertices(plan)
             cameraSession = session
             applyTransformSessionDelta()
+        case .transformIslandUV(var plan):
+            // A twist rotates the island's UVs. Distinct from the pinch (scale) and the orbit
+            // (translation) so no one gesture can be mistaken for another.
+            plan.rollAngle = delta
+            session.plan = .transformIslandUV(plan)
+            cameraSession = session
         case .extendBoundary:
             // No free orientation: the offset already comes from the
             // camera (see tasks.md 3.7a).
@@ -549,6 +619,9 @@ extension MeshEditController {
             }
         case .transformVertices:
             onSessionPreviewChanged?(nil)  // the live mesh IS the preview
+        case .transformIslandUV:
+            // Nothing to preview in 3D: a UV change is invisible without a textured render path.
+            onSessionPreviewChanged?(nil)
         }
     }
 
@@ -698,6 +771,23 @@ extension MeshEditController {
                 ))
                 onLiveEdit?()
                 return try transaction.command(verb: "tool.transformVertices")
+            }
+            publishCameraSession()
+        case .transformIslandUV(let plan):
+            cameraSession = nil
+            // Applied ONCE, exactly, from the accumulated channels — see UVIslandTransformPlan for
+            // why this is not applied live. `runTransformIsland` journals it as one step and
+            // declines an identity transform, so an armed session the artist never moved leaves no
+            // undo entry that does nothing.
+            let transform = UVIslandGesture.onSurfaceTransform(
+                pinchScale: plan.scale,
+                rollRadians: plan.rollAngle,
+                orbitDelta: plan.orbitDelta
+            )
+            if runTransformIsland(containing: plan.face, transform: transform) {
+                onCameraToolStatus?("Island UVs transformed")
+            } else if let refusal = lastUnwrapRefusal {
+                onCameraToolStatus?(refusal)
             }
             publishCameraSession()
         }
