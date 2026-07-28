@@ -369,4 +369,116 @@ struct UnwrapActionTests {
         #expect(try harness.payload() == afterFirst)
         #expect(try harness.editMesh().hasUVLayout)
     }
+
+    // MARK: - Packing aids (add-uv-packing-aids, 6.6)
+
+    @Test("Pack and distribute REFUSE before an unwrap, and say to unwrap first")
+    func packingNeedsALayout() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+
+        // Not a failure message: there is nothing to arrange yet, and naming the next action is
+        // more useful than implying a fault.
+        #expect(!harness.editor.runPackUVs())
+        let notice = try #require(harness.editor.lastUnwrapRefusal)
+        #expect(notice.contains("Unwrap first"))
+        #expect(!notice.contains("Could not"))
+
+        #expect(!harness.editor.runDistributeIslands())
+        #expect(harness.editor.lastUnwrapRefusal?.contains("Unwrap first") == true)
+        #expect(harness.committed.isEmpty, "a refusal journals nothing")
+    }
+
+    @Test("Repeated packing SETTLES: the second press is a no-op, not endless drift")
+    func repackSettles() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.runUnwrapUVs())
+
+        // The FIRST pack legitimately changes the layout. It is not idempotent with respect to
+        // the atlas's internal pack: this recomputes island bounds from the already-packed UVs
+        // and re-normalizes, so it lands somewhere slightly different. That is expected.
+        #expect(harness.editor.runPackUVs())
+        let settled = try #require(try harness.editMesh().uvCoordinates())
+        let committed = harness.committed.count
+
+        // The SECOND press must do nothing. This is the property that matters: an artist
+        // tapping Pack repeatedly must not watch the layout creep, and a command that produces
+        // byte-identical output must journal nothing rather than stacking undo entries.
+        #expect(!harness.editor.runPackUVs())
+        #expect(harness.committed.count == committed, "no second journal entry")
+        let notice = try #require(harness.editor.lastUnwrapRefusal)
+        #expect(notice.contains("Already arranged"))
+        #expect(!notice.contains("Could not"))
+
+        let after = try #require(try harness.editMesh().uvCoordinates())
+        #expect(after == settled)
+    }
+
+    @Test("Packing into a sub-region is ONE journaled step and moves the layout")
+    func packIntoRegionJournalsOnce() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.runUnwrapUVs())
+        let before = try #require(try harness.editMesh().uvCoordinates())
+        let committedBefore = harness.committed.count
+
+        #expect(harness.editor.runPackUVs(region: .init(minU: 0.1, minV: 0.1, maxU: 0.5, maxV: 0.5)))
+        #expect(harness.committed.count == committedBefore + 1)
+
+        let after = try #require(try harness.editMesh().uvCoordinates())
+        #expect(after.count == before.count)
+        #expect(zip(before, after).contains { $0 != $1 }, "the layout must actually move")
+        for uv in after {
+            #expect(uv.x <= 0.5 + 1e-4)
+            #expect(uv.y <= 0.5 + 1e-4)
+        }
+    }
+
+    @Test("Flipping a mirrored island is ONE step and undo restores the layout")
+    func flipIslandIsUndoable() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.runUnwrapUVs())
+        let before = try #require(try harness.editMesh().uvCoordinates())
+        #expect(harness.editor.flippedIslandFaces().isEmpty)
+
+        // Flip once to CREATE a mirrored island, which is also how the panel's affordance
+        // becomes reachable — then verify the readback names it.
+        #expect(harness.editor.runFlipIsland(containing: 0))
+        let mirrored = harness.editor.flippedIslandFaces()
+        #expect(mirrored.count == 1)
+
+        // Flipping the named island back restores the layout exactly, so the affordance is a
+        // genuine fix rather than a one-way change the artist has to undo.
+        #expect(harness.editor.runFlipIsland(containing: try #require(mirrored.first)))
+        let after = try #require(try harness.editMesh().uvCoordinates())
+        for (a, b) in zip(before, after) {
+            #expect(abs(a.x - b.x) < 1e-5)
+            #expect(abs(a.y - b.y) < 1e-5)
+        }
+        #expect(harness.editor.flippedIslandFaces().isEmpty)
+    }
+
+    @Test("flippedIslandFaces is empty with no layout, and NOT because seams are missing")
+    func flippedFacesWithoutLayout() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        // A set-membership question with a truthful empty answer. It must not throw or refuse:
+        // the panel calls this on every body pass.
+        #expect(harness.editor.flippedIslandFaces().isEmpty)
+
+        // The empty answer must come from "no layout", not from the cage having no annotations.
+        // The first version bound `annotations?.seamEdges` with `guard let`, so it returned
+        // empty for EVERY unannotated mesh — and this test passed for that wrong reason. After
+        // an unwrap the same unannotated cage must still be answerable, and reachable enough
+        // that flipping shows up.
+        #expect(harness.editor.runUnwrapUVs())
+        #expect(harness.editor.flippedIslandFaces().isEmpty)
+        #expect(harness.editor.runFlipIsland(containing: 0))
+        #expect(
+            !harness.editor.flippedIslandFaces().isEmpty,
+            "an unannotated cage must still report its mirrored islands"
+        )
+    }
 }

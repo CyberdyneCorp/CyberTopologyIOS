@@ -145,6 +145,12 @@ struct DocumentEditorView: View {
                             proposedSeamCount: proposedSeamCount,
                             onAcceptSeams: acceptSeams,
                             onDiscardSeams: discardSeams,
+                            flippedIslandFaces: flippedIslandFaces,
+                            onPack: { runUVCommand(.packUVs, success: "Packed") },
+                            onDistribute: {
+                                runUVCommand(.distributeIslands, success: "Islands distributed")
+                            },
+                            onFlipIsland: flipIsland,
                             mode: $uvHeatmapMode,
                             textureSize: Mesh.AtlasParameters().textureSize
                         )
@@ -826,6 +832,30 @@ struct DocumentEditorView: View {
 
     private var proposedSeamCount: Int {
         inputModel.meshEditor?.pendingSeamProposal.count ?? 0
+    }
+
+    private var flippedIslandFaces: [UInt32] {
+        inputModel.meshEditor?.flippedIslandFaces() ?? []
+    }
+
+    /// Runs a UV command and reports the outcome through the EXISTING status line — including
+    /// the no-op case, which must not read as a failure.
+    private func runUVCommand(_ action: EditorAction, success: String) {
+        if inputModel.runCommand(action) {
+            journal.handle(.documentEdited)
+            statusMessage = success
+        } else {
+            statusMessage = inputModel.meshEditor?.lastUnwrapRefusal
+        }
+    }
+
+    private func flipIsland(_ face: UInt32) {
+        if inputModel.meshEditor?.runFlipIsland(containing: face) == true {
+            journal.handle(.documentEdited)
+            statusMessage = "Island flipped"
+        } else {
+            statusMessage = inputModel.meshEditor?.lastUnwrapRefusal
+        }
     }
 
     private func acceptSeams() {

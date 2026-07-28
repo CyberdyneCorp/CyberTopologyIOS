@@ -190,6 +190,99 @@ extension Mesh {
         )
     }
 
+    /// An axis-aligned UV region to pack into.
+    public struct UVRegion: Equatable, Sendable {
+        public var minU: Float
+        public var minV: Float
+        public var maxU: Float
+        public var maxV: Float
+
+        public init(minU: Float, minV: Float, maxU: Float, maxV: Float) {
+            self.minU = minU
+            self.minV = minV
+            self.maxU = maxU
+            self.maxV = maxV
+        }
+
+        /// The whole 0-1 square.
+        public static let unitSquare = UVRegion(minU: 0, minV: 0, maxU: 1, maxV: 1)
+    }
+
+    /// Repacks every island into `region`, as the packing aid behind a repack command.
+    ///
+    /// Only a uniform scale and a translation are applied per island, so a repack never changes
+    /// how a shell is parameterized — including into a non-square region, which would otherwise
+    /// tempt a per-axis fit that shears every island.
+    ///
+    /// Throws when the mesh has no UV layout, or when `region` has zero area. Both are refusals
+    /// rather than no-ops: reporting success for a repack that never happened would tell the
+    /// caller the layout moved when it did not.
+    @discardableResult
+    public func packIslands(
+        into region: UVRegion = .unitSquare,
+        parameters: AtlasParameters = AtlasParameters(),
+        seams: [UInt32] = []
+    ) throws -> AtlasReport {
+        try setSeamEdges(seams)
+        var raw = parameters.raw
+        var result = CyberAtlasResult()
+        try check(
+            cyber_uv_pack_region(
+                handle, region.minU, region.minV, region.maxU, region.maxV, &raw, &result
+            )
+        )
+        return AtlasReport(result)
+    }
+
+    /// Distributes islands whose bounding boxes overlap so that none do.
+    ///
+    /// Translations only — each island keeps its size and orientation, so this resolves the
+    /// overlap without re-deciding anything the artist arranged.
+    public func distributeOverlappingIslands(
+        parameters: AtlasParameters = AtlasParameters(), seams: [UInt32] = []
+    ) throws {
+        try setSeamEdges(seams)
+        var raw = parameters.raw
+        try check(cyber_uv_distribute_islands(handle, &raw))
+    }
+
+    /// One representative face id from each MIRRORED island.
+    ///
+    /// Faces rather than island indices, because an index only means something to a caller that
+    /// reproduced the same partition — a face id is directly addressable. Empty when there is no
+    /// layout: that is a truthful empty answer to a set-membership question, not an error.
+    public func flippedIslands(
+        parameters: AtlasParameters = AtlasParameters(), seams: [UInt32] = []
+    ) throws -> [UInt32] {
+        try setSeamEdges(seams)
+        var raw = parameters.raw
+        var count = 0
+        try check(cyber_uv_flipped_islands(handle, &raw, nil, 0, &count))
+        guard count > 0 else { return [] }
+        var ids = [UInt32](repeating: 0, count: count)
+        var written = 0
+        try ids.withUnsafeMutableBufferPointer { buffer in
+            try check(
+                cyber_uv_flipped_islands(handle, &raw, buffer.baseAddress, count, &written)
+            )
+        }
+        return Array(ids.prefix(written))
+    }
+
+    /// Mirrors the island containing `face` about its own centre, reversing its winding.
+    ///
+    /// About its own centre so the flip does not also translate the island out of the region it
+    /// was packed into. Flipping twice restores the original UVs exactly.
+    public func flipIsland(
+        containing face: UInt32,
+        parameters: AtlasParameters = AtlasParameters(),
+        seams: [UInt32] = []
+    ) throws {
+        try setSeamEdges(seams)
+        var raw = parameters.raw
+        try check(cyber_uv_flip_island(handle, face, &raw))
+    }
+
     /// Hand-drawn UV seam edges for the next unwrap. Empty clears.
     ///
     /// The atlas cuts along exactly these instead of generating its own. Authored seams

@@ -341,4 +341,107 @@ struct MeshUVTests {
         }
         #expect(mesh.uvCoordinates() == before)
     }
+
+    // MARK: - Packing aids (add-uv-packing-aids, 6.6)
+
+    @Test("A repack into a sub-region puts every corner inside it")
+    func repackIntoRegion() throws {
+        let (mesh, _) = try cube().unwrapped()
+        let region = Mesh.UVRegion(minU: 0.2, minV: 0.3, maxU: 0.8, maxV: 0.9)
+        try mesh.packIslands(into: region)
+
+        let uvs = try #require(mesh.uvCoordinates())
+        for uv in uvs {
+            #expect(uv.x >= region.minU - 1e-4)
+            #expect(uv.x <= region.maxU + 1e-4)
+            #expect(uv.y >= region.minV - 1e-4)
+            #expect(uv.y <= region.maxV + 1e-4)
+        }
+    }
+
+    @Test("A repack preserves each island's internal UVs, applying only scale and translation")
+    func repackPreservesParameterization() throws {
+        let (mesh, _) = try cube().unwrapped()
+        let before = try #require(mesh.uvCoordinates())
+        // A NON-SQUARE region is the case that would tempt a per-axis fit.
+        try mesh.packIslands(into: Mesh.UVRegion(minU: 0, minV: 0, maxU: 1, maxV: 0.5))
+        let after = try #require(mesh.uvCoordinates())
+        #expect(after.count == before.count)
+
+        // The exit criterion is that packing preserves internal UVs. Under a uniform scale plus
+        // translation, every RATIO of distances between corners is invariant — a per-axis fit
+        // would change ratios between differently-oriented pairs.
+        func ratio(_ uvs: [SIMD2<Float>], _ a: Int, _ b: Int, _ c: Int, _ d: Int) -> Float {
+            let one = simd_distance(uvs[a], uvs[b])
+            let two = simd_distance(uvs[c], uvs[d])
+            return two > 0 ? one / two : 0
+        }
+        // Pairs deliberately chosen along different axes within one face's four corners.
+        #expect(
+            abs(ratio(after, 0, 1, 1, 2) - ratio(before, 0, 1, 1, 2)) < 1e-3,
+            "a uniform scale preserves distance ratios; a per-axis fit would not"
+        )
+    }
+
+    @Test("Repacking refuses a never-unwrapped mesh and a zero-area region")
+    func repackRefusals() throws {
+        let bare = try cube()
+        // Success here would report a repack that never happened.
+        #expect(throws: (any Error).self) { try bare.packIslands() }
+
+        let (mesh, _) = try cube().unwrapped()
+        #expect(throws: (any Error).self) {
+            try mesh.packIslands(
+                into: Mesh.UVRegion(minU: 0.5, minV: 0.1, maxU: 0.5, maxV: 0.9)
+            )
+        }
+    }
+
+    @Test("Flipped islands are NAMED, and flipping twice restores the layout exactly")
+    func flipIsReversibleAndDiscoverable() throws {
+        let (mesh, _) = try cube().unwrapped()
+        let before = try #require(mesh.uvCoordinates())
+        #expect(try mesh.flippedIslands().isEmpty)
+
+        try mesh.flipIsland(containing: 0)
+        let flipped = try mesh.flippedIslands()
+        // Naming the island is the point: a count says there is a problem without saying where.
+        #expect(flipped.count == 1)
+
+        try mesh.flipIsland(containing: try #require(flipped.first))
+        let after = try #require(mesh.uvCoordinates())
+        for (a, b) in zip(before, after) {
+            #expect(abs(a.x - b.x) < 1e-6)
+            #expect(abs(a.y - b.y) < 1e-6)
+        }
+        #expect(try mesh.flippedIslands().isEmpty)
+    }
+
+    @Test("A mesh with no layout reports NO flipped islands rather than failing")
+    func flippedIslandsOnBareMesh() throws {
+        // A truthful empty answer to a set-membership question — not an error, and not a
+        // pretence that some island is mirrored.
+        #expect(try cube().flippedIslands().isEmpty)
+    }
+
+    @Test("Distributing islands is a no-op on an already overlap-free layout")
+    func distributeIsSafeOnAPackedLayout() throws {
+        let (mesh, _) = try cube().unwrapped()
+        try mesh.packIslands(into: Mesh.UVRegion(minU: 0.4, minV: 0.4, maxU: 0.6, maxV: 0.6))
+        let packed = try #require(mesh.uvCoordinates())
+
+        // Deliberately NOT asserting that overlaps disappear: a pack already produces an
+        // overlap-free layout, so there is nothing here to distribute, and constructing genuine
+        // overlap needs the per-island transforms that arrive with 6.3. Overlap REMOVAL is
+        // asserted in the engine suite, where islands can be stacked directly
+        // (`distributing overlapping islands removes every box overlap`).
+        //
+        // What this pins is that the call is safe and keeps a usable layout — the failure that
+        // would otherwise surface as a corrupted atlas after a harmless button press.
+        try mesh.distributeOverlappingIslands()
+        let after = try #require(mesh.uvCoordinates())
+        #expect(after.count == packed.count)
+        #expect(after.allSatisfy { $0.x.isFinite && $0.y.isFinite })
+        #expect(mesh.hasUVLayout)
+    }
 }

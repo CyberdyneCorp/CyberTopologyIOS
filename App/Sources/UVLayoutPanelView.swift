@@ -31,6 +31,12 @@ struct UVLayoutPanelView: View {
     var proposedSeamCount: Int = 0
     var onAcceptSeams: () -> Void = {}
     var onDiscardSeams: () -> Void = {}
+    /// Packing aids (6.6). Mirrored islands are passed as representative FACE ids, so the
+    /// panel can offer a flip without reproducing the engine's island partition itself.
+    var flippedIslandFaces: [UInt32] = []
+    var onPack: () -> Void = {}
+    var onDistribute: () -> Void = {}
+    var onFlipIsland: (UInt32) -> Void = { _ in }
     /// What the fill shades by. Held by the caller so the choice survives a body pass.
     @Binding var mode: UVLayoutGeometry.HeatmapMode
     /// The texture size texel density is expressed against. A density figure is meaningless
@@ -88,6 +94,10 @@ struct UVLayoutPanelView: View {
                 seamProposalBar
             }
 
+            if case .laidOut = state {
+                packingAids
+            }
+
             if let notice {
                 Text(notice)
                     .font(.caption)
@@ -98,6 +108,53 @@ struct UVLayoutPanelView: View {
         .padding(12)
         .frame(minWidth: 260)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// Packing aids: repack, distribute, and a per-island flip for mirrored shells (6.6).
+    ///
+    /// The flip is offered ONE island at a time rather than as a "fix all" button. A mirrored
+    /// island is sometimes deliberate — a stacked mirror pair shares UV space on purpose — so
+    /// flipping every one of them could undo an intentional layout. Naming them and letting the
+    /// artist choose is the difference between a report and an opinion.
+    private var packingAids: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button("Pack", action: onPack)
+                    .accessibilityIdentifier("uv-pack")
+                Button("Distribute", action: onDistribute)
+                    .accessibilityIdentifier("uv-distribute")
+            }
+            .buttonStyle(.bordered)
+            .font(.caption)
+
+            if !flippedIslandFaces.isEmpty {
+                Text(
+                    "\(flippedIslandFaces.count) mirrored island"
+                        + (flippedIslandFaces.count == 1 ? "" : "s")
+                )
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.red)
+                Text("A mirrored island bakes inverted detail. Flip one back:")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                // Wrapped so a layout with many mirrored islands does not run off the panel.
+                HStack(spacing: 6) {
+                    ForEach(flippedIslandFaces.prefix(6), id: \.self) { face in
+                        Button {
+                            onFlipIsland(face)
+                        } label: {
+                            Label("Flip", systemImage: "arrow.left.and.right.righttriangle.left.righttriangle.right")
+                                .labelStyle(.iconOnly)
+                        }
+                        .accessibilityLabel("Flip mirrored island \(face)")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("uv-flip-islands")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("uv-packing-aids")
     }
 
     /// Accept / Discard for a pending proposal.

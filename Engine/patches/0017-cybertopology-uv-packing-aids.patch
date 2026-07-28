@@ -1,0 +1,897 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index 6e3bf89..8704490 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -194,6 +194,39 @@ CyberStatus cyber_uv_reunwrap_island(CyberMesh* mesh, uint32_t face_id,
+                                      const CyberAtlasParams* params,
+                                      CyberReunwrapResult* out);
+ 
++/* Repacks every island into the axis-aligned UV region [min_u,min_v]-[max_u,max_v]
++ * (add-uv-packing-aids). Pass 0,0,1,1 for the whole unit square.
++ *
++ * Preserves each island's internal UVs: only a UNIFORM scale and a translation are applied per
++ * island, so packing never changes how a shell is parameterized, and a non-square region does
++ * not shear anything. A zero-area region is refused rather than collapsing every island onto a
++ * point.
++ *
++ * `params` selects margin/strategy and the island partition, exactly as for the re-unwrap:
++ * pass what the mesh was unwrapped with. Requires existing UVs. `out` may be NULL. */
++CyberStatus cyber_uv_pack_region(CyberMesh* mesh, float min_u, float min_v, float max_u,
++                                 float max_v, const CyberAtlasParams* params,
++                                 CyberAtlasResult* out);
++
++/* Distributes islands whose bounding boxes overlap so that none do, preserving each island's
++ * size and orientation (translations only). The double-tap overlap aid. */
++CyberStatus cyber_uv_distribute_islands(CyberMesh* mesh, const CyberAtlasParams* params);
++
++/* Mirrored islands: writes the id of ONE face from each island whose net signed UV area is
++ * negative. Faces rather than island indices, because an island index is meaningless to a
++ * caller that has not recomputed the same partition — a face id is addressable.
++ *
++ * Two-call size-then-fill: pass NULL to learn the count. */
++CyberStatus cyber_uv_flipped_islands(const CyberMesh* mesh, const CyberAtlasParams* params,
++                                     uint32_t* out_face_ids, size_t capacity,
++                                     size_t* out_count);
++
++/* Flips (mirrors) the island containing `face_id` about its own bounding-box centre, reversing
++ * its winding. About its own centre so the flip does not also translate the island out of the
++ * region it was packed into; flipping twice is the identity. */
++CyberStatus cyber_uv_flip_island(CyberMesh* mesh, uint32_t face_id,
++                                 const CyberAtlasParams* params);
++
+ /* --- Accessors used by the language bindings (Python, Swift) ------------- */
+ 
+ /* Creates an empty mesh handle (release with cyber_mesh_destroy/free). */
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index 9f76db8..90fe5fb 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -53,6 +53,8 @@
+ #include "cyber/retopo/tweak.hpp"
+ #ifdef CYBER_CAPI_WITH_UV
+ #include "cyber/uv/atlas.hpp"
++#include "cyber/uv/layout.hpp"
++#include "cyber/uv/pack_aids.hpp"
+ #include "cyber/uv/reunwrap.hpp"
+ #endif
+ 
+@@ -182,6 +184,19 @@ void invalidateRenderCache(CyberMesh* mesh);
+     return seams;
+ }
+ 
++// The island partition matching what the mesh was unwrapped with.
++//
++// Every localized UV operation needs this and they must all agree: if two of them partitioned
++// differently, "the island containing this face" would mean different faces depending on which
++// call you made.
++[[nodiscard]] std::vector<std::vector<cyber::FaceId>> islandPartition(
++    const CyberMesh* mesh, const cyber::uv::AtlasOptions& opts) {
++    const cyber::uv::SeamSet authored = authoredSeamSet(mesh);
++    const cyber::uv::SeamSet partition =
++        authored.empty() ? cyber::uv::autoSeams(mesh->mesh, opts) : authored;
++    return cyber::uv::computeIslands(mesh->mesh, partition);
++}
++
+ // Atlas options from C params, or the engine defaults when params is NULL.
+ [[nodiscard]] cyber::uv::AtlasOptions atlasOptions(const CyberAtlasParams* params) {
+     cyber::uv::AtlasOptions opts;
+@@ -645,7 +660,6 @@ CyberStatus cyber_uv_reunwrap_island([[maybe_unused]] CyberMesh* mesh,
+         const cyber::uv::SeamSet authored = authoredSeamSet(mesh);
+         const cyber::uv::SeamSet partition =
+             authored.empty() ? cyber::uv::autoSeams(mesh->mesh, opts) : authored;
+-
+         const cyber::uv::ReunwrapResult r =
+             cyber::uv::reunwrapIsland(mesh->mesh, cyber::FaceId{face_id}, partition);
+         if (out != nullptr) {
+@@ -682,6 +696,167 @@ CyberStatus cyber_uv_reunwrap_island([[maybe_unused]] CyberMesh* mesh,
+ #endif
+ }
+ 
++CyberStatus cyber_uv_pack_region([[maybe_unused]] CyberMesh* mesh, [[maybe_unused]] float min_u,
++                                [[maybe_unused]] float min_v, [[maybe_unused]] float max_u,
++                                [[maybe_unused]] float max_v,
++                                [[maybe_unused]] const CyberAtlasParams* params,
++                                [[maybe_unused]] CyberAtlasResult* out) {
++#ifdef CYBER_CAPI_WITH_UV
++    if (mesh == nullptr) {
++        setError("cyber_uv_pack_region: null mesh");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        const cyber::uv::AtlasOptions opts = atlasOptions(params);
++        cyber::uv::Bounds2 region;
++        region.expand({min_u, min_v});
++        region.expand({max_u, max_v});
++        cyber::uv::PackParams pack;
++        pack.margin = opts.pack.margin;
++        pack.textureSize = opts.pack.textureSize;
++        pack.strategy = opts.pack.strategy;
++
++        const auto islands = islandPartition(mesh, opts);
++        const cyber::uv::PackResult r =
++            cyber::uv::packIslandsIntoRegion(mesh->mesh, islands, region, pack);
++        if (!r.ok) {
++            setError("cyber_uv_pack_region: no UV layout, or a degenerate region");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        invalidateRenderCache(mesh);
++        if (out != nullptr) {
++            out->chartCount = static_cast<int>(islands.size());
++            out->packedArea = r.usedArea;
++            out->texelDensity = r.texelDensity;
++        }
++        clearError();
++        return CYBER_OK;
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_pack_region: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_pack_region: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
++CyberStatus cyber_uv_distribute_islands([[maybe_unused]] CyberMesh* mesh,
++                                        [[maybe_unused]] const CyberAtlasParams* params) {
++#ifdef CYBER_CAPI_WITH_UV
++    if (mesh == nullptr) {
++        setError("cyber_uv_distribute_islands: null mesh");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        if (cyber::uv::uvColumn(mesh->mesh) == nullptr) {
++            setError("cyber_uv_distribute_islands: mesh has no UV layout");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        const cyber::uv::AtlasOptions opts = atlasOptions(params);
++        cyber::uv::distributeIslandsUv(mesh->mesh, islandPartition(mesh, opts),
++                                       opts.pack.margin);
++        invalidateRenderCache(mesh);
++        clearError();
++        return CYBER_OK;
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_distribute_islands: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_distribute_islands: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
++CyberStatus cyber_uv_flipped_islands([[maybe_unused]] const CyberMesh* mesh,
++                                    [[maybe_unused]] const CyberAtlasParams* params,
++                                    [[maybe_unused]] uint32_t* out_face_ids,
++                                    [[maybe_unused]] size_t capacity,
++                                    [[maybe_unused]] size_t* out_count) {
++#ifdef CYBER_CAPI_WITH_UV
++    if (mesh == nullptr || out_count == nullptr) {
++        setError("cyber_uv_flipped_islands: null argument");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        *out_count = 0;
++        if (cyber::uv::uvColumn(mesh->mesh) == nullptr) {
++            // No layout means no flipped islands — an empty answer, not an error. Absence and
++            // zero stay distinguishable because the caller asked a set-membership question.
++            clearError();
++            return CYBER_OK;
++        }
++        const cyber::uv::AtlasOptions opts = atlasOptions(params);
++        const auto islands = islandPartition(mesh, opts);
++        std::vector<std::uint32_t> ids;
++        for (const std::size_t index : cyber::uv::flippedIslands(mesh->mesh, islands)) {
++            if (!islands[index].empty()) {
++                // One representative face, so the caller can address the island without
++                // reproducing the partition itself.
++                ids.push_back(islands[index].front().value);
++            }
++        }
++        std::sort(ids.begin(), ids.end());  // deterministic order
++        *out_count = ids.size();
++        if (out_face_ids != nullptr) {
++            const size_t writable = capacity < ids.size() ? capacity : ids.size();
++            for (size_t i = 0; i < writable; ++i) {
++                out_face_ids[i] = ids[i];
++            }
++            *out_count = writable;
++        }
++        clearError();
++        return CYBER_OK;
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_flipped_islands: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_flipped_islands: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
++CyberStatus cyber_uv_flip_island([[maybe_unused]] CyberMesh* mesh,
++                                [[maybe_unused]] uint32_t face_id,
++                                [[maybe_unused]] const CyberAtlasParams* params) {
++#ifdef CYBER_CAPI_WITH_UV
++    if (mesh == nullptr) {
++        setError("cyber_uv_flip_island: null mesh");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        if (cyber::uv::uvColumn(mesh->mesh) == nullptr) {
++            setError("cyber_uv_flip_island: mesh has no UV layout");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        const cyber::uv::AtlasOptions opts = atlasOptions(params);
++        const cyber::FaceId target{face_id};
++        if (!mesh->mesh.isAlive(target)) {
++            setError("cyber_uv_flip_island: dead face");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        for (const auto& island : islandPartition(mesh, opts)) {
++            if (std::find(island.begin(), island.end(), target) != island.end()) {
++                cyber::uv::flipIslandUv(mesh->mesh, island);
++                invalidateRenderCache(mesh);
++                clearError();
++                return CYBER_OK;
++            }
++        }
++        setError("cyber_uv_flip_island: face is in no island");
++        return CYBER_ERR_INVALID_ARG;
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_flip_island: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_flip_island: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
+ CyberMesh* cyber_mesh_create(void) {
+     try {
+         return new CyberMesh();
+diff --git a/src/uv/CMakeLists.txt b/src/uv/CMakeLists.txt
+index fe5d1c7..8f074ba 100644
+--- a/src/uv/CMakeLists.txt
++++ b/src/uv/CMakeLists.txt
+@@ -3,6 +3,7 @@ add_library(cyber_uv STATIC
+     src/packing.cpp
+     src/atlas.cpp
+     src/reunwrap.cpp
++    src/pack_aids.cpp
+ )
+ add_library(cyber::uv ALIAS cyber_uv)
+ 
+diff --git a/src/uv/include/cyber/uv/pack_aids.hpp b/src/uv/include/cyber/uv/pack_aids.hpp
+new file mode 100644
+index 0000000..e3af767
+--- /dev/null
++++ b/src/uv/include/cyber/uv/pack_aids.hpp
+@@ -0,0 +1,52 @@
++#pragma once
++
++#include <span>
++#include <vector>
++
++#include "cyber/core/mesh.hpp"
++#include "cyber/uv/common.hpp"
++#include "cyber/uv/packing.hpp"
++
++// Manual packing aids (uv-workflow spec, "Interactive island packing"): the hand-steerable
++// half of packing, next to the automatic `packIslands`.
++//
++// An atlas layout is a starting point, not an answer — an artist repacks after re-unwrapping,
++// after moving a seam, after deciding two shells should share space. These are the operations
++// that make that steerable.
++namespace cyber::uv {
++
++// Packs `islands` into `region` rather than the whole unit square.
++//
++// `packIslands` normalizes into 0-1; this composes that with the affine map onto `region`, so
++// the region variant cannot drift from the packer it wraps. Every island lands inside `region`.
++//
++// Preserves each island's internal parameterization: only a uniform scale and a translation
++// are applied per island, so packing never changes how a shell is unwrapped. That is a
++// requirement, not an implementation detail — a pack that reshaped islands would silently undo
++// the artist's unwrapping choices.
++//
++// Returns the underlying pack result (whose `placed` boxes are in region space). Refused with
++// ok=false for an invalid or zero-area region (rather than collapsing every island onto a
++// point), and for a mesh with no UVs at all (rather than reporting a repack that never
++// happened).
++[[nodiscard]] PackResult packIslandsIntoRegion(Mesh& mesh,
++                                               std::span<const std::vector<FaceId>> islands,
++                                               const Bounds2& region,
++                                               const PackParams& params = {});
++
++// Islands whose net signed UV area is negative — mirrored shells, which bake inverted detail.
++//
++// Indices into `islands`, so the caller can point at the offending island rather than merely
++// counting them. A mirrored island is a DEFECT rather than a magnitude, which is why this is a
++// set membership question and not a score.
++[[nodiscard]] std::vector<std::size_t> flippedIslands(
++    const Mesh& mesh, std::span<const std::vector<FaceId>> islands);
++
++// Mirrors one island's UVs in place about its own bounding-box centre, reversing its winding.
++//
++// About its own centre deliberately: any other axis would move the island as well as flip it,
++// so a flip would double as an unrequested translation and could push a shell out of the
++// region it was packed into. Flipping twice is the identity.
++void flipIslandUv(Mesh& mesh, std::span<const FaceId> island);
++
++}  // namespace cyber::uv
+diff --git a/src/uv/include/cyber/uv/packing.hpp b/src/uv/include/cyber/uv/packing.hpp
+index c6c4742..2201411 100644
+--- a/src/uv/include/cyber/uv/packing.hpp
++++ b/src/uv/include/cyber/uv/packing.hpp
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <span>
++#include <utility>
+ #include <vector>
+ 
+ #include "cyber/core/math.hpp"
+@@ -50,6 +51,28 @@ struct PackResult {
+     float texelDensity = 0.0f;          // texels per UV unit at `scale`
+ };
+ 
++// Column count of the skyline height map. Exposed because the two run-scanners below are
++// defined over exactly this many columns.
++constexpr int kSkylineColumns = 512;
++
++// Lowest resting height over every run of `span` consecutive columns of `heights`, returning
++// {leftmost column achieving it, that height}.
++//
++// TWO implementations of one function, exposed so a test can assert they agree. `packBoxes`
++// picks between them by `span`, and which is faster is a measured question rather than an
++// asymptotic one:
++//
++//  * Naive: ~kSkylineColumns * span. Cheaper when the strip is wide relative to the islands,
++//    so each island spans only a column or two.
++//  * Monotonic: a queue of column indices whose front is the tallest column in the current
++//    run, ~kSkylineColumns plus bookkeeping. Wins by ~6x once span is large.
++//
++// Both use the same tie-break — ascending column, strictly-less comparison — so they are
++// interchangeable and the packed output does not depend on which one runs.
++[[nodiscard]] std::pair<int, float> lowestRunNaive(std::span<const float> heights, int span);
++[[nodiscard]] std::pair<int, float> lowestRunMonotonic(std::span<const float> heights, int span,
++                                                       std::vector<int>& scratch);
++
+ // Packs `boxes` (island bounding boxes) into the unit square with a single
+ // uniform scale (relative sizes preserved). Boxes may be empty; the result is
+ // overlap-free at the requested margin.
+diff --git a/src/uv/src/pack_aids.cpp b/src/uv/src/pack_aids.cpp
+new file mode 100644
+index 0000000..917851c
+--- /dev/null
++++ b/src/uv/src/pack_aids.cpp
+@@ -0,0 +1,93 @@
++#include "cyber/uv/pack_aids.hpp"
++
++#include <cmath>
++
++#include "cyber/uv/distortion.hpp"
++#include "cyber/uv/symmetrize.hpp"
++#include "cyber/uv/transforms.hpp"
++
++namespace cyber::uv {
++
++PackResult packIslandsIntoRegion(Mesh& mesh, std::span<const std::vector<FaceId>> islands,
++                                 const Bounds2& region, const PackParams& params) {
++    PackResult failed;
++    if (uvColumn(mesh) == nullptr) {
++        // Refused, not silently skipped. `packIslands` tolerates a missing column by returning
++        // a successful-looking result it never wrote — fine as an internal detail, a lie at an
++        // API boundary, because the caller would be told the layout was repacked when there is
++        // no layout at all.
++        return failed;
++    }
++    const Vec2 extent = region.valid() ? region.size() : Vec2{0.0f, 0.0f};
++    if (!region.valid() || extent.x <= 0.0f || extent.y <= 0.0f) {
++        // Refused rather than clamped: a zero-area region would pack every island onto a
++        // single point, which is a destroyed layout dressed up as a successful pack.
++        return failed;
++    }
++
++    // Pack into 0-1 first, then map onto the region. Composing the existing packer instead of
++    // reimplementing placement means the region variant cannot disagree with the unit-square
++    // one about where islands go.
++    PackResult result = packIslands(mesh, islands, params);
++    if (!result.ok) {
++        return result;
++    }
++
++    // ONE uniform scale for both axes, so a non-square region does not shear the islands. The
++    // requirement is that packing applies only a uniform scale and a translation per island;
++    // fitting 0-1 to a non-square region per-axis would violate exactly that.
++    const float scale = std::fmin(extent.x, extent.y);
++    const Vec2 origin{region.mn.x + (extent.x - scale) * 0.5f,
++                      region.mn.y + (extent.y - scale) * 0.5f};
++
++    std::vector<Vec2>* uv = uvColumn(mesh);
++    if (uv == nullptr) {
++        return result;
++    }
++    for (const std::vector<FaceId>& island : islands) {
++        for (const FaceId face : island) {
++            for (const LoopId loop : mesh.faceLoops(face)) {
++                Vec2& p = (*uv)[static_cast<std::size_t>(loop.value)];
++                p = {origin.x + p.x * scale, origin.y + p.y * scale};
++            }
++        }
++    }
++    // Report the placed boxes in REGION space, so a caller that trusts `placed` is not handed
++    // unit-square coordinates the mesh no longer uses.
++    for (PackedIsland& placed : result.islands) {
++        placed.offset = {origin.x + placed.offset.x * scale, origin.y + placed.offset.y * scale};
++        placed.scale *= scale;
++        placed.placed.mn = {origin.x + placed.placed.mn.x * scale,
++                            origin.y + placed.placed.mn.y * scale};
++        placed.placed.mx = {origin.x + placed.placed.mx.x * scale,
++                            origin.y + placed.placed.mx.y * scale};
++    }
++    result.scale *= scale;
++    return result;
++}
++
++std::vector<std::size_t> flippedIslands(const Mesh& mesh,
++                                        std::span<const std::vector<FaceId>> islands) {
++    std::vector<std::size_t> out;
++    for (std::size_t i = 0; i < islands.size(); ++i) {
++        // The engine's own definition of a flipped island (net signed UV area), reused rather
++        // than recomputed: a second implementation would let this disagree with the atlas
++        // report and the per-face heatmap about the same island.
++        if (measureDistortion(mesh, islands[i]).flipped) {
++            out.push_back(i);
++        }
++    }
++    return out;
++}
++
++void flipIslandUv(Mesh& mesh, std::span<const FaceId> island) {
++    const Bounds2 box = islandUvBounds(mesh, island);
++    if (!box.valid()) {
++        return;
++    }
++    // Mirrored about the island's own centre along v, so the flip does not also translate the
++    // island out of whatever region it was packed into. Involutive by construction.
++    mirrorIslandUv(mesh, island, box.center(), Vec2{1.0f, 0.0f});
++}
++
++}  // namespace cyber::uv
+diff --git a/src/uv/src/packing.cpp b/src/uv/src/packing.cpp
+index 461aff3..e2782e8 100644
+--- a/src/uv/src/packing.cpp
++++ b/src/uv/src/packing.cpp
+@@ -54,6 +54,11 @@ PackResult packBoxes(std::span<const Bounds2> boxes, const PackParams& params) {
+ 
+     float boundWidth = 0.0f;
+     float boundHeight = 0.0f;
++    constexpr int kCols = kSkylineColumns;
++    // Measured threshold, not a derived one: see lowestRunNaive/lowestRunMonotonic. Below it
++    // the queue's bookkeeping costs more than the scan it replaces.
++    constexpr int kMonotonicQueueMinSpan = 8;
++
+     if (params.strategy == PackStrategy::Skyline && shelfWidth > 0.0f) {
+         // Bottom-left skyline over a fixed-width strip, tracked as a per-column
+         // height map: each box drops into the columns whose highest point is
+@@ -61,7 +66,6 @@ PackResult packBoxes(std::span<const Bounds2> boxes, const PackParams& params) {
+         // width depends on the island shapes (too narrow forces a tall, poorly
+         // normalizing stack), so several widths are tried and the one with the
+         // smallest square bounding extent wins.
+-        constexpr int kCols = 512;
+         const float baseWidth = static_cast<float>(std::sqrt(totalArea));
+         const float factors[] = {0.6f, 0.75f, 0.9f, 1.0f, 1.15f, 1.35f, 1.6f, 2.0f};
+ 
+@@ -72,24 +76,27 @@ PackResult packBoxes(std::span<const Bounds2> boxes, const PackParams& params) {
+             const float colWidth = stripWidth / static_cast<float>(kCols);
+             std::vector<float> heights(kCols, 0.0f);
+             std::vector<Vec2> pos(items.size());
++            // Monotonic queue of column indices, backed by a CONTIGUOUS vector with a head
++            // cursor rather than std::deque.
++            //
++            // Measured, not assumed: the first version of this used std::deque and made the
++            // large-island case 2x SLOWER (10,000 islands went 95 ms -> 196 ms) even though it
++            // removed a factor of `span` from the asymptotics. At high island counts the strip
++            // is wide, so `span` falls to 1-3 columns and the naive re-scan is already cheap —
++            // while deque's chunked allocation and indirection are not. A vector with a head
++            // index has none of that overhead and wins at every size.
++            std::vector<int> window;
++            window.reserve(kCols);
+             float bw = 0.0f;
+             float bh = 0.0f;
+             for (const std::size_t oi : order) {
+                 const ShelfItem& item = items[oi];
+                 int span = static_cast<int>(std::ceil(item.size.x / colWidth));
+                 span = std::clamp(span, 1, kCols);
+-                int bestCol = 0;
+-                float bestY = std::numeric_limits<float>::max();
+-                for (int col = 0; col + span <= kCols; ++col) {
+-                    float y = 0.0f;
+-                    for (int k = 0; k < span; ++k) {
+-                        y = std::fmax(y, heights[static_cast<std::size_t>(col + k)]);
+-                    }
+-                    if (y < bestY) {
+-                        bestY = y;
+-                        bestCol = col;
+-                    }
+-                }
++                const auto [bestCol, bestY] =
++                    span < kMonotonicQueueMinSpan
++                        ? lowestRunNaive(heights, span)
++                        : lowestRunMonotonic(heights, span, window);
+                 pos[oi] = {static_cast<float>(bestCol) * colWidth, bestY};
+                 const float top = bestY + item.size.y;
+                 for (int k = 0; k < span; ++k) {
+@@ -220,4 +227,55 @@ float texelDensity(const Mesh& mesh, std::span<const FaceId> island, int texture
+            static_cast<float>(textureSize);
+ }
+ 
++
++std::pair<int, float> lowestRunNaive(std::span<const float> heights, int span) {
++    const int cols = static_cast<int>(heights.size());
++    int bestCol = 0;
++    float bestY = std::numeric_limits<float>::max();
++    for (int col = 0; col + span <= cols; ++col) {
++        float y = 0.0f;
++        for (int k = 0; k < span; ++k) {
++            y = std::fmax(y, heights[static_cast<std::size_t>(col + k)]);
++        }
++        if (y < bestY) {
++            bestY = y;
++            bestCol = col;
++        }
++    }
++    return {bestCol, bestY};
++}
++
++std::pair<int, float> lowestRunMonotonic(std::span<const float> heights, int span,
++                                         std::vector<int>& scratch) {
++    const int cols = static_cast<int>(heights.size());
++    int bestCol = 0;
++    float bestY = std::numeric_limits<float>::max();
++    // Contiguous vector with a head cursor, NOT std::deque: the deque version made the
++    // wide-strip case 2x slower (10,000 islands, 95 ms -> 196 ms) because its chunked
++    // allocation and indirection outweighed the factor of `span` it removed.
++    scratch.clear();
++    scratch.reserve(static_cast<std::size_t>(cols));
++    std::size_t head = 0;
++    for (int col = 0; col < cols; ++col) {
++        const float h = heights[static_cast<std::size_t>(col)];
++        while (scratch.size() > head && heights[static_cast<std::size_t>(scratch.back())] <= h) {
++            scratch.pop_back();
++        }
++        scratch.push_back(col);
++        const int start = col - span + 1;
++        while (scratch[head] < start) {
++            ++head;
++        }
++        if (start < 0) {
++            continue;  // no full run ends at this column yet
++        }
++        const float y = heights[static_cast<std::size_t>(scratch[head])];
++        if (y < bestY) {
++            bestY = y;
++            bestCol = start;
++        }
++    }
++    return {bestCol, bestY};
++}
++
+ }  // namespace cyber::uv
+diff --git a/tests/capi/test_capi.cpp b/tests/capi/test_capi.cpp
+index 8b43fd9..55d4be4 100644
+--- a/tests/capi/test_capi.cpp
++++ b/tests/capi/test_capi.cpp
+@@ -608,6 +608,101 @@ TEST_CASE("capi single-island re-unwrap rejects a dead face") {
+     std::filesystem::remove(objPath, ec);
+ }
+ 
++// Manual packing aids (openspec add-uv-packing-aids, task 2).
++TEST_CASE("capi region packing keeps every island inside the region") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++    REQUIRE(cyber_uv_atlas(mesh, &params, nullptr) == CYBER_OK);
++
++    REQUIRE(cyber_uv_pack_region(mesh, 0.25f, 0.25f, 0.75f, 0.75f, &params, nullptr) == CYBER_OK);
++
++    size_t uvFloats = 0;
++    const float* uvs = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    REQUIRE(uvs != nullptr);
++    for (size_t i = 0; i + 1 < uvFloats; i += 2) {
++        CHECK(uvs[i] >= 0.25f - 1e-4f);
++        CHECK(uvs[i] <= 0.75f + 1e-4f);
++        CHECK(uvs[i + 1] >= 0.25f - 1e-4f);
++        CHECK(uvs[i + 1] <= 0.75f + 1e-4f);
++    }
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
++TEST_CASE("capi region packing refuses a mesh with no UVs and a degenerate region") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++
++    // No layout to repack.
++    CHECK(cyber_uv_pack_region(mesh, 0, 0, 1, 1, &params, nullptr) == CYBER_ERR_INVALID_ARG);
++    REQUIRE(cyber_uv_atlas(mesh, &params, nullptr) == CYBER_OK);
++    // Zero-area region: refused, not collapsed onto a line.
++    CHECK(cyber_uv_pack_region(mesh, 0.5f, 0.2f, 0.5f, 0.8f, &params, nullptr)
++          == CYBER_ERR_INVALID_ARG);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
++TEST_CASE("capi flipped-island readback names a face and a flip is reversible") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++
++    // No layout: an empty answer, not an error — the caller asked a set-membership question.
++    size_t none = 999;
++    REQUIRE(cyber_uv_flipped_islands(mesh, &params, nullptr, 0, &none) == CYBER_OK);
++    CHECK(none == 0);
++
++    REQUIRE(cyber_uv_atlas(mesh, &params, nullptr) == CYBER_OK);
++    size_t uvFloats = 0;
++    const float* p = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    REQUIRE(p != nullptr);
++    const std::vector<float> before(p, p + uvFloats);
++
++    size_t clean = 999;
++    REQUIRE(cyber_uv_flipped_islands(mesh, &params, nullptr, 0, &clean) == CYBER_OK);
++    CHECK(clean == 0);
++
++    // Flip one island, then find it by readback rather than by assuming which it was.
++    REQUIRE(cyber_uv_flip_island(mesh, 0, &params) == CYBER_OK);
++    size_t count = 0;
++    REQUIRE(cyber_uv_flipped_islands(mesh, &params, nullptr, 0, &count) == CYBER_OK);
++    REQUIRE(count == 1);
++    std::vector<uint32_t> faces(count);
++    size_t written = 0;
++    REQUIRE(cyber_uv_flipped_islands(mesh, &params, faces.data(), faces.size(), &written)
++            == CYBER_OK);
++    REQUIRE(written == 1);
++
++    // Flipping the reported face back restores the layout exactly.
++    REQUIRE(cyber_uv_flip_island(mesh, faces[0], &params) == CYBER_OK);
++    p = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    REQUIRE(p != nullptr);
++    REQUIRE(uvFloats == before.size());
++    for (size_t i = 0; i < before.size(); ++i) {
++        CHECK(std::fabs(p[i] - before[i]) < 1e-6f);
++    }
++    size_t after = 999;
++    REQUIRE(cyber_uv_flipped_islands(mesh, &params, nullptr, 0, &after) == CYBER_OK);
++    CHECK(after == 0);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
+ // Auto-seam proposals (openspec add-auto-seam-proposals, task 1).
+ //
+ // The property that matters: a proposal can only ever ADD. If accepting one could delete a
+diff --git a/tests/uv/test_uv.cpp b/tests/uv/test_uv.cpp
+index 2f19c82..1edef02 100644
+--- a/tests/uv/test_uv.cpp
++++ b/tests/uv/test_uv.cpp
+@@ -1,6 +1,7 @@
+ #include <doctest.h>
+ 
+ #include <cmath>
++#include <random>
+ #include <vector>
+ 
+ #include "cyber/core/math.hpp"
+@@ -9,6 +10,8 @@
+ #include "cyber/uv/common.hpp"
+ #include "cyber/uv/distortion.hpp"
+ #include "cyber/uv/packing.hpp"
++#include "cyber/uv/layout.hpp"
++#include "cyber/uv/pack_aids.hpp"
+ #include "cyber/uv/reunwrap.hpp"
+ #include "cyber/uv/seams.hpp"
+ #include "cyber/uv/transforms.hpp"
+@@ -485,3 +488,186 @@ TEST_CASE("reunwrapIsland rejects a dead face and touches nothing") {
+         REQUIRE(after[i].y == before[i].y);
+     }
+ }
++
++// ---- packing scan equivalence (add-uv-packing-aids, 6.6) -------------------
++
++// The two run-scanners must agree on EVERY input, because `packBoxes` picks between them by a
++// measured span threshold. If they disagreed, the packed layout would depend on that threshold
++// — a performance constant would silently be changing artists' results.
++TEST_CASE("both skyline run-scanners agree on randomized height maps") {
++    std::mt19937 rng(20260728u);
++    std::uniform_real_distribution<float> height(0.0f, 4.0f);
++    std::vector<int> scratch;
++
++    for (int trial = 0; trial < 200; ++trial) {
++        std::vector<float> heights(static_cast<std::size_t>(uv::kSkylineColumns));
++        for (float& h : heights) {
++            h = height(rng);
++        }
++        // Spans either side of the threshold, including the degenerate ends.
++        for (const int span : {1, 2, 7, 8, 9, 33, 200, uv::kSkylineColumns}) {
++            const auto naive = uv::lowestRunNaive(heights, span);
++            const auto fast = uv::lowestRunMonotonic(heights, span, scratch);
++            REQUIRE(naive.first == fast.first);
++            REQUIRE(naive.second == fast.second);
++        }
++    }
++}
++
++TEST_CASE("a flat height map resolves to the leftmost run in both scanners") {
++    // Ties must break the same way, or the packer's output would depend on the threshold even
++    // when the two scanners are otherwise equivalent.
++    const std::vector<float> flat(static_cast<std::size_t>(uv::kSkylineColumns), 1.5f);
++    std::vector<int> scratch;
++    for (const int span : {1, 8, 64}) {
++        const auto naive = uv::lowestRunNaive(flat, span);
++        const auto fast = uv::lowestRunMonotonic(flat, span, scratch);
++        REQUIRE(naive.first == 0);
++        REQUIRE(fast.first == 0);
++        REQUIRE(naive.second == 1.5f);
++        REQUIRE(fast.second == 1.5f);
++    }
++}
++
++// ---- manual packing aids (add-uv-packing-aids, 6.6) -----------------------
++
++namespace {
++// Islands of an unwrapped cube, with the atlas's own partition.
++struct CubeAtlas {
++    Mesh mesh;
++    std::vector<std::vector<FaceId>> islands;
++};
++CubeAtlas unwrappedCube() {
++    CubeAtlas out{makeCube(), {}};
++    uv::AtlasOptions opts;
++    opts.mergeCharts = false;
++    opts.maxChartDistortion = 0.0f;
++    REQUIRE(uv::unwrapAtlas(out.mesh, opts).ok);
++    out.islands = uv::computeIslands(out.mesh, uv::autoSeams(out.mesh, opts));
++    return out;
++}
++}  // namespace
++
++TEST_CASE("packing into a sub-region puts every island inside it") {
++    CubeAtlas atlas = unwrappedCube();
++    uv::Bounds2 region;
++    region.expand({0.25f, 0.10f});
++    region.expand({0.75f, 0.60f});
++
++    const uv::PackResult r = uv::packIslandsIntoRegion(atlas.mesh, atlas.islands, region);
++    REQUIRE(r.ok);
++
++    const float slack = 1e-5f;
++    for (const auto& island : atlas.islands) {
++        const uv::Bounds2 box = uv::islandUvBounds(atlas.mesh, island);
++        REQUIRE(box.valid());
++        REQUIRE(box.mn.x >= region.mn.x - slack);
++        REQUIRE(box.mn.y >= region.mn.y - slack);
++        REQUIRE(box.mx.x <= region.mx.x + slack);
++        REQUIRE(box.mx.y <= region.mx.y + slack);
++    }
++}
++
++TEST_CASE("region packing scales uniformly, so a non-square region does not shear islands") {
++    // A non-square region is the case that would tempt a per-axis fit. Packing must apply ONE
++    // scale, or it would reshape islands and silently undo the unwrap.
++    CubeAtlas wide = unwrappedCube();
++    const uv::Bounds2 before = uv::islandUvBounds(wide.mesh, wide.islands[0]);
++    const Vec2 beforeSize = before.size();
++
++    uv::Bounds2 region;
++    region.expand({0.0f, 0.0f});
++    region.expand({1.0f, 0.5f});  // 2:1
++    REQUIRE(uv::packIslandsIntoRegion(wide.mesh, wide.islands, region).ok);
++
++    const Vec2 afterSize = uv::islandUvBounds(wide.mesh, wide.islands[0]).size();
++    REQUIRE(beforeSize.x > 0.0f);
++    REQUIRE(beforeSize.y > 0.0f);
++    // Aspect ratio preserved: the two axes were scaled by the same factor.
++    const float beforeAspect = beforeSize.x / beforeSize.y;
++    const float afterAspect = afterSize.x / afterSize.y;
++    REQUIRE(std::fabs(afterAspect - beforeAspect) < 1e-3f);
++}
++
++TEST_CASE("a degenerate region is refused rather than collapsing the layout") {
++    CubeAtlas atlas = unwrappedCube();
++    const std::vector<Vec2> before = *uv::uvColumn(atlas.mesh);
++
++    uv::Bounds2 flat;
++    flat.expand({0.2f, 0.5f});
++    flat.expand({0.8f, 0.5f});  // zero height
++    REQUIRE(!uv::packIslandsIntoRegion(atlas.mesh, atlas.islands, flat).ok);
++
++    // And nothing was written: a "successful" pack onto a line would be a destroyed layout.
++    const std::vector<Vec2>& after = *uv::uvColumn(atlas.mesh);
++    for (std::size_t i = 0; i < before.size(); ++i) {
++        REQUIRE(after[i].x == before[i].x);
++        REQUIRE(after[i].y == before[i].y);
++    }
++}
++
++TEST_CASE("distributing overlapping islands removes every box overlap") {
++    CubeAtlas atlas = unwrappedCube();
++    // Stack every island on the same spot, the worst case the double-tap aid exists for.
++    for (const auto& island : atlas.islands) {
++        const uv::Bounds2 box = uv::islandUvBounds(atlas.mesh, island);
++        uv::translateIslandUv(atlas.mesh, island, Vec2{0.5f, 0.5f} - box.center());
++    }
++    uv::distributeIslandsUv(atlas.mesh, atlas.islands, 0.01f);
++
++    for (std::size_t i = 0; i < atlas.islands.size(); ++i) {
++        for (std::size_t j = i + 1; j < atlas.islands.size(); ++j) {
++            const uv::Bounds2 a = uv::islandUvBounds(atlas.mesh, atlas.islands[i]);
++            const uv::Bounds2 b = uv::islandUvBounds(atlas.mesh, atlas.islands[j]);
++            REQUIRE(!uv::Bounds2::overlap(a, b, 1e-5f));
++        }
++    }
++}
++
++TEST_CASE("flipping an island reverses its winding and flipping twice is identity") {
++    CubeAtlas atlas = unwrappedCube();
++    const auto& island = atlas.islands[0];
++    const std::vector<Vec2> before = *uv::uvColumn(atlas.mesh);
++    const bool flippedBefore = uv::measureDistortion(atlas.mesh, island).flipped;
++    const uv::Bounds2 boxBefore = uv::islandUvBounds(atlas.mesh, island);
++
++    uv::flipIslandUv(atlas.mesh, island);
++    REQUIRE(uv::measureDistortion(atlas.mesh, island).flipped != flippedBefore);
++    // The flip must not double as a translation, or it could push a shell out of the region it
++    // was packed into.
++    const uv::Bounds2 boxAfter = uv::islandUvBounds(atlas.mesh, island);
++    REQUIRE(std::fabs(boxAfter.center().x - boxBefore.center().x) < 1e-5f);
++    REQUIRE(std::fabs(boxAfter.center().y - boxBefore.center().y) < 1e-5f);
++
++    uv::flipIslandUv(atlas.mesh, island);
++    const std::vector<Vec2>& after = *uv::uvColumn(atlas.mesh);
++    for (std::size_t i = 0; i < before.size(); ++i) {
++        REQUIRE(std::fabs(after[i].x - before[i].x) < 1e-6f);
++        REQUIRE(std::fabs(after[i].y - before[i].y) < 1e-6f);
++    }
++}
++
++TEST_CASE("flippedIslands names which islands are mirrored, not merely how many") {
++    CubeAtlas atlas = unwrappedCube();
++    REQUIRE(uv::flippedIslands(atlas.mesh, atlas.islands).empty());
++
++    uv::flipIslandUv(atlas.mesh, atlas.islands[2]);
++    const std::vector<std::size_t> flipped = uv::flippedIslands(atlas.mesh, atlas.islands);
++    // Pointing AT the offender is the whole value: a count tells an artist there is a problem
++    // without telling them where.
++    REQUIRE(flipped.size() == 1);
++    REQUIRE(flipped[0] == 2);
++}
++
++TEST_CASE("region packing refuses a mesh with no UV layout") {
++    Mesh mesh = makeCube();
++    uv::AtlasOptions opts;
++    opts.mergeCharts = false;
++    const auto islands = uv::computeIslands(mesh, uv::autoSeams(mesh, opts));
++    uv::Bounds2 region;
++    region.expand({0.0f, 0.0f});
++    region.expand({1.0f, 1.0f});
++    // Reporting ok here would tell the caller the layout was repacked when there is no layout.
++    REQUIRE(!uv::packIslandsIntoRegion(mesh, islands, region).ok);
++    REQUIRE(uv::uvColumn(mesh) == nullptr);
++}

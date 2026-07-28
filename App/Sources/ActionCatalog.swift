@@ -405,6 +405,28 @@ extension EditorAction {
                     + "heatmap in the UV stage shows where to put it.",
                 demoFrames: ["scissors", "square.grid.3x3.topleft.filled"]
             )
+        case .packUVs:
+            GalleryEntry(
+                title: "Pack UVs",
+                symbol: "square.grid.2x2",
+                gesture: "Command",
+                notes: "Arranges every island to fill the UV square without overlaps, keeping "
+                    + "their relative sizes so texel density stays even. Each island's own "
+                    + "unwrapping is untouched — packing only moves and scales islands, it "
+                    + "never reshapes one. Run it again after re-unwrapping an island.",
+                demoFrames: ["square.grid.2x2", "square.grid.3x3.topleft.filled"]
+            )
+        case .distributeIslands:
+            GalleryEntry(
+                title: "Distribute islands",
+                symbol: "arrow.up.left.and.arrow.down.right",
+                gesture: "Command",
+                notes: "Pushes overlapping islands apart until none overlap, keeping each "
+                    + "island's size and rotation. Use it when two shells have been moved on "
+                    + "top of each other — overlapping islands share texels, so both bake "
+                    + "the same pixels.",
+                demoFrames: ["arrow.up.left.and.arrow.down.right", "square.grid.2x2"]
+            )
         case .proposeSeams:
             GalleryEntry(
                 title: "Propose seams",

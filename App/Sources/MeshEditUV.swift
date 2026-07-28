@@ -146,6 +146,99 @@ extension MeshEditController {
         return true
     }
 
+    /// Repacks the layout as ONE journaled step (6.6).
+    ///
+    /// Shares `runUnwrapUVs`'s refusal discipline: a repack that cannot happen says why, and a
+    /// repack that produces byte-identical UVs journals nothing and is reported as a no-op
+    /// rather than a failure.
+    @discardableResult
+    func runPackUVs(region: Mesh.UVRegion = .unitSquare) -> Bool {
+        wholeMeshUVCommand(verb: "uv.pack", failure: "Could not pack this layout") { mesh, seams in
+            _ = try mesh.packIslands(into: region, seams: seams)
+        }
+    }
+
+    /// Distributes overlapping islands as ONE journaled step (6.6).
+    @discardableResult
+    func runDistributeIslands() -> Bool {
+        wholeMeshUVCommand(
+            verb: "uv.distributeIslands", failure: "Could not distribute these islands"
+        ) { mesh, seams in
+            try mesh.distributeOverlappingIslands(seams: seams)
+        }
+    }
+
+    /// Flips the island containing `face` as ONE journaled step (6.6).
+    @discardableResult
+    func runFlipIsland(containing face: UInt32) -> Bool {
+        wholeMeshUVCommand(verb: "uv.flipIsland", failure: "Could not flip this island") {
+            mesh, seams in
+            try mesh.flipIsland(containing: face, seams: seams)
+        }
+    }
+
+    /// One representative face of each mirrored island, for the panel's flip affordance.
+    ///
+    /// Read-only, so it neither journals nor refuses — an empty result means "none mirrored",
+    /// which is also the honest answer when there is no layout at all.
+    func flippedIslandFaces() -> [UInt32] {
+        guard let context = contextProvider?(), let mesh = context.editMesh else { return [] }
+        // `?? []` and NOT `guard let`: a cage with no annotations at all is the common case, and
+        // binding the optional made this return "nothing mirrored" for every unannotated mesh —
+        // a silent wrong answer that also made a test pass for the wrong reason.
+        let seams = context.editObject?.annotations?.seamEdges ?? []
+        return (try? mesh.flippedIslands(seams: seams)) ?? []
+    }
+
+    /// The shared shape of every whole-mesh UV command: guard, transact, journal, and draw the
+    /// three-way committed / no-op / failed distinction.
+    ///
+    /// Factored because `runUnwrapUVs` had already established exactly this shape and three more
+    /// commands needed it. Four hand-written copies would be four chances to get the no-op case
+    /// wrong — and getting it wrong means telling an artist a command failed when their layout
+    /// is simply already correct.
+    private func wholeMeshUVCommand(
+        verb: String, failure: String, _ body: (Mesh, [UInt32]) throws -> Void
+    ) -> Bool {
+        unwrapRefusalStorage = nil
+        guard allowsWholeMeshCommand() else {
+            unwrapRefusalStorage = "Finish the current stroke first"
+            return false
+        }
+        guard let context = contextProvider?(), let object = context.editObject,
+            let mesh = context.editMesh, let payload = context.editPayload
+        else {
+            unwrapRefusalStorage = "No EditMesh — retopologize first"
+            return false
+        }
+        guard mesh.hasUVLayout else {
+            // Distinct from a failure: there is nothing to repack or flip until an unwrap has
+            // happened, and saying so points at the next action instead of implying a fault.
+            unwrapRefusalStorage = "Unwrap first — there is no UV layout yet"
+            return false
+        }
+        let seams = object.annotations?.seamEdges ?? []
+        let transaction = MeshEditTransaction(
+            object: object, mesh: mesh, currentPayload: payload
+        )
+        var ran = false
+        lastCommit = nil
+        journalOrDiscard(verb: verb) {
+            try body(mesh, seams)
+            ran = true
+            onLiveEdit?()
+            return try transaction.command(verb: verb) { $0 }
+        }
+        guard lastCommit != nil else {
+            unwrapRefusalStorage = ran
+                ? "Already arranged — the layout is unchanged"
+                : failure
+            if !ran { Self.uvLog.error("\(verb, privacy: .public) produced no journal entry") }
+            return false
+        }
+        return true
+    }
+
     private static let uvLog = Logger(
         subsystem: "com.cyberdynecorp.cybertopology", category: "uv"
     )

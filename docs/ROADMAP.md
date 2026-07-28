@@ -124,7 +124,7 @@ landing, where rivals are undefined rather than slower — which needs no compet
 
 ### v0.3 — Public beta (target: Jun 2027) — "The pipeline's second stage"
 
-#### Phase 6 status — 4 of 8 (6.1, 6.4, 6.5, 6.2b done; 6.2 all but its 2D half)
+#### Phase 6 status — 5 of 8 (6.1, 6.4, 6.5, 6.2b, 6.6 done; 6.2 all but its 2D half)
 
 The entry point landed as `add-uv-stage-foundation`: engine UV READBACK (the real gate — the
 atlas could write per-corner UVs that nothing could read, so a 2D view was impossible), the
