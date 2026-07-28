@@ -142,6 +142,9 @@ struct DocumentEditorView: View {
                             report: meshEditorReport,
                             notice: uvNotice,
                             onUnwrap: runUnwrap,
+                            proposedSeamCount: proposedSeamCount,
+                            onAcceptSeams: acceptSeams,
+                            onDiscardSeams: discardSeams,
                             mode: $uvHeatmapMode,
                             textureSize: Mesh.AtlasParameters().textureSize
                         )
@@ -813,9 +816,28 @@ struct DocumentEditorView: View {
     }
 
     /// The unwrap's own notice — including "already unwrapped", which is not an error and
-    /// must not be phrased as one.
+    /// must not be phrased as one. A seam proposal's notice shares the line: both answer
+    /// "why did that tap not change anything", and a fourth status channel would only
+    /// compete with the three the app already has.
     private var uvNotice: String? {
         inputModel.meshEditor?.lastUnwrapRefusal
+            ?? inputModel.meshEditor?.seamProposalNotice
+    }
+
+    private var proposedSeamCount: Int {
+        inputModel.meshEditor?.pendingSeamProposal.count ?? 0
+    }
+
+    private func acceptSeams() {
+        guard inputModel.meshEditor?.acceptSeamProposal() == true else { return }
+        journal.handle(.documentEdited)
+        statusMessage = "Seams accepted"
+    }
+
+    private func discardSeams() {
+        // Journals nothing by definition, so the journal is deliberately not notified.
+        inputModel.meshEditor?.discardSeamProposal()
+        statusMessage = "Proposal discarded"
     }
 
     private func runUnwrap() {

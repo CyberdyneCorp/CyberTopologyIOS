@@ -405,6 +405,19 @@ extension EditorAction {
                     + "heatmap in the UV stage shows where to put it.",
                 demoFrames: ["scissors", "square.grid.3x3.topleft.filled"]
             )
+        case .proposeSeams:
+            GalleryEntry(
+                title: "Propose seams",
+                symbol: "wand.and.stars",
+                gesture: "Command",
+                notes: "Suggests the seams still needed, treating the ones you already "
+                    + "drew as cuts it will not cross — so it answers where ELSE to cut "
+                    + "rather than re-deciding your layout. Proposed seams appear in "
+                    + "amber; accept to keep them as one undo step, or discard and "
+                    + "nothing changes. It only ever ADDS: accepting can never remove a "
+                    + "seam you drew.",
+                demoFrames: ["wand.and.stars", "scissors"]
+            )
         case .clearSeams:
             GalleryEntry(
                 title: "Clear seams",

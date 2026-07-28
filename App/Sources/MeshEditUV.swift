@@ -12,6 +12,85 @@ import os
 /// `MeshUVTests.uvsSurvivePayloadRoundTrip`, which is what makes journaling it as a
 /// `meshEdit` correct rather than needing a new command case.
 extension MeshEditController {
+    /// Seams a proposal is suggesting, or empty when none is pending.
+    ///
+    /// VIEW state, not document state, and deliberately not journaled: a proposal is not a
+    /// change until it is accepted, so discarding one must leave the undo stack untouched.
+    /// Same shape as the Phase 5 solver ghost, without needing `SolverGhost` — a seam
+    /// proposal is an edge set, not geometry.
+    var pendingSeamProposal: [UInt32] { seamProposalStorage }
+
+    /// Why the last proposal produced nothing, or nil when it produced seams.
+    ///
+    /// The same ambiguity the unwrap's no-op case had: "no EditMesh" and "your mesh needs no
+    /// further cuts" are completely different answers, and returning a bare false for both
+    /// would have the UI say a proposal failed when the honest answer is that the layout is
+    /// already fine. A FLAT cage legitimately proposes nothing — one chart, no internal
+    /// chart boundaries — and that is a result, not an error.
+    var seamProposalNotice: String? { seamProposalNoticeStorage }
+
+    /// Generates a proposal. Returns whether one was produced.
+    ///
+    /// The artist's authored seams act as barriers growth will not cross AND are always
+    /// included, so accepting can only ever add — never delete a seam they drew.
+    @discardableResult
+    func proposeSeams() -> Bool {
+        seamProposalNoticeStorage = nil
+        // Fired on EVERY exit below, including the empty ones: a second propose that finds
+        // nothing must clear the first proposal's amber from the viewport, or the artist
+        // would be looking at a suggestion that is no longer on offer.
+        defer { onSeamProposalChanged?(seamProposalStorage) }
+        guard let context = contextProvider?(), let mesh = context.editMesh,
+            let object = context.editObject
+        else {
+            seamProposalStorage = []
+            seamProposalNoticeStorage = "No EditMesh to propose seams for"
+            return false
+        }
+        let authored = object.annotations?.seamEdges ?? []
+        guard let proposed = try? mesh.proposedSeams(respecting: authored) else {
+            seamProposalStorage = []
+            seamProposalNoticeStorage = "Could not analyse this mesh for seams"
+            return false
+        }
+        // Only the ADDITIONS are worth reviewing; the authored seams are already on screen.
+        let additions = proposed.filter { !authored.contains($0) }
+        seamProposalStorage = additions
+        guard !additions.isEmpty else {
+            // Not a failure. A flat or already well-cut cage needs nothing more, and saying
+            // "no further seams needed" is the truthful answer where "could not propose"
+            // would be a lie about the artist's mesh.
+            seamProposalNoticeStorage = authored.isEmpty
+                ? "No seams needed — this cage already unwraps in one piece"
+                : "No further seams needed beyond the ones you drew"
+            return false
+        }
+        return true
+    }
+
+    /// Accepts the pending proposal as ONE journaled seam edit. Returns whether it committed.
+    @discardableResult
+    func acceptSeamProposal() -> Bool {
+        let additions = seamProposalStorage
+        guard !additions.isEmpty else { return false }
+        seamProposalStorage = []
+        // Cleared BEFORE the commit: once accepted the seams are authored, and drawing them
+        // as both amber (proposed) and orange (authored) would double-draw the same edges.
+        onSeamProposalChanged?([])
+        // `togglingSeams` would SEW anything already a seam, so only the additions are
+        // passed — which they are by construction, since `proposeSeams` filtered them.
+        return applyAnnotationEditNow(verb: "uv.acceptSeamProposal") {
+            $0.togglingSeams(on: additions)
+        }
+    }
+
+    /// Drops the pending proposal. Journals nothing, by definition.
+    func discardSeamProposal() {
+        seamProposalStorage = []
+        seamProposalNoticeStorage = nil
+        onSeamProposalChanged?([])
+    }
+
     private static let uvLog = Logger(
         subsystem: "com.cyberdynecorp.cybertopology", category: "uv"
     )

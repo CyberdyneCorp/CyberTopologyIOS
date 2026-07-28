@@ -299,6 +299,15 @@ struct AnnotationRenderState: Equatable {
     /// The colour seams draw in: distinct from the tag palette and from the cold blue
     /// frozen outlines.
     static let seamColor = SIMD3<Float>(1.00, 0.45, 0.10)
+    /// PROPOSED seams (openspec add-auto-seam-proposals): amber, matching the solver-ghost
+    /// convention already established for proposed geometry, and deliberately NOT the
+    /// authored seam colour — an artist must be able to tell what they drew from what is
+    /// merely being suggested, or they cannot review the proposal at all.
+    static let proposedSeamColor = SIMD3<Float>(1.00, 0.80, 0.25)
+
+    /// Seams a proposal is suggesting, drawn distinctly from authored ones. VIEW state:
+    /// nothing here is in the document until the proposal is accepted.
+    var proposedSeamSegments: [TagGroup] = []
 
     /// The colour frozen faces outline in: a cold pale blue, distinct from the
     /// yellow pin markers and from every loop-tag palette entry.
@@ -308,7 +317,9 @@ struct AnnotationRenderState: Equatable {
     /// loop crossing a frozen patch must stay readable), rims on top.
     var lineGroups: [TagGroup] {
         // Seams above tags: where an edge is both, the cut is the more consequential fact.
-        frozenOutlines + tagGroups + seamSegments + symmetryRims
+        // Proposed above authored: the artist is reviewing the proposal, so it must not be
+        // occluded by what it is being compared against.
+        frozenOutlines + tagGroups + seamSegments + proposedSeamSegments + symmetryRims
     }
 
     var isEmpty: Bool { pinPoints.isEmpty && lineGroups.allSatisfy { $0.segments.isEmpty } }
@@ -326,6 +337,7 @@ struct AnnotationRenderState: Equatable {
         vertexPosition: (UInt32) -> SIMD3<Float>?,
         faceVertices: (UInt32) -> [UInt32] = { _ in [] },
         liveFaces: () -> [UInt32] = { [] },
+        proposedSeams: [UInt32] = [],
         color: (UInt8) -> SIMD3<Float> = LoopTagPalette.color
     ) -> AnnotationRenderState {
         var state = AnnotationRenderState()
@@ -396,6 +408,24 @@ struct AnnotationRenderState: Equatable {
         }
         if !seams.isEmpty {
             state.seamSegments = [TagGroup(color: Self.seamColor, segments: seams)]
+        }
+
+        // Proposed seams, minus anything already authored: drawing a proposal over an
+        // existing seam in a different colour would suggest the artist's own cut is merely
+        // a suggestion. A proposal only ever ADDS, so only the additions are shown.
+        let authored = Set(annotations.seamEdges)
+        var proposed: [Float] = []
+        for edge in proposedSeams where !authored.contains(edge) {
+            guard let (a, b) = edgeEndpoints(edge), edgeVisible(a, b),
+                let start = vertexPosition(a), let end = vertexPosition(b)
+            else { continue }
+            proposed.append(contentsOf: [start.x, start.y, start.z])
+            proposed.append(contentsOf: [end.x, end.y, end.z])
+        }
+        if !proposed.isEmpty {
+            state.proposedSeamSegments = [
+                TagGroup(color: Self.proposedSeamColor, segments: proposed)
+            ]
         }
 
         let groups = annotations.taggedEdgesByColor()

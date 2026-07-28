@@ -558,14 +558,23 @@ final class ViewportRenderer: NSObject {
     /// Rebuilds the annotation pass from document annotations against
     /// `mesh`'s live element positions. nil/empty clears it (the symmetry
     /// rim, if any, survives — it is not annotation state).
+    /// Seams a pending proposal is suggesting (task 6.5). View state: set by the
+    /// coordinator, never read from the document, because a proposal is not a document
+    /// change until it is accepted.
+    var proposedSeams: [UInt32] = []
+
     func setOverlayAnnotations(_ annotations: MeshAnnotations?, of mesh: Mesh) {
-        if let annotations, !annotations.isEmpty {
+        // A proposal can exist with NO document annotations at all — the first thing an
+        // artist does on a fresh cage may well be to ask where to cut. Falling back to an
+        // empty set keeps the amber drawable in that case; the old `if let` dropped it.
+        if annotations?.isEmpty == false || !proposedSeams.isEmpty {
             annotationRenderState = AnnotationRenderState.build(
-                annotations: annotations,
+                annotations: annotations ?? MeshAnnotations(),
                 edgeEndpoints: { mesh.edgeEndpoints(of: $0) },
                 vertexPosition: { mesh.vertexPosition($0) },
                 faceVertices: { mesh.faceVertices($0) },
-                liveFaces: { mesh.liveFaceIDs() }
+                liveFaces: { mesh.liveFaceIDs() },
+                proposedSeams: proposedSeams
             )
         } else {
             annotationRenderState = AnnotationRenderState()

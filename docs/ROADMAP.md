@@ -124,7 +124,7 @@ landing, where rivals are undefined rather than slower — which needs no compet
 
 ### v0.3 — Public beta (target: Jun 2027) — "The pipeline's second stage"
 
-#### Phase 6 status — 2 of 8 (6.1, 6.4 done)
+#### Phase 6 status — 3 of 8 (6.1, 6.4, 6.5 done; 6.2 all but its 2D half)
 
 The entry point landed as `add-uv-stage-foundation`: engine UV READBACK (the real gate — the
 atlas could write per-corner UVs that nothing could read, so a 2D view was impossible), the
@@ -140,9 +140,18 @@ winding, and already drove the aggregate figures. Only the C API exposure was mi
 was an exposure plus a fill in the Canvas. Texel density derives from the same area ratio,
 which is what stops the per-face and aggregate numbers drifting apart.
 
-What the remaining tasks still need from the engine: **6.2** has no API to SUPPLY seams and
-no corner pinning; **6.7** needs a document-model change, since the atlas writes ONE UV set
-into the unit square.
+**6.5 also landed**, and made it three scoping estimates in a row that undersold the engine:
+`autoSeams` already existed and already ran inside `unwrapAtlas`, so the change was giving it
+a BARRIER the artist's own seams supply, not writing seam detection. The limitation worth
+carrying forward is that the chart MERGE passes are not barrier-aware — growth respects a
+barrier but a merge can still cross one — so preservation is guaranteed by UNIONING the
+barrier into the result rather than by the algorithm. Making the merges barrier-aware is the
+real fix and is not done.
+
+What the remaining tasks still need from the engine: **6.2b** needs corner pinning, which is
+genuinely new solver work (`choosePins` picks two vertices with no caller input); **6.7** needs
+a document-model change, since the atlas writes ONE UV set into the unit square. The seam
+half of 6.2's original scoping claim was wrong and is recorded as such.
 
 Open TestFlight. This is the release that starts the clock against CozyBlanket Pro.
 

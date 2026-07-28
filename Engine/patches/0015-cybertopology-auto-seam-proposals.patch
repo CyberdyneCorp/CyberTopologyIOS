@@ -1,0 +1,218 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index 21855ad..005e47f 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -441,6 +441,18 @@ CyberStatus cyber_mesh_set_density_scales(CyberMesh* mesh, const float* scales,
+ CyberStatus cyber_mesh_set_seam_edges(CyberMesh* mesh, const uint32_t* edge_ids,
+                                       size_t count);
+ 
++/* PROPOSED UV seams (add-auto-seam-proposals): the seams chart growth would choose,
++ * treating whatever cyber_mesh_set_seam_edges holds as edges it will NOT cut across and
++ * which are always included in the result.
++ *
++ * So a proposal answers "given the artist's cuts, where else would I cut", and accepting
++ * one can never delete a seam they drew. It only ever ADDS.
++ *
++ * Two-call size-then-fill, like the other id readbacks: pass NULL to learn the count.
++ * Proposes but does NOT apply -- the mesh is unchanged, and the caller decides. */
++CyberStatus cyber_mesh_propose_seams(const CyberMesh* mesh, uint32_t* out_ids,
++                                     size_t capacity, size_t* out_count);
++
+ CyberStatus cyber_mesh_set_region_reference(CyberMesh* mesh, const CyberMesh* reference);
+ 
+ CyberStatus cyber_mesh_set_solve_region(CyberMesh* mesh, const uint32_t* face_ids, size_t count);
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index a2ac187..0b34c90 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -1220,6 +1220,48 @@ CyberStatus copyIds(const Container& src, Project project, uint32_t* out_ids, si
+ 
+ }  // namespace
+ 
++CyberStatus cyber_mesh_propose_seams(const CyberMesh* mesh, uint32_t* out_ids,
++                                     size_t capacity, size_t* out_count) {
++    if (mesh == nullptr || out_count == nullptr) {
++        setError("cyber_mesh_propose_seams: null argument");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        // The artist's own seams act as growth barriers AND are always present in the
++        // result, so an accepted proposal can only ever add.
++        cyber::uv::SeamSet barrier;
++        for (const std::uint32_t id : mesh->seamEdges) {
++            barrier.mark(cyber::EdgeId{id});
++        }
++        const cyber::uv::AtlasOptions options{};
++        const cyber::uv::SeamSet proposed = cyber::uv::autoSeams(
++            mesh->mesh, options, barrier.empty() ? nullptr : &barrier
++        );
++        // Ascending ids, so a proposal is deterministic for the same mesh and the same
++        // authored seams — a set's iteration order is not.
++        std::vector<std::uint32_t> ids;
++        for (cyber::Index e = 0; e < mesh->mesh.edgeCapacity(); ++e) {
++            const cyber::EdgeId edge{e};
++            if (mesh->mesh.isAlive(edge) && proposed.isSeam(edge)) {
++                ids.push_back(e);
++            }
++        }
++        *out_count = ids.size();
++        if (out_ids != nullptr) {
++            const size_t writable = capacity < ids.size() ? capacity : ids.size();
++            for (size_t i = 0; i < writable; ++i) {
++                out_ids[i] = ids[i];
++            }
++            *out_count = writable;
++        }
++        clearError();
++        return CYBER_OK;
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_mesh_propose_seams: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++}
++
+ CyberStatus cyber_mesh_set_seam_edges(CyberMesh* mesh, const uint32_t* edge_ids,
+                                       size_t count) {
+     if (mesh == nullptr || (edge_ids == nullptr && count > 0)) {
+diff --git a/src/uv/include/cyber/uv/atlas.hpp b/src/uv/include/cyber/uv/atlas.hpp
+index d26663b..4e6355c 100644
+--- a/src/uv/include/cyber/uv/atlas.hpp
++++ b/src/uv/include/cyber/uv/atlas.hpp
+@@ -74,7 +74,16 @@ struct AtlasResult {
+ // between them (mesh boundary edges are already island boundaries and are not
+ // marked). Exposed for interactive seam preview and for testing that
+ // computeIslands reproduces the same partition.
+-[[nodiscard]] SeamSet autoSeams(const Mesh& mesh, const AtlasOptions& options = {});
++// Chart-growth seams. `barrier`, when non-null, is a set of edges growth will NOT cross
++// and which are always present in the result — hand-authored seams, so the answer is
++// "given your cuts, where else would I cut" rather than a fresh opinion on the whole mesh
++// (add-auto-seam-proposals). Null is the previous behaviour byte-for-byte.
++//
++// Caveat worth knowing: the chart-MERGE passes are not barrier-aware, so two charts a
++// barrier separates can still merge. The union of the barrier into the result keeps the
++// output correct; the auto seams near a manual cut may be placed as if it were absent.
++[[nodiscard]] SeamSet autoSeams(const Mesh& mesh, const AtlasOptions& options = {},
++                                const SeamSet* barrier = nullptr);
+ 
+ // Full automatic atlas: autoSeams -> computeIslands -> LSCM per chart (with a
+ // planar-projection fallback for degenerate charts) -> pack -> write "uv".
+diff --git a/src/uv/src/atlas.cpp b/src/uv/src/atlas.cpp
+index 00ceabe..0e81478 100644
+--- a/src/uv/src/atlas.cpp
++++ b/src/uv/src/atlas.cpp
+@@ -19,7 +19,8 @@ namespace {
+ // ascending-id seeds: a neighbour joins the seed's chart while its normal stays
+ // within `maxChartAngleDeg` of the seed normal. Deterministic (seed order and
+ // the DFS stack are both id-ordered by construction).
+-std::vector<int> computeCharts(const Mesh& mesh, const AtlasOptions& options) {
++std::vector<int> computeCharts(const Mesh& mesh, const AtlasOptions& options,
++                               const SeamSet* barrier = nullptr) {
+     const auto capacity = mesh.faceCapacity();
+     std::vector<int> chartOf(capacity, -1);
+     const float cosThresh = std::cos(degreesToRadians(options.maxChartAngleDeg));
+@@ -46,6 +47,12 @@ std::vector<int> computeCharts(const Mesh& mesh, const AtlasOptions& options) {
+                 if (!edge.valid()) {
+                     continue;
+                 }
++                // A barrier edge is one the artist already cut, so growth stops there:
++                // that is what makes a proposal answer "given your cuts, where ELSE"
++                // rather than re-deciding the layout from scratch.
++                if (barrier != nullptr && barrier->isSeam(edge)) {
++                    continue;
++                }
+                 for (const FaceId nb : mesh.edgeFaces(edge)) {
+                     if (nb == face || chartOf[static_cast<std::size_t>(nb.value)] != -1) {
+                         continue;
+@@ -443,13 +450,26 @@ std::vector<Vec2> islandUvPoints(const Mesh& mesh, std::span<const FaceId> islan
+ 
+ }  // namespace
+ 
+-SeamSet autoSeams(const Mesh& mesh, const AtlasOptions& options) {
+-    std::vector<int> chartOf = computeCharts(mesh, options);
++SeamSet autoSeams(const Mesh& mesh, const AtlasOptions& options, const SeamSet* barrier) {
++    std::vector<int> chartOf = computeCharts(mesh, options, barrier);
+     if (options.mergeCharts) {
+         mergeCoplanarCharts(mesh, chartOf, options);  // free: no distortion rise
+         mergeByDistortion(mesh, chartOf, options);    // spend headroom up to the cap
+     }
+     SeamSet seams;
++    // The barrier's own edges are always seams in the result. The merge passes above are
++    // NOT barrier-aware and may have merged charts a barrier separates, so unioning here is
++    // what guarantees an accepted proposal can never delete a seam the artist drew. The
++    // chart shapes near a manual cut may still be placed as if it were absent — a stated
++    // limitation, not a silent one.
++    if (barrier != nullptr) {
++        for (Index e = 0; e < mesh.edgeCapacity(); ++e) {
++            const EdgeId edge{e};
++            if (mesh.isAlive(edge) && barrier->isSeam(edge)) {
++                seams.mark(edge);
++            }
++        }
++    }
+     const auto capacity = mesh.faceCapacity();
+     for (Index f = 0; f < capacity; ++f) {
+         const FaceId face{f};
+diff --git a/tests/capi/test_capi.cpp b/tests/capi/test_capi.cpp
+index d7f1814..bec37f3 100644
+--- a/tests/capi/test_capi.cpp
++++ b/tests/capi/test_capi.cpp
+@@ -4,6 +4,7 @@
+ // that the progress callback fired.
+ #include <doctest.h>
+ 
++#include <algorithm>
+ #include <cstdio>
+ #include <filesystem>
+ #include <fstream>
+@@ -520,3 +521,51 @@ TEST_CASE("capi hand-drawn seams replace auto-seams rather than supplementing th
+     std::error_code ec;
+     std::filesystem::remove(objPath, ec);
+ }
++
++// Auto-seam proposals (openspec add-auto-seam-proposals, task 1).
++//
++// The property that matters: a proposal can only ever ADD. If accepting one could delete a
++// seam the artist drew, the feature would be actively hostile — so the authored set must
++// always be a subset of the proposal.
++TEST_CASE("capi seam proposals always contain the authored seams and never apply") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++
++    // With nothing authored, a proposal is just the automatic seaming.
++    size_t bare = 0;
++    REQUIRE(cyber_mesh_propose_seams(mesh, nullptr, 0, &bare) == CYBER_OK);
++    CHECK(bare > 0);
++
++    const uint32_t authored[2] = {0, 1};
++    REQUIRE(cyber_mesh_set_seam_edges(mesh, authored, 2) == CYBER_OK);
++
++    size_t count = 0;
++    REQUIRE(cyber_mesh_propose_seams(mesh, nullptr, 0, &count) == CYBER_OK);
++    REQUIRE(count > 0);
++    std::vector<uint32_t> ids(count);
++    size_t written = 0;
++    REQUIRE(cyber_mesh_propose_seams(mesh, ids.data(), ids.size(), &written) == CYBER_OK);
++    CHECK(written == count);
++
++    // Every authored seam is in the proposal. This is what makes accepting safe.
++    for (const uint32_t id : authored) {
++        CHECK(std::find(ids.begin(), ids.end(), id) != ids.end());
++    }
++
++    // Ascending, so the same mesh and the same authored seams give the same proposal —
++    // a set's iteration order would not.
++    CHECK(std::is_sorted(ids.begin(), ids.end()));
++
++    // PROPOSES, does not apply: the atlas still reports only the authored seams, because
++    // the proposal was never written to the mesh.
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++    CyberAtlasResult atlas{};
++    REQUIRE(cyber_uv_atlas(mesh, &params, &atlas) == CYBER_OK);
++    CHECK(atlas.seamEdges == 2);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}

@@ -138,6 +138,11 @@ final class MeshEditController {
     /// Live (not yet journaled) mutation happened: refresh the overlay from
     /// the live mesh.
     var onLiveEdit: (() -> Void)?
+    /// The pending seam proposal changed (task 6.5). Separate from `onLiveEdit` because a
+    /// proposal is NOT a mutation: nothing is journaled and no geometry moved, so it must not
+    /// go through the live-edit refresh that re-uploads the mesh. Its only effect is that the
+    /// amber overlay redraws.
+    var onSeamProposalChanged: (([UInt32]) -> Void)?
     /// Live edits must be thrown away (cancelled stroke / failed commit):
     /// reload the live mesh from the document payload.
     var onDiscardLiveEdits: (() -> Void)?
@@ -163,6 +168,10 @@ final class MeshEditController {
     /// the behaviour lives with the action.
     var unwrapReportStorage: Mesh.AtlasReport?
     var unwrapRefusalStorage: String?
+    /// Pending auto-seam proposal (task 6.5). Storage lives here only because a Swift
+    /// extension cannot add stored properties; the behaviour is in `MeshEditUV.swift`.
+    var seamProposalStorage: [UInt32] = []
+    var seamProposalNoticeStorage: String?
     /// Loop Info sink (task 4.3, spec: "Loop Info inspection"): fired when
     /// the hovered interior edge's loop metrics change; nil clears the
     /// chip.

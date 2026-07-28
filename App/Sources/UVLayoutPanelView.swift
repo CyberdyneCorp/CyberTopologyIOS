@@ -26,6 +26,11 @@ struct UVLayoutPanelView: View {
     /// unwrapped" case, which is not an error.
     let notice: String?
     let onUnwrap: () -> Void
+    /// A pending seam proposal (task 6.5), or empty when none is on offer. View state, so an
+    /// artist can review before it becomes a document change — proposing is not accepting.
+    var proposedSeamCount: Int = 0
+    var onAcceptSeams: () -> Void = {}
+    var onDiscardSeams: () -> Void = {}
     /// What the fill shades by. Held by the caller so the choice survives a body pass.
     @Binding var mode: UVLayoutGeometry.HeatmapMode
     /// The texture size texel density is expressed against. A density figure is meaningless
@@ -79,6 +84,10 @@ struct UVLayoutPanelView: View {
                 )
             }
 
+            if proposedSeamCount > 0 {
+                seamProposalBar
+            }
+
             if let notice {
                 Text(notice)
                     .font(.caption)
@@ -89,6 +98,38 @@ struct UVLayoutPanelView: View {
         .padding(12)
         .frame(minWidth: 260)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// Accept / Discard for a pending proposal.
+    ///
+    /// Both are offered explicitly. A proposal that could only be accepted — or that applied
+    /// itself and relied on undo — would make "propose" a synonym for "do it", and the spec's
+    /// guarantee is that discarding leaves NO trace, which a journaled-then-undone edit does
+    /// not satisfy.
+    private var seamProposalBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\(proposedSeamCount) seam\(proposedSeamCount == 1 ? "" : "s") proposed")
+                .font(.caption.weight(.medium))
+                // The amber the viewport draws them in, so the panel and the overlay are
+                // obviously talking about the same edges.
+                .foregroundStyle(.orange)
+            Text("Shown in amber on the cage. Accepting only ADDS — it never removes a seam "
+                + "you drew.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Button("Accept", action: onAcceptSeams)
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("uv-accept-seams")
+                Button("Discard", action: onDiscardSeams)
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("uv-discard-seams")
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityIdentifier("uv-seam-proposal")
     }
 
     private func layoutCanvas(_ layout: UVLayoutGeometry.Layout) -> some View {

@@ -454,6 +454,14 @@ struct MetalViewport: UIViewRepresentable {
             meshEditor.onDiscardLiveEdits = { [weak self] in
                 self?.reloadLiveEditMesh()
             }
+            // Task 6.5: view-only. Deliberately NOT routed through `onLiveEdit` — no
+            // geometry moved, so re-uploading the mesh would be pure cost. It also cannot
+            // ride the annotation-diff path in `updateMesh`, which gates on
+            // `object.annotations != overlayAnnotations`: a proposal changes no document
+            // annotation, so that comparison is equal and the redraw would never happen.
+            meshEditor.onSeamProposalChanged = { [weak self] proposed in
+                self?.syncSeamProposal(proposed)
+            }
             // Authored guide strokes changed (add-guide-stroke-authoring):
             // refresh the amber guide-line overlay.
             meshEditor.onGuidesChanged = { [weak self] in
@@ -896,6 +904,19 @@ struct MetalViewport: UIViewRepresentable {
         /// Uploads the CURRENT live EditMesh into the overlay (and, for a
         /// target-less document, the solid) pipeline. Runs at most once per
         /// rendered frame via `ViewportRenderer.pendingGeometryRefresh` —
+        /// Redraws the annotation pass with `proposed` shown in amber.
+        ///
+        /// Rebuilt against the CURRENT overlay annotations rather than a remembered set, so
+        /// an accept — which clears the proposal and adds the seams as authored — lands as
+        /// one redraw showing them in the authored colour.
+        func syncSeamProposal(_ proposed: [UInt32]) {
+            guard let renderer else { return }
+            renderer.proposedSeams = proposed
+            guard let mesh = recognizerEditMesh else { return }
+            renderer.setOverlayAnnotations(overlayAnnotations, of: mesh)
+            renderer.invalidate()
+        }
+
         /// see `meshEditor.onLiveEdit` for why it is never called per
         /// input sample.
         private func refreshLiveEditGeometry() {

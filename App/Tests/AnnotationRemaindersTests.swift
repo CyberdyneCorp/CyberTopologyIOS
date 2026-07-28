@@ -176,6 +176,35 @@ struct AnnotationRemaindersTests {
         #expect(hidden.seamSegments.isEmpty)
     }
 
+    @Test("A proposed seam draws distinctly, and never over an authored one")
+    func proposalsDrawDistinctly() throws {
+        let mesh = try grid66()
+        let edges = Array((0..<UInt32(mesh.edgeCount)).filter {
+            mesh.edgeEndpoints(of: $0) != nil
+        }.prefix(2))
+        try #require(edges.count == 2)
+
+        let state = AnnotationRenderState.build(
+            annotations: MeshAnnotations(seamEdges: [edges[0]]),
+            edgeEndpoints: { mesh.edgeEndpoints(of: $0) },
+            vertexPosition: { mesh.vertexPosition($0) },
+            faceVertices: { mesh.faceVertices($0) },
+            liveFaces: { mesh.liveFaceIDs() },
+            proposedSeams: edges  // includes the authored one
+        )
+        #expect(state.seamSegments.count == 1)
+        #expect(state.proposedSeamSegments.count == 1)
+        // Amber for proposed, orange for authored: an artist must be able to tell what they
+        // drew from what is merely suggested, or they cannot review the proposal.
+        #expect(
+            state.proposedSeamSegments[0].color == AnnotationRenderState.proposedSeamColor
+        )
+        #expect(state.proposedSeamSegments[0].color != AnnotationRenderState.seamColor)
+        // Only ONE segment proposed: the already-authored edge is excluded, because drawing
+        // a proposal over the artist's own cut would imply their cut is a suggestion.
+        #expect(state.proposedSeamSegments[0].segments.count == 6)
+    }
+
     @Test("Seam flip and clear seams are reachable and correctly classified")
     func seamActionsAreReachable() {
         // A TOOL, not an immediate command: it is stroke-driven, so it must arm rather than
@@ -264,5 +293,26 @@ struct AnnotationRemaindersTests {
         // Reached through the gallery deliberately: the chip is allowsHitTesting(false)
         // so an inspector can never intercept the next stroke.
         #expect(EditorAction.toggleLoopInfoPin.tool == nil)
+    }
+
+    @Test("A proposal draws even when the document has NO annotations at all")
+    func bareProposalStillDraws() throws {
+        // The first thing an artist does on a fresh cage may be to ask where to cut, so the
+        // proposal has to survive an empty annotation set. The overlay build used to be
+        // gated behind `if let annotations`, which dropped the amber entirely in this case.
+        let mesh = try grid66()
+        let edges = Array((0..<UInt32(mesh.edgeCount)).filter {
+            mesh.edgeEndpoints(of: $0) != nil
+        }.prefix(2))
+        let state = AnnotationRenderState.build(
+            annotations: MeshAnnotations(),
+            edgeEndpoints: { mesh.edgeEndpoints(of: $0) },
+            vertexPosition: { mesh.vertexPosition($0) },
+            faceVertices: { mesh.faceVertices($0) },
+            liveFaces: { mesh.liveFaceIDs() },
+            proposedSeams: edges
+        )
+        #expect(!state.proposedSeamSegments.isEmpty)
+        #expect(!state.isEmpty)
     }
 }

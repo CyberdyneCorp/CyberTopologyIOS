@@ -237,6 +237,34 @@ extension Mesh {
         }
     }
 
+    /// The seams chart growth would choose, treating this mesh's authored seams as edges it
+    /// will NOT cut across and which are always included in the result.
+    ///
+    /// So the answer is "given the artist's cuts, where ELSE would I cut" rather than a
+    /// fresh opinion on the whole mesh, and accepting a proposal can only ever ADD — never
+    /// delete a seam they drew. Ascending ids, so the same mesh with the same authored seams
+    /// proposes the same thing.
+    ///
+    /// PROPOSES only: the mesh is not modified, and the caller decides whether to keep it.
+    ///
+    /// Known limitation, inherited from the engine and stated rather than hidden: the
+    /// chart-MERGE passes are not barrier-aware, so two charts an authored seam separates can
+    /// still merge. The authored set is unioned into the result, so the outcome is correct,
+    /// but auto seams near a manual cut may be placed as if it were absent.
+    public func proposedSeams(respecting authored: [UInt32] = []) throws -> [UInt32] {
+        // The barrier rides the handle, so it has to be set before asking.
+        try setSeamEdges(authored)
+        var count = 0
+        try check(cyber_mesh_propose_seams(handle, nil, 0, &count))
+        guard count > 0 else { return [] }
+        var ids = [UInt32](repeating: 0, count: count)
+        var written = 0
+        try ids.withUnsafeMutableBufferPointer { buffer in
+            try check(cyber_mesh_propose_seams(handle, buffer.baseAddress, count, &written))
+        }
+        return Array(ids.prefix(written))
+    }
+
     /// Whether this mesh carries a UV layout at all — the cheap question, without
     /// materialising the coordinates.
     public var hasUVLayout: Bool {

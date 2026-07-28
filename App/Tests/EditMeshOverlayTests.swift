@@ -448,4 +448,27 @@ struct EditMeshOverlayTests {
         // Fully settled differs most from the un-revealed start.
         #expect(startVsSettled > midVsStart)
     }
+
+    // MARK: - Seam proposals (task 6.5)
+
+    @Test("A proposal uploads through the renderer even with NO document annotations")
+    func bareProposalUploadsThroughTheRenderer() throws {
+        let renderer = try makeRenderer()
+        let mesh = try seedMesh()
+        let edges = (0..<UInt32(mesh.edgeCount)).filter { mesh.edgeEndpoints(of: $0) != nil }
+        try #require(!edges.isEmpty)
+
+        // No annotations at all — the state a fresh cage is in when the first thing the
+        // artist does is ask where to cut. The gate used to require a non-nil annotation
+        // set, so the amber never reached the GPU in exactly this case.
+        renderer.proposedSeams = Array(edges.prefix(2))
+        renderer.loadOverlay(mesh: mesh, annotations: nil)
+        #expect(renderer.overlayPath.hasAnnotations)
+
+        // Clearing the proposal with still no annotations must tear the pass back down,
+        // rather than leaving the last suggestion resident.
+        renderer.proposedSeams = []
+        renderer.setOverlayAnnotations(nil, of: mesh)
+        #expect(!renderer.overlayPath.hasAnnotations)
+    }
 }

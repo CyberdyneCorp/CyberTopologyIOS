@@ -355,7 +355,10 @@ extension MeshEditController {
     /// reporting whether anything changed (the menu items disable
     /// themselves off the same answer rather than journaling no-ops).
     @discardableResult
-    private func applyAnnotationEditNow(
+    /// Not `private`: `MeshEditUV.swift` accepts a seam proposal through this same
+    /// no-op-aware path, and duplicating it there would mean two places deciding whether an
+    /// annotation change is worth journaling.
+    func applyAnnotationEditNow(
         verb: String, context: Context? = nil,
         _ transform: (MeshAnnotations) -> MeshAnnotations
     ) -> Bool {
