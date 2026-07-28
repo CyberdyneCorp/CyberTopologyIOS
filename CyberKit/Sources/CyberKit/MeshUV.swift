@@ -112,10 +112,31 @@ extension Mesh {
         parameters: AtlasParameters = AtlasParameters()
     ) throws -> (mesh: Mesh, report: AtlasReport) {
         let copy = try duplicated()
+        return (copy, try copy.unwrapInPlace(parameters: parameters))
+    }
+
+    /// Unwraps THIS mesh in place, returning what the atlas produced.
+    ///
+    /// The in-place primitive, because that is what the engine does and what a journaled
+    /// whole-mesh command needs: `runBatchMeshEdit` and the brushes mutate the live mesh
+    /// handle and let a `MeshEditTransaction` capture the before/after payloads around it.
+    /// A copy-returning-only API could not participate in that — the transaction pairs the
+    /// geometry change with the annotations it orphaned into ONE undo step, and it has to
+    /// wrap the mutation, not receive a replacement object.
+    ///
+    /// `unwrapped(parameters:)` is the non-mutating convenience over this, for callers
+    /// previewing a layout rather than committing one.
+    ///
+    /// On failure the engine leaves the mesh alone and this throws, so a refused unwrap
+    /// does not half-apply.
+    @discardableResult
+    public func unwrapInPlace(
+        parameters: AtlasParameters = AtlasParameters()
+    ) throws -> AtlasReport {
         var raw = parameters.raw
         var result = CyberAtlasResult()
-        try check(cyber_uv_atlas(copy.handle, &raw, &result))
-        return (copy, AtlasReport(result))
+        try check(cyber_uv_atlas(handle, &raw, &result))
+        return AtlasReport(result)
     }
 
     /// Per-corner UV coordinates over the same triangulation `withRenderBuffers`'

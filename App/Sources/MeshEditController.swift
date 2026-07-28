@@ -158,6 +158,11 @@ final class MeshEditController {
     /// palette control; re-tagging a loop in a DIFFERENT colour recolours
     /// it, re-tagging in the SAME colour clears it.
     var activeTagColor: UInt8 = MeshAnnotations.defaultTagColor
+    /// Backing storage for the UV unwrap's report and refusal (task 6.1). Here rather than
+    /// in `MeshEditUV.swift` only because a Swift extension cannot add stored properties;
+    /// the behaviour lives with the action.
+    var unwrapReportStorage: Mesh.AtlasReport?
+    var unwrapRefusalStorage: String?
     /// Loop Info sink (task 4.3, spec: "Loop Info inspection"): fired when
     /// the hovered interior edge's loop metrics change; nil clears the
     /// chip.

@@ -467,6 +467,10 @@ final class ViewportInputModel {
         case .outliner:
             showsOutliner = true
             return false
+        // Task 6.1: journals one meshEdit; the report and any refusal are read back off
+        // the controller by the view, so a refused tap is sayable rather than silent.
+        case .unwrapUVs:
+            return meshEditor?.runUnwrapUVs() ?? false
         // Phase 5: propose an Auto-Retopo ghost (accepted via the bar/tap).
         case .autoRetopo:
             return requestAutoRetopo()

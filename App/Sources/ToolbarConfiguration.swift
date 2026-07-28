@@ -88,6 +88,8 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     case toggleLoopInfoPin
     /// Task 8.1: opens the scene outliner (show / solo / lock, groups, per-object stats).
     case outliner
+    /// Task 6.1: unwraps the EditMesh into a UV atlas as one journaled step.
+    case unwrapUVs
     // add-weave-region-selection: Weave Fill arms the fill tool; clearWeaveFill drops
     // a pending proposal and its painted extent (journals nothing either way).
     case weaveFill
@@ -145,7 +147,7 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
             // and only isImmediateCommand routes there. It stayed reachable through its
             // dedicated affordances in DocumentEditorView, which is why nobody noticed.
             // `ToolbarRoutingTests` now asserts the invariant generally, not just this case.
-            .autoRetopo:
+            .autoRetopo, .unwrapUVs:
             true
         default:
             false

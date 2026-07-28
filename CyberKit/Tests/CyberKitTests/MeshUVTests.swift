@@ -101,6 +101,91 @@ struct MeshUVTests {
         if report.fallbackCharts > 0 { #expect(summary.contains("fallback")) }
     }
 
+    @Test("UVs SURVIVE the payload round-trip — the journaled unwrap depends on it")
+    func uvsSurvivePayloadRoundTrip() throws {
+        // Load-bearing for task 4: an unwrap is journaled as a payload before/after pair,
+        // so if `payloadData()` dropped UVs the undo history would silently discard the
+        // layout and redo would restore a mesh with no UVs at all. Verified rather than
+        // assumed — the payload is OBJ at six significant digits, so this also confirms the
+        // precision is adequate for coordinates in [0,1].
+        let (unwrapped, report) = try cube().unwrapped()
+        let original = try #require(unwrapped.uvCoordinates())
+
+        let restored = try Mesh(payloadData: try unwrapped.payloadData())
+        let roundTripped = try #require(
+            restored.uvCoordinates(),
+            "UVs were LOST through the payload round-trip — a journaled unwrap cannot work"
+        )
+        #expect(roundTripped.count == original.count)
+
+        // Six significant digits on values in [0,1], so compare with a tolerance rather
+        // than bitwise: exact equality is not the contract here, unlike the interface
+        // positions a region solve guarantees.
+        var worst: Float = 0
+        for (a, b) in zip(original, roundTripped) {
+            worst = max(worst, max(abs(a.x - b.x), abs(a.y - b.y)))
+        }
+        #expect(worst < 1e-4, "worst UV drift through the round-trip was \(worst)")
+        #expect(report.chartCount > 0)
+    }
+
+    // MARK: - Ring reconstruction (de-risks the 2D view before any of it is written)
+
+    @Test("The corner stream reconstructs AUTHORED face rings, with no fan diagonal")
+    func cornerStreamReconstructsAuthoredRings() throws {
+        // The 2D UV view must draw a quad as FOUR edges, not two triangles with a
+        // diagonal, matching what the 3D wireframe is careful to do. This proves the
+        // reconstruction works from the documented fan contract rather than from a
+        // heuristic: `fanTriangulate` emits (v0, v[k-1], v[k]) for k = 2..<n, and the UV
+        // emission runs in lockstep, so a face's authored ring is corners [0],[1],[2] of
+        // its first triangle plus corner [2] of each later triangle.
+        //
+        // The rejected alternative was testing vertex pairs against the mesh-wide
+        // `edgeIndices()` set. That set answers "is this pair an edge SOMEWHERE", not "an
+        // edge of THIS face", so a fan diagonal that coincides with a real edge elsewhere
+        // would be drawn — a heuristic with a real false-positive mode where the contract
+        // gives a proof.
+        let (unwrapped, _) = try cube().unwrapped()
+        let uvs = try #require(unwrapped.uvCoordinates())
+
+        // Alignment must be CHECKED, not assumed: the engine only carries UVs for a face
+        // when its corner count matches, so a mismatch here would silently shear every
+        // ring by one corner.
+        let faces = unwrapped.liveFaceIDs()
+        let expectedCorners = faces.reduce(0) { total, face in
+            total + max(0, (unwrapped.faceVertices(face).count - 2) * 3)
+        }
+        #expect(uvs.count == expectedCorners, "corner stream and face valences disagree")
+
+        var cursor = 0
+        var quadsChecked = 0
+        for face in faces {
+            let valence = unwrapped.faceVertices(face).count
+            guard valence >= 3 else { continue }
+            let triangles = valence - 2
+            var ring: [SIMD2<Float>] = [uvs[cursor], uvs[cursor + 1], uvs[cursor + 2]]
+            for triangle in 1..<max(triangles, 1) {
+                ring.append(uvs[cursor + triangle * 3 + 2])
+            }
+            cursor += triangles * 3
+
+            #expect(ring.count == valence, "reconstructed ring has the wrong arity")
+            if valence == 4 {
+                // Four DISTINCT corners: a diagonal would repeat one.
+                var distinct: [SIMD2<Float>] = []
+                for uv in ring where !distinct.contains(where: {
+                    abs($0.x - uv.x) < 1e-6 && abs($0.y - uv.y) < 1e-6
+                }) {
+                    distinct.append(uv)
+                }
+                #expect(distinct.count == 4, "a quad ring collapsed — a diagonal leaked in")
+                quadsChecked += 1
+            }
+        }
+        #expect(cursor == uvs.count, "the ring walk did not consume the whole stream")
+        #expect(quadsChecked > 0, "the cube fixture should have contributed quads")
+    }
+
     @Test("Atlas defaults come from the engine rather than being invented in Swift")
     func defaultsComeFromTheEngine() {
         let parameters = Mesh.AtlasParameters()

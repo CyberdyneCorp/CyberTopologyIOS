@@ -406,6 +406,19 @@ extension EditorAction {
                     + "protecting. Painting the same faces again thaws them.",
                 demoFrames: ["snowflake", "square.grid.2x2"]
             )
+        case .unwrapUVs:
+            GalleryEntry(
+                title: "Unwrap UVs",
+                symbol: "square.grid.3x3.topleft.filled",
+                gesture: "Command",
+                notes: "Cuts the EditMesh into charts, flattens each and packs them into "
+                    + "the unit square, in one undoable step. The result is reported "
+                    + "rather than silently applied — chart count, seam count, distortion "
+                    + "and how much of the square is covered are what tell you whether a "
+                    + "layout is worth keeping, and flipped or planar-fallback charts are "
+                    + "named because those make it unusable.",
+                demoFrames: ["square.grid.3x3.topleft.filled", "square.on.square.dashed"]
+            )
         case .outliner:
             GalleryEntry(
                 title: "Outliner",

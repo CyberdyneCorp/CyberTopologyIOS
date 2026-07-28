@@ -42,11 +42,18 @@ no 2D view is possible, so nothing downstream is worth writing until it exists.
 
 ## 4. One-tap unwrap
 
-- [ ] 4.1 An action that unwraps the EditMesh as ONE journaled step.
-- [ ] 4.2 Report chart count, seam count, max/RMS distortion and packed area. A silent
+- [x] 4.1 An action that unwraps the EditMesh as ONE journaled step.
+- [x] 4.2 Report chart count, seam count, max/RMS distortion and packed area. A silent
       success tells the artist nothing about whether the layout is usable.
-- [ ] 4.3 A failed unwrap refuses with a stated reason and leaves the mesh unchanged.
-- [ ] 4.4 Reached through the Action Gallery like every other non-default action.
+- [x] 4.3 A failed unwrap refuses with a stated reason and leaves the mesh unchanged. Three
+      outcomes are distinguished, not two: committed, NO-OP ("Already unwrapped — the layout
+      is unchanged") and genuine failure. The middle case was found by a test I had written
+      wrong — I expected a second unwrap to journal a second step, but the atlas is
+      deterministic, so identical parameters give byte-identical output and
+      `MeshEditTransaction.command` correctly journals nothing. Reporting that as "could not
+      unwrap" would have been a lie told to the artist about a layout sitting in front of
+      them.
+- [x] 4.4 Reached through the Action Gallery like every other non-default action.
 
 ## 5. Close out
 
