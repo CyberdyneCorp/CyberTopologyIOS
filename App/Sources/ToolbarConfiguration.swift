@@ -136,7 +136,16 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     var isImmediateCommand: Bool {
         switch self {
         case .clearPins, .clearLoopTags, .clearFrozen, .toggleLoopInfoPin, .outliner,
-            .toggleSymmetry, .applySymmetry, .resymmetrize, .toggleAutoRelax, .batchCommands:
+            .toggleSymmetry, .applySymmetry, .resymmetrize, .toggleAutoRelax, .batchCommands,
+            // BUG FIX: `.autoRetopo` was missing here for its whole life. It has no `tool`,
+            // so ActionToolbarView routed it to `gestureActionButton`, whose entire body is
+            // `onOpenGallery(action)` — a slot holding Phase 5's headline action opened the
+            // help panel and never ran the solve, though ViewportInputModel.runCommand had
+            // a working `case .autoRetopo` all along. Only CommandButton calls runCommand,
+            // and only isImmediateCommand routes there. It stayed reachable through its
+            // dedicated affordances in DocumentEditorView, which is why nobody noticed.
+            // `ToolbarRoutingTests` now asserts the invariant generally, not just this case.
+            .autoRetopo:
             true
         default:
             false
