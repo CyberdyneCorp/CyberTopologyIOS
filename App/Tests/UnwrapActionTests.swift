@@ -576,4 +576,99 @@ struct UnwrapActionTests {
         #expect(try harness.editMesh().uvCoordinates() == settled)
         #expect(harness.editor.lastUnwrapRefusal?.contains("Already arranged") == true)
     }
+
+    // MARK: - UV sets (6.7a)
+
+    @Test("Creating a UV set journals ONE step and writes a sidecar")
+    func createUVSetJournalsOnce() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.runUnwrapUVs())
+        let committed = harness.committed.count
+        let object = try #require(harness.editObject)
+        #expect(harness.bundle.payloads[object.uvSetsFile] == nil, "no sidecar yet")
+
+        #expect(harness.editor.runCreateUVSet(named: "lightmap"))
+        #expect(harness.committed.count == committed + 1)
+
+        // The sidecar is what makes a second set survive a save: the OBJ payload carries one
+        // `vt` channel and cannot hold it.
+        let sidecar = try #require(harness.bundle.payloads[object.uvSetsFile])
+        #expect(!sidecar.isEmpty)
+        #expect(harness.editor.uvSets().names == ["default", "lightmap"])
+        #expect(harness.editor.uvSets().active == "default")
+    }
+
+    @Test("Undoing a set creation removes the sidecar entirely")
+    func undoRemovesTheSidecar() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.runUnwrapUVs())
+        let object = try #require(harness.editObject)
+
+        #expect(harness.editor.runCreateUVSet(named: "lightmap"))
+        #expect(harness.bundle.payloads[object.uvSetsFile] != nil)
+
+        harness.undo()
+        // Removed, not left as empty bytes: a document with only the default set must carry no
+        // sidecar file at all.
+        #expect(harness.bundle.payloads[object.uvSetsFile] == nil)
+    }
+
+    @Test("Activating a set is ONE undo that restores BOTH the layout and the set list")
+    func activateIsOneCompoundUndo() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.runUnwrapUVs())
+        #expect(harness.editor.runCreateUVSet(named: "lightmap"))
+        // Make the sets differ, so switching genuinely changes the active layout.
+        #expect(harness.editor.runTransformIsland(
+            containing: 0, transform: UVIslandGesture.Transform(translate: SIMD2(0.08, 0))
+        ))
+        let defaultUVs = try #require(try harness.editMesh().uvCoordinates())
+        let depth = harness.bundle.journal.depth
+
+        #expect(harness.editor.runActivateUVSet(named: "lightmap"))
+        #expect(harness.bundle.journal.depth == depth + 1, "one entry for one switch")
+        let switched = try #require(try harness.editMesh().uvCoordinates())
+        #expect(switched != defaultUVs)
+
+        // ONE undo must restore both halves. If the sidecar and the payload were journaled
+        // separately, an undo could put the geometry's UVs back while leaving the set list saying a
+        // different set is active — and the two would disagree about which layout is current.
+        harness.undo()
+        #expect(try harness.editMesh().uvCoordinates() == defaultUVs)
+        let mesh = try harness.editMesh()
+        #expect(mesh.activeUVSetName() == "default")
+        #expect(mesh.uvSetNames() == ["default", "lightmap"])
+    }
+
+    @Test("UV set commands refuse without an EditMesh or a layout, and journal nothing")
+    func uvSetCommandRefusals() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        // No layout yet: there is nothing to copy into a new set.
+        #expect(!harness.editor.runCreateUVSet(named: "lightmap"))
+        #expect(harness.committed.isEmpty)
+
+        #expect(harness.editor.runUnwrapUVs())
+        // Duplicate and invalid names are refused without journaling.
+        let committed = harness.committed.count
+        #expect(!harness.editor.runCreateUVSet(named: "default"))
+        #expect(!harness.editor.runCreateUVSet(named: "a:b"))
+        #expect(harness.committed.count == committed)
+    }
+
+    @Test("Deleting the ACTIVE set is refused, so the mesh always has a layout")
+    func cannotDeleteTheActiveSet() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.runUnwrapUVs())
+        #expect(harness.editor.runCreateUVSet(named: "lightmap"))
+
+        #expect(!harness.editor.runDeleteUVSet(named: "default"))
+        #expect(try harness.editMesh().hasUVLayout)
+        #expect(harness.editor.runDeleteUVSet(named: "lightmap"))
+        #expect(harness.editor.uvSets().names == ["default"])
+    }
 }

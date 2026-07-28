@@ -150,6 +150,10 @@ final class MeshEditController {
     /// go through the live-edit refresh that re-uploads the mesh. Its only effect is that the
     /// amber overlay redraws.
     var onSeamProposalChanged: (([UInt32]) -> Void)?
+    /// Reads a sidecar file from the document (6.7a). Needed because a UV-set command has to pin
+    /// the BEFORE bytes for byte-exact revert, and the controller has no document access of its
+    /// own — the same shape as `contextProvider` supplying the payload.
+    var onReadSidecar: ((String) -> Data?)?
     /// Live edits must be thrown away (cancelled stroke / failed commit):
     /// reload the live mesh from the document payload.
     var onDiscardLiveEdits: (() -> Void)?

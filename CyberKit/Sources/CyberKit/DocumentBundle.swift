@@ -49,6 +49,13 @@ public struct DocumentManifest: Codable, Equatable, Sendable {
         public var role: Role
         /// File name of this object's opaque payload inside `objects/`.
         public var payloadFile: String
+        /// Filename of this object's UV-set sidecar.
+        ///
+        /// DERIVED from the id rather than stored, for the same reason a UDIM tile is derived: a
+        /// stored filename is a second source of truth that can disagree with the object it
+        /// belongs to. `DocumentBundle.payloads` reads every file in the objects directory and
+        /// explicitly tolerates extras, so the sidecar persists with no schema change at all.
+        public var uvSetsFile: String { "\(id.uuidString).uvsets" }
         public var counts: Counts?
         /// Monotonic edit generation, bumped by every `meshEdit` command so
         /// equal-count edits (a moved vertex) still change the manifest
@@ -237,7 +244,10 @@ public struct DocumentBundle: Equatable, Sendable {
                 objectName: object.name, payloadFile: object.payloadFile
             )
         }
-        return try Mesh(payloadData: data)
+        // Payload AND sidecar together — see `Mesh.fromPayload` for why they must never be
+        // separated: the OBJ payload carries one `vt` channel, so a payload-only load silently
+        // drops every UV set but the active one.
+        return try Mesh.fromPayload(data, uvSets: payloads[object.uvSetsFile])
     }
 
     // MARK: - FileWrapper (dis)assembly

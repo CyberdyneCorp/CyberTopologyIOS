@@ -33,6 +33,11 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
     /// apply and revert restore it verbatim. Topology and payload bytes
     /// are untouched.
     case annotationEdit(AnnotationEdit)
+    /// UV-set sidecar change (openspec add-uv-sets). Carries whole before/after blobs, matching
+    /// `meshEdit`'s shape: a UV set list at cage scale is small, and exact bytes make revert
+    /// byte-exact. Compounded with a `meshEdit` when geometry and sets change together, so one
+    /// undo restores both — the same discipline annotations already follow.
+    case uvSetEdit(UVSetEdit)
     /// Symmetry-settings change (task 4.4): axes, origin, radial count.
     /// Journaled like `setStage` — it changes what the NEXT authoring
     /// stroke does, so undo has to step back over it or the history would
@@ -66,6 +71,26 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
     /// Indirect: the payload contains `DocumentCommand` values, so the enum
     /// is recursive.
     indirect case compound(verb: String, commands: [DocumentCommand])
+
+    /// Payload of a `uvSetEdit` command. `before`/`after` are whole sidecar blobs; nil means the
+    /// object had (or should have) no sidecar at all.
+    public struct UVSetEdit: Codable, Equatable, Sendable {
+        public let objectID: UUID
+        public let sidecarFile: String
+        public let verb: String
+        public let before: Data?
+        public let after: Data?
+
+        public init(
+            objectID: UUID, sidecarFile: String, verb: String, before: Data?, after: Data?
+        ) {
+            self.objectID = objectID
+            self.sidecarFile = sidecarFile
+            self.verb = verb
+            self.before = before
+            self.after = after
+        }
+    }
 
     /// Payload of a `meshEdit` command. `before`/`after` are complete
     /// engine payload snapshots of the edited object — exact revert data at
@@ -200,6 +225,14 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
             bundle.updateObject(id: edit.objectID) { object in
                 object.annotations = edit.after
             }
+        case .uvSetEdit(let edit):
+            // nil means "no sidecar": REMOVED rather than written as empty, so a document that
+            // has only the default set carries no sidecar file at all.
+            if let after = edit.after {
+                bundle.payloads[edit.sidecarFile] = after
+            } else {
+                bundle.payloads.removeValue(forKey: edit.sidecarFile)
+            }
         case .setSymmetry(_, let to):
             bundle.manifest.symmetry = to
         case .objectStateEdit(let edit):
@@ -237,6 +270,12 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
             bundle.updateObject(id: edit.objectID) { object in
                 object.annotations = edit.before
             }
+        case .uvSetEdit(let edit):
+            if let before = edit.before {
+                bundle.payloads[edit.sidecarFile] = before
+            } else {
+                bundle.payloads.removeValue(forKey: edit.sidecarFile)
+            }
         case .setSymmetry(let from, _):
             bundle.manifest.symmetry = from
         case .objectStateEdit(let edit):
@@ -271,6 +310,11 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
         switch self {
         case .meshEdit(let edit):
             return [edit.objectID]
+        // A UV-set edit rewrites a payload FILE belonging to the object, so a lock must refuse it
+        // exactly as it refuses a geometry edit. "Locked" means the object's data does not change;
+        // letting UV sets through because they live in a different file would be a hole in that.
+        case .uvSetEdit(let edit):
+            return [edit.objectID]
         case .compound(_, let commands):
             return commands.reduce(into: Set<UUID>()) { $0.formUnion($1.payloadMutatedObjectIDs) }
         case .addObject, .removeObject, .annotationEdit, .setSymmetry, .setStage,
@@ -296,9 +340,11 @@ public enum DocumentCommand: Codable, Equatable, Sendable {
             return commands.reversed().lazy
                 .compactMap { $0.resultingPayload(forObject: object) }.first
         // objectStateEdit changes the manifest entry only — visibility, lock, group,
-        // name — and never the payload bytes, so it reports nil like the rest.
+        // name — and never the payload bytes, so it reports nil like the rest. uvSetEdit
+        // touches the SIDECAR, not the geometry payload these bytes identify, so it reports nil
+        // too: a caller matching its own geometry commit must not match on a UV-set change.
         case .addObject, .removeObject, .annotationEdit, .setSymmetry, .setStage,
-            .objectStateEdit:
+            .objectStateEdit, .uvSetEdit:
             return nil
         }
     }

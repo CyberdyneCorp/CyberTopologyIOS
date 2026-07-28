@@ -466,6 +466,11 @@ struct MetalViewport: UIViewRepresentable {
             meshEditor.onSeamProposalChanged = { [weak self] proposed in
                 self?.syncSeamProposal(proposed)
             }
+            // 6.7a: sidecar reads go through the same bundle provider every other document read
+            // uses, so a UV-set command pins the true current bytes rather than a cached copy.
+            meshEditor.onReadSidecar = { [weak self] file in
+                self?.bundleProvider?().payloads[file]
+            }
             // Authored guide strokes changed (add-guide-stroke-authoring):
             // refresh the amber guide-line overlay.
             meshEditor.onGuidesChanged = { [weak self] in
@@ -881,7 +886,7 @@ struct MetalViewport: UIViewRepresentable {
                 }
                 return
             }
-            guard let mesh = try? Mesh(payloadData: payload) else {
+            guard let mesh = try? liveEditMesh(payload: payload, object: object) else {
                 // Deserialize failure: clear ALL four snapshot fields —
                 // leaving `editObject` set would break the one-consistent-
                 // snapshot invariant (brush verbs must go inert, and the
@@ -1047,11 +1052,25 @@ struct MetalViewport: UIViewRepresentable {
             renderer.loadSubdivisionPreview(mesh: preview)
         }
 
+        /// Builds a live EditMesh from payload bytes, restoring its UV-set sidecar (6.7a).
+        ///
+        /// EVERY live-mesh rebuild must go through here. The payload is OBJ with one `vt` channel,
+        /// so a payload-only load drops every stored UV set — and a mesh edit round-trips through
+        /// the payload by design, so that loss would happen on the next edit after any set was
+        /// created. A test caught exactly that.
+        private func liveEditMesh(
+            payload: Data, object: DocumentManifest.Object?
+        ) throws -> Mesh {
+            let sidecar = object.flatMap { bundleProvider?().payloads[$0.uvSetsFile] }
+            return try Mesh.fromPayload(payload, uvSets: sidecar)
+        }
+
         /// Reloads the live EditMesh from the pinned document payload —
         /// the discard path for cancelled/failed verb strokes (task 3.3).
         private func reloadLiveEditMesh() {
             guard let renderer else { return }
-            guard let payload = overlayPayload, let mesh = try? Mesh(payloadData: payload)
+            guard let payload = overlayPayload,
+                let mesh = try? liveEditMesh(payload: payload, object: editObject)
             else {
                 recognizerEditMesh = nil
                 renderer.clearOverlay()
@@ -1085,7 +1104,7 @@ struct MetalViewport: UIViewRepresentable {
             }
             guard editMesh.id != ghostPreviewObjectID || payload != ghostPreviewPayload
             else { return }
-            guard let mesh = try? Mesh(payloadData: payload) else {
+            guard let mesh = try? liveEditMesh(payload: payload, object: editMesh) else {
                 clearGhostPreview(renderer: renderer)
                 return
             }

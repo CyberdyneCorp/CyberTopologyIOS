@@ -240,6 +240,90 @@ extension MeshEditController {
         }
     }
 
+    // MARK: - UV sets (6.7a)
+
+    /// Every UV set name on the EditMesh, and which is active.
+    func uvSets() -> (names: [String], active: String?) {
+        guard let mesh = contextProvider?()?.editMesh else { return ([], nil) }
+        return (mesh.uvSetNames(), mesh.activeUVSetName())
+    }
+
+    /// Creates a UV set as ONE journaled step.
+    @discardableResult
+    func runCreateUVSet(named name: String) -> Bool {
+        uvSetCommand(verb: "uv.createSet") { try $0.createUVSet(named: name) }
+    }
+
+    /// Activates a UV set as ONE journaled step.
+    @discardableResult
+    func runActivateUVSet(named name: String) -> Bool {
+        uvSetCommand(verb: "uv.activateSet") { try $0.activateUVSet(named: name) }
+    }
+
+    /// Deletes a UV set as ONE journaled step.
+    @discardableResult
+    func runDeleteUVSet(named name: String) -> Bool {
+        uvSetCommand(verb: "uv.deleteSet") { try $0.deleteUVSet(named: name) }
+    }
+
+    /// Renames a UV set as ONE journaled step.
+    @discardableResult
+    func runRenameUVSet(from: String, to: String) -> Bool {
+        uvSetCommand(verb: "uv.renameSet") { try $0.renameUVSet(from: from, to: to) }
+    }
+
+    /// The shared shape of every UV-set command.
+    ///
+    /// Journals a COMPOUND of the sidecar change and — when activating a set swapped the active
+    /// layout — the resulting `meshEdit`, so one undo restores both. Splitting them would let an
+    /// undo put the geometry payload's UVs back while leaving the set list describing a different
+    /// active set, and the two would disagree about which layout is current.
+    private func uvSetCommand(verb: String, _ body: (Mesh) throws -> Void) -> Bool {
+        unwrapRefusalStorage = nil
+        guard allowsWholeMeshCommand() else {
+            unwrapRefusalStorage = "Finish the current stroke first"
+            return false
+        }
+        guard let context = contextProvider?(), let object = context.editObject,
+            let mesh = context.editMesh, let payload = context.editPayload
+        else {
+            unwrapRefusalStorage = "No EditMesh — retopologize first"
+            return false
+        }
+        let sidecarBefore = onReadSidecar?(object.uvSetsFile)
+        let transaction = MeshEditTransaction(
+            object: object, mesh: mesh, currentPayload: payload
+        )
+        lastCommit = nil
+        journalOrDiscard(verb: verb) {
+            try body(mesh)
+            onLiveEdit?()
+            let sidecarAfter = try mesh.uvSetsSidecarData()
+            var commands: [DocumentCommand] = []
+            // The geometry payload changes only when the ACTIVE set changed, so this is nil for a
+            // create or a delete — and a compound of one command is exactly the same entry as that
+            // command alone.
+            if let meshCommand = try transaction.command(verb: verb) { $0 } {
+                commands.append(meshCommand)
+            }
+            guard sidecarAfter != sidecarBefore || !commands.isEmpty else { return nil }
+            commands.append(
+                .uvSetEdit(
+                    DocumentCommand.UVSetEdit(
+                        objectID: object.id, sidecarFile: object.uvSetsFile, verb: verb,
+                        before: sidecarBefore, after: sidecarAfter
+                    )
+                )
+            )
+            return commands.count == 1 ? commands[0] : .compound(verb: verb, commands: commands)
+        }
+        guard lastCommit != nil else {
+            unwrapRefusalStorage = "Could not change UV sets"
+            return false
+        }
+        return true
+    }
+
     /// Occupied UDIM tiles, for the panel's readout. Empty when there is no layout.
     func udimTiles() -> [Int32] {
         guard let context = contextProvider?(), let mesh = context.editMesh else { return [] }

@@ -124,7 +124,7 @@ landing, where rivals are undefined rather than slower — which needs no compet
 
 ### v0.3 — Public beta (target: Jun 2027) — "The pipeline's second stage"
 
-#### Phase 6 status — 8 of 8 closed, 2 follow-ups open (6.1, 6.1a, 6.2b, 6.3, 6.4, 6.5, 6.6, 6.7 done; 6.2 all but its 2D half)
+#### Phase 6 status — 9 of 10 closed (6.1, 6.1a, 6.2b, 6.3, 6.4, 6.5, 6.6, 6.7, 6.7a done; 6.2 all but its 2D half; 6.3b open)
 
 The entry point landed as `add-uv-stage-foundation`: engine UV READBACK (the real gate — the
 atlas could write per-corner UVs that nothing could read, so a 2D view was impossible), the
@@ -173,11 +173,16 @@ with no Target"), and snapping was already disabled without a Target. Its split-
 produced the one regression a unit test could not have caught: attaching the gesture above the
 viewport broke a camera UI test, so it now lives on the 2D panel where it cannot compete.
 
-Two follow-ups remain, both with stated blockers: **6.3b** (UV3D on-surface pinch — the
-arbitration mechanism turned out to already exist as `cameraFeedsArmedTool`, so the real gap is
-that NO textured render path exists for the "live texture feedback" it is specified against) and
-**6.7a** (multiple UV sets — the OBJ payload carries one `vt` channel, so it needs sidecar
-persistence, riding the `compound` command mechanism annotations already use). The seam half of 6.2's original scoping claim was wrong
+**6.7a landed**, and the sidecar needed no schema change at all — `DocumentBundle` already reads
+every file in the objects directory and tolerates extras. It also produced the two most instructive
+defects of the phase, both the same trap of keeping two sources of truth for one fact: every mesh
+edit was destroying stored UV sets (the OBJ payload round trip drops non-`vt` columns, and the live
+handle was rebuilt from payload bytes in three places that skipped the sidecar), and storing the
+active set's data in the sidecar let a stale copy overwrite newer edits.
+
+One follow-up remains: **6.3b** (UV3D on-surface pinch). Its arbitration mechanism turned out to
+already exist as `cameraFeedsArmedTool`, so the real gap is that NO textured render path exists for
+the "live texture feedback" it is specified against. The seam half of 6.2's original scoping claim was wrong
 and is recorded as such.
 
 Open TestFlight. This is the release that starts the clock against CozyBlanket Pro.
