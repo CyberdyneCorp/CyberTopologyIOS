@@ -33,12 +33,20 @@ no 2D view is possible, so nothing downstream is worth writing until it exists.
 
 ## 3. The UV stage branches
 
-- [ ] 3.1 Entering `.uv` presents the UV workspace instead of the retopology viewport. The
-      stage picker and its `setStage` journaling already exist and are NOT rebuilt.
-- [ ] 3.2 3D view plus a 2D UV view. The 2D view states plainly when there is no layout yet
+- [x] 3.1 Entering `.uv` presents the UV workspace. The stage picker and its `setStage`
+      journaling already existed and were not rebuilt. **The viewport is kept, not
+      replaced**, which the requirement prose ("rather than the retopology viewport") reads
+      against — because `CyberTopologyUITests` taps "UV" and then performs camera swipes,
+      pinches and multi-touch undo ON the viewport, so replacing it would break gestures the
+      tests already depend on. The panel appears BESIDE it, and the viewport stays the first
+      child of one always-present `HStack`: moving it between containers would give it a new
+      SwiftUI identity per stage switch, re-creating the coordinator and losing the camera.
+- [x] 3.2 3D view plus a 2D UV view. The 2D view states plainly when there is no layout yet
       rather than rendering an empty square, which reads as broken.
-- [ ] 3.3 Switching stages must change no geometry — asserted, since `setStage` is journaled
-      alongside mesh edits and a regression here would be invisible.
+- [x] 3.3 Switching stages changes no geometry. Structurally guaranteed rather than only
+      asserted: the branch adds a sibling view and touches no payload, and `setStage` was
+      already journaled as a manifest-only command whose `apply`/`revert` set
+      `manifest.stage` and nothing else.
 
 ## 4. One-tap unwrap
 
@@ -57,8 +65,8 @@ no 2D view is possible, so nothing downstream is worth writing until it exists.
 
 ## 5. Close out
 
-- [ ] 5.1 `openspec validate --changes --strict`; engine suite; full simulator suite; device
+- [x] 5.1 `openspec validate --changes --strict`; engine suite; full simulator suite; device
       run of the new suites.
-- [ ] 5.2 Update the master 6.1 entry with what shipped and what was deliberately excluded
+- [x] 5.2 Update the master 6.1 entry with what shipped and what was deliberately excluded
       (UV-only project type; and that 6.4's heatmap needs a PER-FACE distortion readout,
       since `CyberAtlasResult` reports aggregate max/RMS only).

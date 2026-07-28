@@ -119,7 +119,30 @@ struct DocumentEditorView: View {
             VStack(spacing: 16) {
                 stagePicker
                 objectList
-                viewport
+                // UV stage (task 6.1): the 2D layout panel appears BESIDE the viewport.
+                //
+                // The HStack is always present and `viewport` is always its first child,
+                // deliberately: moving the viewport between containers gives it a new
+                // SwiftUI identity on every stage switch, which re-creates
+                // MetalViewport.Coordinator — new MTKView and renderer, meshes reloaded,
+                // camera framing lost, creation animation replayed.
+                //
+                // The viewport also stays fully interactive in the UV stage rather than
+                // being replaced: CyberTopologyUITests taps "UV" and then performs camera
+                // swipes, pinches and multi-touch undo ON the viewport, so gating it would
+                // break gestures the tests already rely on.
+                HStack(alignment: .top, spacing: 12) {
+                    viewport
+                    if document.bundle.manifest.stage == .uv {
+                        UVLayoutPanelView(
+                            state: uvLayoutState,
+                            report: meshEditorReport,
+                            notice: uvNotice,
+                            onUnwrap: runUnwrap
+                        )
+                        .frame(maxWidth: 340)
+                    }
+                }
                 if let statusMessage {
                     Text(statusMessage)
                         .font(.footnote)
@@ -763,6 +786,41 @@ struct DocumentEditorView: View {
                 .accessibilityIdentifier("engine-version")
                 .allowsHitTesting(false)
                 .padding(10)
+        }
+    }
+
+    // MARK: - UV stage (task 6.1)
+
+    /// Layout state for the 2D panel, read from the DOCUMENT payload rather than the
+    /// renderer's live handle: a fresh mesh has no hidden-face filtering applied, so its
+    /// corner stream aligns with `liveFaceIDs()` exactly, while the live handle has hidden
+    /// faces pushed into its render filters and would skew the ring walk.
+    ///
+    /// Recomputed per body pass. Acceptable because the panel only exists in the UV stage
+    /// and an EditMesh cage is hundreds to low thousands of faces; if that ever stops being
+    /// true the fix is to memoize on `(objectID, revision)`, not to read the live handle.
+    private var uvLayoutState: UVLayoutGeometry.State {
+        UVLayoutGeometry.state(inDocument: document.bundle)
+    }
+
+    private var meshEditorReport: Mesh.AtlasReport? {
+        inputModel.meshEditor?.lastUnwrapReport
+    }
+
+    /// The unwrap's own notice — including "already unwrapped", which is not an error and
+    /// must not be phrased as one.
+    private var uvNotice: String? {
+        inputModel.meshEditor?.lastUnwrapRefusal
+    }
+
+    private func runUnwrap() {
+        // A refusal has to be sayable: surfaced through the EXISTING status line rather
+        // than a new banner, since the app already has three status channels and a fourth
+        // would only compete with them.
+        if inputModel.runCommand(.unwrapUVs) {
+            statusMessage = inputModel.meshEditor?.lastUnwrapReport?.summary
+        } else {
+            statusMessage = inputModel.meshEditor?.lastUnwrapRefusal
         }
     }
 

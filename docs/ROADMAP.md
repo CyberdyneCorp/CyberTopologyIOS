@@ -124,6 +124,20 @@ landing, where rivals are undefined rather than slower — which needs no compet
 
 ### v0.3 — Public beta (target: Jun 2027) — "The pipeline's second stage"
 
+#### Phase 6 status — 1 of 8 (6.1 done)
+
+The entry point landed as `add-uv-stage-foundation`: engine UV READBACK (the real gate — the
+atlas could write per-corner UVs that nothing could read, so a 2D view was impossible), the
+`.uv` stage branching to a workspace, and one-tap unwrap as a single journaled step. The 2D
+view is a SwiftUI `Canvas`, which also keeps 6.4's heatmap a fill rather than a new shader.
+
+Split out as **6.1a**: the UV-only project type and split-view gestures.
+
+What the next tasks still need from the engine, found while scoping: **6.2** has no API to
+SUPPLY seams and no corner pinning; **6.4**'s heatmap needs a PER-FACE distortion readout
+(`CyberAtlasResult` reports aggregate max/RMS only); **6.7** needs a document-model change,
+since the atlas writes ONE UV set into the unit square.
+
 Open TestFlight. This is the release that starts the clock against CozyBlanket Pro.
 
 - Phase 6: UV stage complete — 3D/2D seam authoring, X-gesture unwrap, on-surface pinch UV transform, distortion/texel-density heatmaps, auto-seam ghosts, Metal-compute packing, symmetry stacking, UDIMs, UV-only project type.
