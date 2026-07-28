@@ -37,6 +37,10 @@ struct UVLayoutPanelView: View {
     var onPack: () -> Void = {}
     var onDistribute: () -> Void = {}
     var onFlipIsland: (UInt32) -> Void = { _ in }
+    /// 6.7: occupied UDIM tiles and islands spanning more than one of them.
+    var udimTiles: [Int32] = []
+    var straddlingIslandCount: Int = 0
+    var onStackMirrored: () -> Void = {}
     /// What the fill shades by. Held by the caller so the choice survives a body pass.
     @Binding var mode: UVLayoutGeometry.HeatmapMode
     /// The texture size texel density is expressed against. A density figure is meaningless
@@ -123,9 +127,13 @@ struct UVLayoutPanelView: View {
                     .accessibilityIdentifier("uv-pack")
                 Button("Distribute", action: onDistribute)
                     .accessibilityIdentifier("uv-distribute")
+                Button("Stack mirrored", action: onStackMirrored)
+                    .accessibilityIdentifier("uv-stack-mirrored")
             }
             .buttonStyle(.bordered)
             .font(.caption)
+
+            udimRow
 
             if !flippedIslandFaces.isEmpty {
                 Text(
@@ -155,6 +163,31 @@ struct UVLayoutPanelView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("uv-packing-aids")
+    }
+
+    /// UDIM readout (6.7).
+    ///
+    /// Shown only once the layout uses more than one tile, because "tile 1001" is the default
+    /// every single-tile layout sits in and stating it would be noise. A STRADDLING island is
+    /// always called out: it is split across texture files on export, which is almost never
+    /// intended and is invisible in the 2D view without being named.
+    @ViewBuilder
+    private var udimRow: some View {
+        if udimTiles.count > 1 {
+            Text("UDIM tiles: " + udimTiles.map(String.init).joined(separator: ", "))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("uv-udim-tiles")
+        }
+        if straddlingIslandCount > 0 {
+            Text(
+                "\(straddlingIslandCount) island\(straddlingIslandCount == 1 ? "" : "s") "
+                    + "cross a tile border — each will be split across texture files"
+            )
+            .font(.caption2)
+            .foregroundStyle(.orange)
+            .accessibilityIdentifier("uv-udim-straddle")
+        }
     }
 
     /// Accept / Discard for a pending proposal.

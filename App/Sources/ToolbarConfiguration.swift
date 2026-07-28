@@ -98,6 +98,8 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     /// 6.6 packing aids.
     case packUVs
     case distributeIslands
+    /// 6.7 symmetry-aware stacking.
+    case stackMirroredUVs
     // add-weave-region-selection: Weave Fill arms the fill tool; clearWeaveFill drops
     // a pending proposal and its painted extent (journals nothing either way).
     case weaveFill
@@ -155,7 +157,8 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
             // and only isImmediateCommand routes there. It stayed reachable through its
             // dedicated affordances in DocumentEditorView, which is why nobody noticed.
             // `ToolbarRoutingTests` now asserts the invariant generally, not just this case.
-            .autoRetopo, .unwrapUVs, .clearSeams, .proposeSeams, .packUVs, .distributeIslands:
+            .autoRetopo, .unwrapUVs, .clearSeams, .proposeSeams, .packUVs, .distributeIslands,
+            .stackMirroredUVs:
             true
         default:
             false

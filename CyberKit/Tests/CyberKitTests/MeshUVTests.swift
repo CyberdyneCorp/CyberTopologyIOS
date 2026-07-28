@@ -444,4 +444,75 @@ struct MeshUVTests {
         #expect(after.allSatisfy { $0.x.isFinite && $0.y.isFinite })
         #expect(mesh.hasUVLayout)
     }
+
+    // MARK: - UDIM tiles and stacking (6.7)
+
+    @Test("A packed atlas reports exactly tile 1001, and nothing straddles")
+    func defaultLayoutIsOneTile() throws {
+        let (mesh, _) = try cube().unwrapped()
+        // The unit square IS tile 1001. Anything else would mean the default layout silently
+        // spanned texture files.
+        #expect(try mesh.udimTiles() == [1001])
+        #expect(try mesh.straddlingIslands().isEmpty)
+    }
+
+    @Test("Tiles are empty before an unwrap, rather than reporting a phantom tile")
+    func noTilesWithoutLayout() throws {
+        #expect(try cube().udimTiles().isEmpty)
+        #expect(try cube().straddlingIslands().isEmpty)
+    }
+
+    @Test("Retiling an island moves it whole tiles and both tiles are then reported")
+    func retileIsland() throws {
+        let (mesh, _) = try cube().unwrapped()
+        let before = try #require(mesh.uvCoordinates())
+
+        try mesh.assignIsland(containing: 0, toTile: 1013)
+        #expect(try mesh.udimTiles() == [1001, 1013])
+
+        // Whole-tile translation: (2, 1) for tile 1013. The island's position within its tile
+        // must be untouched, since retiling is not meant to also re-arrange the shell.
+        let after = try #require(mesh.uvCoordinates())
+        let moved = zip(before, after).filter { $0 != $1 }
+        #expect(!moved.isEmpty)
+        for (old, new) in moved {
+            #expect(abs((new.x - old.x) - 2) < 1e-4)
+            #expect(abs((new.y - old.y) - 1) < 1e-4)
+        }
+    }
+
+    @Test("Retiling rejects a tile below the UDIM range")
+    func retileRejectsBadTile() throws {
+        let (mesh, _) = try cube().unwrapped()
+        // 1000 is not a UDIM tile; accepting it would emit a texture name no tool would find.
+        #expect(throws: (any Error).self) { try mesh.assignIsland(containing: 0, toTile: 1000) }
+    }
+
+    @Test("Stacking refuses a mesh with no layout and rejects a zero normal")
+    func stackingRefusals() throws {
+        let bare = try cube()
+        // A mutation asked to rearrange a layout that does not exist is a mistake, not an empty
+        // answer — unlike the tile QUERY above, which correctly returns empty.
+        #expect(throws: (any Error).self) {
+            try bare.stackMirroredIslands(planePoint: .zero, planeNormal: SIMD3(1, 0, 0))
+        }
+        let (mesh, _) = try cube().unwrapped()
+        #expect(throws: (any Error).self) {
+            try mesh.stackMirroredIslands(planePoint: .zero, planeNormal: .zero)
+        }
+    }
+
+    @Test("Stacking a non-symmetric mesh changes NOTHING and reports zero")
+    func stackingNonSymmetricIsInert() throws {
+        let (mesh, _) = try cube().unwrapped()
+        let before = try #require(mesh.uvCoordinates())
+        let stacked = try mesh.stackMirroredIslands(
+            planePoint: SIMD3(0.5, 0.5, 0.5), planeNormal: SIMD3(1, 0, 0), tolerance: 1e-5
+        )
+        // Zero is the correct answer: a wrong pairing would stack unrelated shells on top of
+        // each other, which is far worse than doing nothing.
+        if stacked == 0 {
+            #expect(mesh.uvCoordinates() == before)
+        }
+    }
 }

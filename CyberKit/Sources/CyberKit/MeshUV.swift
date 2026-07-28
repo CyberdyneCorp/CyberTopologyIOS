@@ -283,6 +283,87 @@ extension Mesh {
         try check(cyber_uv_flip_island(handle, face, &raw))
     }
 
+    // MARK: - UDIM tiles (6.7)
+
+    /// Occupied UDIM tiles in standard numbering (1001 + u + 10·v), ascending.
+    ///
+    /// A tile assignment is never stored: a tile IS a region of UV space, so it is derived from
+    /// the UVs. Persisting it separately would create a second source of truth that could
+    /// disagree with the geometry, and the disagreement would only surface at export.
+    ///
+    /// Empty when there is no layout — a truthful answer, not an error.
+    public func udimTiles(
+        parameters: AtlasParameters = AtlasParameters(), seams: [UInt32] = []
+    ) throws -> [Int32] {
+        try setSeamEdges(seams)
+        var raw = parameters.raw
+        var count = 0
+        try check(cyber_uv_udim_tiles(handle, &raw, nil, 0, &count))
+        guard count > 0 else { return [] }
+        var tiles = [Int32](repeating: 0, count: count)
+        var written = 0
+        try tiles.withUnsafeMutableBufferPointer { buffer in
+            try check(cyber_uv_udim_tiles(handle, &raw, buffer.baseAddress, count, &written))
+        }
+        return Array(tiles.prefix(written))
+    }
+
+    /// Moves the island containing `face` into `tile`, by a whole number of tiles so its position
+    /// within the tile and its size are preserved.
+    public func assignIsland(
+        containing face: UInt32, toTile tile: Int32,
+        parameters: AtlasParameters = AtlasParameters(), seams: [UInt32] = []
+    ) throws {
+        try setSeamEdges(seams)
+        var raw = parameters.raw
+        try check(cyber_uv_assign_island_tile(handle, face, tile, &raw))
+    }
+
+    /// One representative face of each island whose UVs span more than one tile.
+    ///
+    /// A straddling island is split across texture files on export, which is almost never
+    /// intended — so it is surfaced rather than silently rounded into one tile.
+    public func straddlingIslands(
+        parameters: AtlasParameters = AtlasParameters(), seams: [UInt32] = []
+    ) throws -> [UInt32] {
+        try setSeamEdges(seams)
+        var raw = parameters.raw
+        var count = 0
+        try check(cyber_uv_straddling_islands(handle, &raw, nil, 0, &count))
+        guard count > 0 else { return [] }
+        var ids = [UInt32](repeating: 0, count: count)
+        var written = 0
+        try ids.withUnsafeMutableBufferPointer { buffer in
+            try check(cyber_uv_straddling_islands(handle, &raw, buffer.baseAddress, count, &written))
+        }
+        return Array(ids.prefix(written))
+    }
+
+    /// Stacks mirrored island pairs onto shared UV space, halving their texel cost.
+    ///
+    /// The plane comes from the DOCUMENT's symmetry state, so stacking cannot disagree with the
+    /// axis the artist enabled. Pairs are matched by geometry, never by island order.
+    ///
+    /// Returns how many islands were stacked. Zero means no genuine mirror pair was found, which
+    /// is the correct answer for a non-symmetric mesh — a wrong pairing would stack unrelated
+    /// shells on top of one another.
+    @discardableResult
+    public func stackMirroredIslands(
+        planePoint: SIMD3<Float>, planeNormal: SIMD3<Float>, tolerance: Float = 0.01,
+        parameters: AtlasParameters = AtlasParameters(), seams: [UInt32] = []
+    ) throws -> Int {
+        try setSeamEdges(seams)
+        var raw = parameters.raw
+        var stacked = 0
+        try check(
+            cyber_uv_stack_mirrored_islands(
+                handle, planePoint.x, planePoint.y, planePoint.z,
+                planeNormal.x, planeNormal.y, planeNormal.z, tolerance, &raw, &stacked
+            )
+        )
+        return stacked
+    }
+
     /// Hand-drawn UV seam edges for the next unwrap. Empty clears.
     ///
     /// The atlas cuts along exactly these instead of generating its own. Authored seams

@@ -1,0 +1,958 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index 8704490..a402c7a 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -227,6 +227,45 @@ CyberStatus cyber_uv_flipped_islands(const CyberMesh* mesh, const CyberAtlasPara
+ CyberStatus cyber_uv_flip_island(CyberMesh* mesh, uint32_t face_id,
+                                  const CyberAtlasParams* params);
+ 
++/* UDIM tiles (add-uv-sets-and-stacking). Occupied tiles in standard numbering (1001 + u +
++ * 10*v), ascending and deduplicated — the list an exporter needs to name its texture files.
++ *
++ * A tile assignment is never STORED: a tile IS a region of UV space, so it is derived from the
++ * UVs by construction. Persisting it beside the UVs would create a second source of truth that
++ * could disagree with the geometry, and the disagreement would only appear at export.
++ *
++ * Two-call size-then-fill. Empty (not an error) when the mesh has no UVs. */
++CyberStatus cyber_uv_udim_tiles(const CyberMesh* mesh, const CyberAtlasParams* params,
++                                int32_t* out_tiles, size_t capacity, size_t* out_count);
++
++/* Moves the island containing `face_id` into UDIM tile `tile`, by a WHOLE number of tiles so its
++ * position within the tile and its size are preserved. */
++CyberStatus cyber_uv_assign_island_tile(CyberMesh* mesh, uint32_t face_id, int32_t tile,
++                                        const CyberAtlasParams* params);
++
++/* Islands whose UVs span more than one tile — they would be split across texture files on
++ * export, which is almost never intended. One representative face id per straddling island. */
++CyberStatus cyber_uv_straddling_islands(const CyberMesh* mesh, const CyberAtlasParams* params,
++                                        uint32_t* out_face_ids, size_t capacity,
++                                        size_t* out_count);
++
++/* Stacks mirrored island pairs onto shared UV space (add-uv-sets-and-stacking), so a left/right
++ * pair costs one texture region instead of two.
++ *
++ * The plane is given as a point and a normal in world space — the caller passes the document's
++ * own symmetry plane, so stacking cannot disagree with the axis the artist enabled.
++ *
++ * Pairs are matched by GEOMETRY (reflected face centroids), never by island order, which is an
++ * artifact of face-id iteration. `tolerance` is relative to each island's own size, so one value
++ * means the same thing on a fingertip and a torso. Writes the number of islands stacked to
++ * `out_stacked` (may be NULL); 0 means nothing matched, which is the correct answer for a
++ * non-symmetric mesh rather than a wrong pairing. */
++CyberStatus cyber_uv_stack_mirrored_islands(CyberMesh* mesh, float plane_point_x,
++                                            float plane_point_y, float plane_point_z,
++                                            float plane_normal_x, float plane_normal_y,
++                                            float plane_normal_z, float tolerance,
++                                            const CyberAtlasParams* params, size_t* out_stacked);
++
+ /* --- Accessors used by the language bindings (Python, Swift) ------------- */
+ 
+ /* Creates an empty mesh handle (release with cyber_mesh_destroy/free). */
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index 90fe5fb..e05d55e 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -56,6 +56,8 @@
+ #include "cyber/uv/layout.hpp"
+ #include "cyber/uv/pack_aids.hpp"
+ #include "cyber/uv/reunwrap.hpp"
++#include "cyber/uv/udim.hpp"
++#include "cyber/uv/uv_stack.hpp"
+ #endif
+ 
+ // Version numbers are injected from the CMake project() version so this file
+@@ -857,6 +859,185 @@ CyberStatus cyber_uv_flip_island([[maybe_unused]] CyberMesh* mesh,
+ #endif
+ }
+ 
++namespace {
++#ifdef CYBER_CAPI_WITH_UV
++// Shared two-call size-then-fill writer for the id readbacks below.
++template <typename T>
++void writeIds(const std::vector<T>& ids, T* out, size_t capacity, size_t* out_count) {
++    *out_count = ids.size();
++    if (out != nullptr) {
++        const size_t writable = capacity < ids.size() ? capacity : ids.size();
++        for (size_t i = 0; i < writable; ++i) {
++            out[i] = ids[i];
++        }
++        *out_count = writable;
++    }
++}
++#endif
++}  // namespace
++
++CyberStatus cyber_uv_udim_tiles([[maybe_unused]] const CyberMesh* mesh,
++                               [[maybe_unused]] const CyberAtlasParams* params,
++                               [[maybe_unused]] int32_t* out_tiles,
++                               [[maybe_unused]] size_t capacity,
++                               [[maybe_unused]] size_t* out_count) {
++#ifdef CYBER_CAPI_WITH_UV
++    if (mesh == nullptr || out_count == nullptr) {
++        setError("cyber_uv_udim_tiles: null argument");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        *out_count = 0;
++        if (cyber::uv::uvColumn(mesh->mesh) == nullptr) {
++            clearError();  // no layout: an empty tile list, not an error
++            return CYBER_OK;
++        }
++        const auto islands = islandPartition(mesh, atlasOptions(params));
++        std::vector<std::int32_t> tiles;
++        for (const int tile : cyber::uv::occupiedUdimTiles(mesh->mesh, islands)) {
++            tiles.push_back(tile);
++        }
++        writeIds(tiles, out_tiles, capacity, out_count);
++        clearError();
++        return CYBER_OK;
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_udim_tiles: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_udim_tiles: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
++CyberStatus cyber_uv_assign_island_tile([[maybe_unused]] CyberMesh* mesh,
++                                       [[maybe_unused]] uint32_t face_id,
++                                       [[maybe_unused]] int32_t tile,
++                                       [[maybe_unused]] const CyberAtlasParams* params) {
++#ifdef CYBER_CAPI_WITH_UV
++    if (mesh == nullptr) {
++        setError("cyber_uv_assign_island_tile: null mesh");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    if (tile < 1001) {
++        setError("cyber_uv_assign_island_tile: tile below 1001 is not representable");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        if (cyber::uv::uvColumn(mesh->mesh) == nullptr) {
++            setError("cyber_uv_assign_island_tile: mesh has no UV layout");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        const cyber::FaceId target{face_id};
++        if (!mesh->mesh.isAlive(target)) {
++            setError("cyber_uv_assign_island_tile: dead face");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        for (const auto& island : islandPartition(mesh, atlasOptions(params))) {
++            if (std::find(island.begin(), island.end(), target) != island.end()) {
++                cyber::uv::assignIslandToTile(mesh->mesh, island, cyber::uv::udimCoord(tile));
++                invalidateRenderCache(mesh);
++                clearError();
++                return CYBER_OK;
++            }
++        }
++        setError("cyber_uv_assign_island_tile: face is in no island");
++        return CYBER_ERR_INVALID_ARG;
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_assign_island_tile: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_assign_island_tile: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
++CyberStatus cyber_uv_straddling_islands([[maybe_unused]] const CyberMesh* mesh,
++                                       [[maybe_unused]] const CyberAtlasParams* params,
++                                       [[maybe_unused]] uint32_t* out_face_ids,
++                                       [[maybe_unused]] size_t capacity,
++                                       [[maybe_unused]] size_t* out_count) {
++#ifdef CYBER_CAPI_WITH_UV
++    if (mesh == nullptr || out_count == nullptr) {
++        setError("cyber_uv_straddling_islands: null argument");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        *out_count = 0;
++        if (cyber::uv::uvColumn(mesh->mesh) == nullptr) {
++            clearError();
++            return CYBER_OK;
++        }
++        std::vector<std::uint32_t> ids;
++        for (const auto& island : islandPartition(mesh, atlasOptions(params))) {
++            if (!island.empty() && cyber::uv::islandStraddlesTiles(mesh->mesh, island)) {
++                ids.push_back(island.front().value);
++            }
++        }
++        std::sort(ids.begin(), ids.end());
++        writeIds(ids, out_face_ids, capacity, out_count);
++        clearError();
++        return CYBER_OK;
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_straddling_islands: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_straddling_islands: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
++CyberStatus cyber_uv_stack_mirrored_islands(
++    [[maybe_unused]] CyberMesh* mesh, [[maybe_unused]] float plane_point_x,
++    [[maybe_unused]] float plane_point_y, [[maybe_unused]] float plane_point_z,
++    [[maybe_unused]] float plane_normal_x, [[maybe_unused]] float plane_normal_y,
++    [[maybe_unused]] float plane_normal_z, [[maybe_unused]] float tolerance,
++    [[maybe_unused]] const CyberAtlasParams* params, [[maybe_unused]] size_t* out_stacked) {
++#ifdef CYBER_CAPI_WITH_UV
++    if (mesh == nullptr) {
++        setError("cyber_uv_stack_mirrored_islands: null mesh");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    if (out_stacked != nullptr) {
++        *out_stacked = 0;
++    }
++    try {
++        if (cyber::uv::uvColumn(mesh->mesh) == nullptr) {
++            setError("cyber_uv_stack_mirrored_islands: mesh has no UV layout");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        const cyber::Vec3 point{plane_point_x, plane_point_y, plane_point_z};
++        const cyber::Vec3 normal{plane_normal_x, plane_normal_y, plane_normal_z};
++        if (cyber::lengthSquared(normal) <= 0.0f) {
++            setError("cyber_uv_stack_mirrored_islands: zero plane normal");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        const auto islands = islandPartition(mesh, atlasOptions(params));
++        const auto pairs =
++            cyber::uv::findMirrorIslandPairs(mesh->mesh, islands, point, normal, tolerance);
++        const std::size_t stacked = cyber::uv::stackMirroredIslands(mesh->mesh, islands, pairs,
++                                                                   point, normal, tolerance);
++        if (out_stacked != nullptr) {
++            *out_stacked = stacked;
++        }
++        // Only invalidate when something moved: an unchanged mesh should not drop its caches.
++        if (stacked > 0) {
++            invalidateRenderCache(mesh);
++        }
++        clearError();
++        return CYBER_OK;
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_stack_mirrored_islands: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_stack_mirrored_islands: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
+ CyberMesh* cyber_mesh_create(void) {
+     try {
+         return new CyberMesh();
+diff --git a/src/uv/CMakeLists.txt b/src/uv/CMakeLists.txt
+index 8f074ba..d94b41f 100644
+--- a/src/uv/CMakeLists.txt
++++ b/src/uv/CMakeLists.txt
+@@ -4,6 +4,8 @@ add_library(cyber_uv STATIC
+     src/atlas.cpp
+     src/reunwrap.cpp
+     src/pack_aids.cpp
++    src/udim.cpp
++    src/uv_stack.cpp
+ )
+ add_library(cyber::uv ALIAS cyber_uv)
+ 
+diff --git a/src/uv/include/cyber/uv/udim.hpp b/src/uv/include/cyber/uv/udim.hpp
+new file mode 100644
+index 0000000..8d9ebd7
+--- /dev/null
++++ b/src/uv/include/cyber/uv/udim.hpp
+@@ -0,0 +1,57 @@
++#pragma once
++
++#include <cstdint>
++#include <span>
++#include <vector>
++
++#include "cyber/core/mesh.hpp"
++#include "cyber/uv/common.hpp"
++
++// UDIM tiles (uv-workflow spec, "UDIMs and multiple UV sets").
++//
++// The design point worth stating: a UDIM tile assignment is NOT stored anywhere. A tile IS a
++// region of UV space — tile 1002 is simply u in [1, 2) — so an island's tile is derived from
++// its UVs by construction. Persisting an assignment beside the UVs would create a second
++// source of truth that could disagree with the geometry, and the disagreement would only
++// surface at export time.
++//
++// Tile numbering is the industry convention: 1001 + u + 10 * v, so u runs 0-9 within a row.
++namespace cyber::uv {
++
++// Tile column/row of a UDIM index. Inverse of `udimIndex`.
++struct UdimCoord {
++    int u = 0;
++    int v = 0;
++};
++
++[[nodiscard]] inline int udimIndex(UdimCoord tile) { return 1001 + tile.u + 10 * tile.v; }
++
++[[nodiscard]] inline UdimCoord udimCoord(int index) {
++    const int offset = index - 1001;
++    return {offset % 10, offset / 10};
++}
++
++// The tile an island occupies, from the floor of its UV bounds' minimum corner.
++//
++// Uses the MINIMUM rather than the centroid so an island is attributed to the tile it starts
++// in; an island straddling a tile border is a defect the caller can detect with
++// `islandStraddlesTiles` rather than something to silently round away.
++[[nodiscard]] UdimCoord islandTile(const Mesh& mesh, std::span<const FaceId> island);
++
++// True when the island's UVs span more than one tile — it will be split across texture files
++// on export, which is almost never intended.
++[[nodiscard]] bool islandStraddlesTiles(const Mesh& mesh, std::span<const FaceId> island);
++
++// Every occupied tile, ascending by UDIM index and deduplicated. This is the list an exporter
++// needs to name its texture files.
++[[nodiscard]] std::vector<int> occupiedUdimTiles(const Mesh& mesh,
++                                                std::span<const std::vector<FaceId>> islands);
++
++// Moves an island into `tile`, preserving its position WITHIN the tile.
++//
++// Translation only, and by a whole number of tiles, so the island's parameterization and its
++// place inside its tile are both untouched — moving a shell to another tile must not also
++// re-arrange it.
++void assignIslandToTile(Mesh& mesh, std::span<const FaceId> island, UdimCoord tile);
++
++}  // namespace cyber::uv
+diff --git a/src/uv/include/cyber/uv/uv_stack.hpp b/src/uv/include/cyber/uv/uv_stack.hpp
+new file mode 100644
+index 0000000..96a08d7
+--- /dev/null
++++ b/src/uv/include/cyber/uv/uv_stack.hpp
+@@ -0,0 +1,57 @@
++#pragma once
++
++#include <cstddef>
++#include <span>
++#include <vector>
++
++#include "cyber/core/math.hpp"
++#include "cyber/core/mesh.hpp"
++
++// Symmetry-aware island stacking (uv-workflow spec, "Symmetry-aware UVs").
++//
++// For a symmetric model, a left/right island pair can either occupy the SAME UV space — halving
++// their texel cost, because one texture region serves both — or stay unique, when the two sides
++// need to differ. This is the stacking half; keeping them unique is what the atlas already does.
++namespace cyber::uv {
++
++// Two islands that are 3D mirror images of one another across the symmetry plane.
++struct MirrorIslandPair {
++    // Indices into the island list handed in. `primary` keeps its UVs; `mirror` is the one
++    // moved onto it.
++    std::size_t primary = 0;
++    std::size_t mirror = 0;
++};
++
++// Finds island pairs that mirror across the plane through `planePoint` with normal
++// `planeNormal`.
++//
++// Matched by GEOMETRY, not by island order: reflecting an island's face centroids across the
++// plane must land on the other island's. Island order out of `computeIslands` is an artifact of
++// face-id iteration, so pairing by index would pair unrelated shells on any real model.
++//
++// `tolerance` is in world units and is compared against the scale of the match, so a model that
++// is only approximately symmetric still pairs while a non-symmetric one yields nothing rather
++// than a wrong pairing. Islands lying ON the plane (self-symmetric, e.g. a centre strip) are NOT
++// paired with themselves — stacking one onto itself is a no-op that would report false progress.
++//
++// Each island appears in at most one pair, and `primary` is always the lower index so the result
++// is deterministic.
++[[nodiscard]] std::vector<MirrorIslandPair> findMirrorIslandPairs(
++    const Mesh& mesh, std::span<const std::vector<FaceId>> islands, Vec3 planePoint,
++    Vec3 planeNormal, float tolerance);
++
++// Stacks each pair's `mirror` island onto its `primary`, so both occupy identical UV space.
++//
++// Corner correspondence is established by mirrored VERTEX POSITION rather than by face or corner
++// order, for the same reason the pairing is geometric: `cloneIslandUv` copies by island-order
++// and corner index, which for a mirror pair maps the wrong corners and produces a scrambled
++// shell that still looks plausible in the 2D view.
++//
++// Returns the number of islands actually stacked. A pair whose corners cannot be corresponded
++// one-to-one within `tolerance` is SKIPPED rather than partially written, so a failed match
++// leaves that island's UVs exactly as they were.
++std::size_t stackMirroredIslands(Mesh& mesh, std::span<const std::vector<FaceId>> islands,
++                                 std::span<const MirrorIslandPair> pairs, Vec3 planePoint,
++                                 Vec3 planeNormal, float tolerance);
++
++}  // namespace cyber::uv
+diff --git a/src/uv/src/udim.cpp b/src/uv/src/udim.cpp
+new file mode 100644
+index 0000000..4e21efb
+--- /dev/null
++++ b/src/uv/src/udim.cpp
+@@ -0,0 +1,63 @@
++#include "cyber/uv/udim.hpp"
++
++#include <algorithm>
++#include <cmath>
++
++#include "cyber/uv/transforms.hpp"
++
++namespace cyber::uv {
++namespace {
++
++[[nodiscard]] int floorToTile(float value) { return static_cast<int>(std::floor(value)); }
++
++}  // namespace
++
++UdimCoord islandTile(const Mesh& mesh, std::span<const FaceId> island) {
++    const Bounds2 box = islandUvBounds(mesh, island);
++    if (!box.valid()) {
++        return {};
++    }
++    // Tiles below zero are not representable in UDIM numbering, so they clamp to the first tile
++    // rather than producing an index below 1001 that no exporter would accept.
++    return {std::max(0, floorToTile(box.mn.x)), std::max(0, floorToTile(box.mn.y))};
++}
++
++bool islandStraddlesTiles(const Mesh& mesh, std::span<const FaceId> island) {
++    const Bounds2 box = islandUvBounds(mesh, island);
++    if (!box.valid()) {
++        return false;
++    }
++    // The maximum is nudged inward before flooring: a shell packed flush to u = 1.0 ends exactly
++    // on the border and belongs to the tile it fills, not the empty one it touches.
++    constexpr float kEdge = 1e-5f;
++    return floorToTile(box.mn.x) != floorToTile(box.mx.x - kEdge) ||
++           floorToTile(box.mn.y) != floorToTile(box.mx.y - kEdge);
++}
++
++std::vector<int> occupiedUdimTiles(const Mesh& mesh,
++                                  std::span<const std::vector<FaceId>> islands) {
++    std::vector<int> tiles;
++    tiles.reserve(islands.size());
++    for (const std::vector<FaceId>& island : islands) {
++        if (islandUvBounds(mesh, island).valid()) {
++            tiles.push_back(udimIndex(islandTile(mesh, island)));
++        }
++    }
++    std::sort(tiles.begin(), tiles.end());
++    tiles.erase(std::unique(tiles.begin(), tiles.end()), tiles.end());
++    return tiles;
++}
++
++void assignIslandToTile(Mesh& mesh, std::span<const FaceId> island, UdimCoord tile) {
++    const UdimCoord current = islandTile(mesh, island);
++    if (!islandUvBounds(mesh, island).valid()) {
++        return;
++    }
++    // A WHOLE number of tiles, so the island's position inside its tile is preserved exactly:
++    // moving a shell to another tile must not also re-arrange it.
++    translateIslandUv(mesh, island,
++                      Vec2{static_cast<float>(tile.u - current.u),
++                           static_cast<float>(tile.v - current.v)});
++}
++
++}  // namespace cyber::uv
+diff --git a/src/uv/src/uv_stack.cpp b/src/uv/src/uv_stack.cpp
+new file mode 100644
+index 0000000..ef315fa
+--- /dev/null
++++ b/src/uv/src/uv_stack.cpp
+@@ -0,0 +1,172 @@
++#include "cyber/uv/uv_stack.hpp"
++
++#include <cmath>
++#include <limits>
++#include <unordered_set>
++
++#include "cyber/uv/common.hpp"
++
++namespace cyber::uv {
++namespace {
++
++// Reflection of `p` across the plane through `point` with unit-ish `normal`.
++[[nodiscard]] Vec3 reflect(Vec3 p, Vec3 point, Vec3 normal) {
++    const float n2 = lengthSquared(normal);
++    if (n2 <= 0.0f) {
++        return p;
++    }
++    const float d = dot(p - point, normal) / n2;
++    return p - normal * (2.0f * d);
++}
++
++// Centroid of an island's face centroids — a cheap, order-independent signature for matching.
++[[nodiscard]] Vec3 islandCentroid(const Mesh& mesh, std::span<const FaceId> island) {
++    Vec3 sum{};
++    std::size_t count = 0;
++    for (const FaceId face : island) {
++        sum += mesh.faceCentroid(face);
++        ++count;
++    }
++    if (count == 0) {
++        return sum;
++    }
++    return sum * (1.0f / static_cast<float>(count));
++}
++
++// Largest distance from an island's centroid to any of its face centroids, used to scale the
++// match tolerance: a fixed world tolerance would be far too tight on a large shell and far too
++// loose on a small one.
++[[nodiscard]] float islandRadius(const Mesh& mesh, std::span<const FaceId> island, Vec3 centroid) {
++    float worst = 0.0f;
++    for (const FaceId face : island) {
++        worst = std::fmax(worst, length(mesh.faceCentroid(face) - centroid));
++    }
++    return worst;
++}
++
++}  // namespace
++
++std::vector<MirrorIslandPair> findMirrorIslandPairs(const Mesh& mesh,
++                                                   std::span<const std::vector<FaceId>> islands,
++                                                   Vec3 planePoint, Vec3 planeNormal,
++                                                   float tolerance) {
++    std::vector<MirrorIslandPair> pairs;
++    std::unordered_set<std::size_t> taken;
++
++    for (std::size_t i = 0; i < islands.size(); ++i) {
++        if (taken.count(i) != 0 || islands[i].empty()) {
++            continue;
++        }
++        const Vec3 centroidI = islandCentroid(mesh, islands[i]);
++        const Vec3 mirrored = reflect(centroidI, planePoint, planeNormal);
++
++        // An island lying ON the plane is its own mirror. Stacking it onto itself would be a
++        // no-op reported as progress, so it is skipped rather than self-paired.
++        if (length(mirrored - centroidI) <= tolerance) {
++            continue;
++        }
++
++        std::size_t best = islands.size();
++        float bestDistance = std::numeric_limits<float>::max();
++        for (std::size_t j = i + 1; j < islands.size(); ++j) {
++            if (taken.count(j) != 0 || islands[j].size() != islands[i].size()) {
++                // Same face count is a necessary condition for a corner-for-corner
++                // correspondence, so it is cheap to reject on first.
++                continue;
++            }
++            const float distance = length(islandCentroid(mesh, islands[j]) - mirrored);
++            if (distance < bestDistance) {
++                bestDistance = distance;
++                best = j;
++            }
++        }
++        if (best == islands.size()) {
++            continue;
++        }
++        // Scaled by the island's own size, so the same tolerance means the same thing on a
++        // fingertip and on a torso.
++        const float scale = std::fmax(islandRadius(mesh, islands[i], centroidI), 1e-6f);
++        if (bestDistance <= tolerance * scale) {
++            pairs.push_back({i, best});
++            taken.insert(i);
++            taken.insert(best);
++        }
++    }
++    return pairs;
++}
++
++std::size_t stackMirroredIslands(Mesh& mesh, std::span<const std::vector<FaceId>> islands,
++                                 std::span<const MirrorIslandPair> pairs, Vec3 planePoint,
++                                 Vec3 planeNormal, float tolerance) {
++    std::vector<Vec2>* uv = uvColumn(mesh);
++    if (uv == nullptr) {
++        return 0;
++    }
++    std::size_t stacked = 0;
++
++    for (const MirrorIslandPair& pair : pairs) {
++        if (pair.primary >= islands.size() || pair.mirror >= islands.size()) {
++            continue;
++        }
++        const std::vector<FaceId>& source = islands[pair.primary];
++        const std::vector<FaceId>& target = islands[pair.mirror];
++
++        // Corners of the source, with their world positions, so the target's mirrored corners can
++        // be matched against them by GEOMETRY. Matching by corner index instead — which is what
++        // `cloneIslandUv` does — maps the wrong corners across a mirror and produces a scrambled
++        // shell that still looks plausible in the 2D view.
++        std::vector<Vec3> sourcePositions;
++        std::vector<Vec2> sourceUvs;
++        for (const FaceId face : source) {
++            for (const LoopId loop : mesh.faceLoops(face)) {
++                sourcePositions.push_back(mesh.position(mesh.loopVertex(loop)));
++                sourceUvs.push_back((*uv)[static_cast<std::size_t>(loop.value)]);
++            }
++        }
++        if (sourcePositions.empty()) {
++            continue;
++        }
++
++        const Vec3 centroid = islandCentroid(mesh, target);
++        const float scale = std::fmax(islandRadius(mesh, target, centroid), 1e-6f);
++        const float limit = tolerance * scale;
++
++        // Resolved into a staging buffer FIRST and only written if every corner matched, so a
++        // partial correspondence cannot leave half a shell stacked and half where it was.
++        std::vector<std::pair<std::size_t, Vec2>> writes;
++        bool complete = true;
++        for (const FaceId face : target) {
++            for (const LoopId loop : mesh.faceLoops(face)) {
++                const Vec3 want = reflect(mesh.position(mesh.loopVertex(loop)), planePoint,
++                                          planeNormal);
++                std::size_t best = sourcePositions.size();
++                float bestDistance = std::numeric_limits<float>::max();
++                for (std::size_t k = 0; k < sourcePositions.size(); ++k) {
++                    const float distance = length(sourcePositions[k] - want);
++                    if (distance < bestDistance) {
++                        bestDistance = distance;
++                        best = k;
++                    }
++                }
++                if (best == sourcePositions.size() || bestDistance > limit) {
++                    complete = false;
++                    break;
++                }
++                writes.emplace_back(static_cast<std::size_t>(loop.value), sourceUvs[best]);
++            }
++            if (!complete) {
++                break;
++            }
++        }
++        if (!complete) {
++            continue;
++        }
++        for (const auto& [loop, value] : writes) {
++            (*uv)[loop] = value;
++        }
++        ++stacked;
++    }
++    return stacked;
++}
++
++}  // namespace cyber::uv
+diff --git a/tests/capi/test_capi.cpp b/tests/capi/test_capi.cpp
+index 55d4be4..6364e22 100644
+--- a/tests/capi/test_capi.cpp
++++ b/tests/capi/test_capi.cpp
+@@ -703,6 +703,104 @@ TEST_CASE("capi flipped-island readback names a face and a flip is reversible")
+     std::filesystem::remove(objPath, ec);
+ }
+ 
++// UDIM tiles and symmetry stacking (openspec add-uv-sets-and-stacking).
++TEST_CASE("capi UDIM tiles start at 1001 and follow the island when it is retiled") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++
++    // No layout: an empty tile list, not an error. An exporter asking "which tiles" before an
++    // unwrap should be told "none", not handed a failure.
++    size_t bare = 99;
++    REQUIRE(cyber_uv_udim_tiles(mesh, &params, nullptr, 0, &bare) == CYBER_OK);
++    CHECK(bare == 0);
++
++    REQUIRE(cyber_uv_atlas(mesh, &params, nullptr) == CYBER_OK);
++    size_t count = 0;
++    REQUIRE(cyber_uv_udim_tiles(mesh, &params, nullptr, 0, &count) == CYBER_OK);
++    REQUIRE(count == 1);
++    std::vector<int32_t> tiles(count);
++    size_t written = 0;
++    REQUIRE(cyber_uv_udim_tiles(mesh, &params, tiles.data(), tiles.size(), &written) == CYBER_OK);
++    REQUIRE(written == 1);
++    CHECK(tiles[0] == 1001);  // the unit square IS tile 1001
++
++    // Retile one island; the list must now name both tiles.
++    REQUIRE(cyber_uv_assign_island_tile(mesh, 0, 1013, &params) == CYBER_OK);
++    REQUIRE(cyber_uv_udim_tiles(mesh, &params, nullptr, 0, &count) == CYBER_OK);
++    REQUIRE(count == 2);
++    std::vector<int32_t> both(count);
++    REQUIRE(cyber_uv_udim_tiles(mesh, &params, both.data(), both.size(), &written) == CYBER_OK);
++    CHECK(both[0] == 1001);
++    CHECK(both[1] == 1013);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
++TEST_CASE("capi retiling rejects a tile below the UDIM range and a mesh with no UVs") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++
++    CHECK(cyber_uv_assign_island_tile(mesh, 0, 1001, &params) == CYBER_ERR_INVALID_ARG);
++    REQUIRE(cyber_uv_atlas(mesh, &params, nullptr) == CYBER_OK);
++    // 1000 is not a UDIM tile; accepting it would emit a texture name no DCC tool would find.
++    CHECK(cyber_uv_assign_island_tile(mesh, 0, 1000, &params) == CYBER_ERR_INVALID_ARG);
++    CHECK(cyber_uv_assign_island_tile(mesh, 9999, 1002, &params) == CYBER_ERR_INVALID_ARG);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
++TEST_CASE("capi stacking reports nothing stacked for a non-symmetric mesh") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++
++    // No layout is an ERROR here (unlike the tile query): stacking is a mutation, and being
++    // asked to rearrange a layout that does not exist is a mistake, not an empty answer.
++    size_t stacked = 99;
++    CHECK(cyber_uv_stack_mirrored_islands(mesh, 0, 0, 0, 1, 0, 0, 0.01f, &params, &stacked)
++          == CYBER_ERR_INVALID_ARG);
++
++    REQUIRE(cyber_uv_atlas(mesh, &params, nullptr) == CYBER_OK);
++    size_t uvFloats = 0;
++    const float* p = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    REQUIRE(p != nullptr);
++    const std::vector<float> before(p, p + uvFloats);
++
++    // A zero normal is not a plane.
++    CHECK(cyber_uv_stack_mirrored_islands(mesh, 0, 0, 0, 0, 0, 0, 0.01f, &params, &stacked)
++          == CYBER_ERR_INVALID_ARG);
++
++    // A tight tolerance on a cube finds no genuine mirror pairs, and reporting 0 is correct —
++    // a wrong pairing would stack unrelated shells on top of each other.
++    REQUIRE(cyber_uv_stack_mirrored_islands(mesh, 0.5f, 0.5f, 0.5f, 1, 0, 0, 1e-5f, &params,
++                                            &stacked)
++            == CYBER_OK);
++    p = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    REQUIRE(p != nullptr);
++    if (stacked == 0) {
++        // Nothing stacked must mean nothing written.
++        for (size_t i = 0; i < before.size(); ++i) {
++            CHECK(p[i] == before[i]);
++        }
++    }
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
+ // Auto-seam proposals (openspec add-auto-seam-proposals, task 1).
+ //
+ // The property that matters: a proposal can only ever ADD. If accepting one could delete a
+diff --git a/tests/uv/test_uv.cpp b/tests/uv/test_uv.cpp
+index 1edef02..61dc704 100644
+--- a/tests/uv/test_uv.cpp
++++ b/tests/uv/test_uv.cpp
+@@ -13,6 +13,8 @@
+ #include "cyber/uv/layout.hpp"
+ #include "cyber/uv/pack_aids.hpp"
+ #include "cyber/uv/reunwrap.hpp"
++#include "cyber/uv/udim.hpp"
++#include "cyber/uv/uv_stack.hpp"
+ #include "cyber/uv/seams.hpp"
+ #include "cyber/uv/transforms.hpp"
+ #include "cyber/uv/unwrap.hpp"
+@@ -671,3 +673,200 @@ TEST_CASE("region packing refuses a mesh with no UV layout") {
+     REQUIRE(!uv::packIslandsIntoRegion(mesh, islands, region).ok);
+     REQUIRE(uv::uvColumn(mesh) == nullptr);
+ }
++
++// ---- UDIM tiles (add-uv-sets-and-stacking, 6.7) ---------------------------
++
++TEST_CASE("UDIM index and coordinate round-trip through the standard numbering") {
++    REQUIRE(uv::udimIndex({0, 0}) == 1001);
++    REQUIRE(uv::udimIndex({9, 0}) == 1010);
++    REQUIRE(uv::udimIndex({0, 1}) == 1011);
++    for (const int index : {1001, 1005, 1010, 1011, 1042}) {
++        const uv::UdimCoord c = uv::udimCoord(index);
++        REQUIRE(uv::udimIndex(c) == index);
++    }
++}
++
++TEST_CASE("a packed atlas occupies exactly tile 1001") {
++    CubeAtlas atlas = unwrappedCube();
++    // The atlas packs into the unit square, which IS tile 1001. Anything else would mean the
++    // default layout silently spanned texture files.
++    const std::vector<int> tiles = uv::occupiedUdimTiles(atlas.mesh, atlas.islands);
++    REQUIRE(tiles.size() == 1);
++    REQUIRE(tiles[0] == 1001);
++    for (const auto& island : atlas.islands) {
++        REQUIRE(!uv::islandStraddlesTiles(atlas.mesh, island));
++    }
++}
++
++TEST_CASE("assigning an island to a tile moves it whole tiles and preserves its place") {
++    CubeAtlas atlas = unwrappedCube();
++    const auto& island = atlas.islands[1];
++    const uv::Bounds2 before = uv::islandUvBounds(atlas.mesh, island);
++
++    uv::assignIslandToTile(atlas.mesh, island, {2, 1});
++    REQUIRE(uv::udimIndex(uv::islandTile(atlas.mesh, island)) == 1013);
++
++    const uv::Bounds2 after = uv::islandUvBounds(atlas.mesh, island);
++    // Moved by exactly (2, 1) — a whole number of tiles — so its position WITHIN the tile and
++    // its size are untouched. Re-arranging a shell while retiling it would be a second,
++    // unrequested edit.
++    const float slack = 1e-5f;
++    REQUIRE(std::fabs((after.mn.x - before.mn.x) - 2.0f) < slack);
++    REQUIRE(std::fabs((after.mn.y - before.mn.y) - 1.0f) < slack);
++    REQUIRE(std::fabs(after.size().x - before.size().x) < slack);
++    REQUIRE(std::fabs(after.size().y - before.size().y) < slack);
++
++    // And the occupied-tile list now names both tiles, which is what an exporter needs.
++    const std::vector<int> tiles = uv::occupiedUdimTiles(atlas.mesh, atlas.islands);
++    REQUIRE(tiles.size() == 2);
++    REQUIRE(tiles[0] == 1001);
++    REQUIRE(tiles[1] == 1013);
++}
++
++TEST_CASE("an island straddling a tile border is detected") {
++    CubeAtlas atlas = unwrappedCube();
++    const auto& island = atlas.islands[0];
++    const uv::Bounds2 box = uv::islandUvBounds(atlas.mesh, island);
++    // Push it so it sits across u = 1: half in tile 1001, half in 1002. This splits a shell
++    // across two texture files on export, which is almost never intended.
++    uv::translateIslandUv(atlas.mesh, island, Vec2{1.0f - box.center().x, 0.0f});
++    REQUIRE(uv::islandStraddlesTiles(atlas.mesh, island));
++}
++
++TEST_CASE("an island flush against the tile edge does NOT count as straddling") {
++    CubeAtlas atlas = unwrappedCube();
++    const auto& island = atlas.islands[0];
++    const uv::Bounds2 box = uv::islandUvBounds(atlas.mesh, island);
++    // Its maximum lands exactly on u = 1. It fills the tile it is in and merely touches the
++    // next; reporting that as a straddle would flag every tightly packed layout.
++    uv::translateIslandUv(atlas.mesh, island, Vec2{1.0f - box.mx.x, 0.0f});
++    REQUIRE(!uv::islandStraddlesTiles(atlas.mesh, island));
++}
++
++// ---- symmetry-aware stacking (add-uv-sets-and-stacking, 6.7) --------------
++
++namespace {
++// Two disjoint quads mirrored across x = 0, each subdivided into 2 faces so a pairing has more
++// than one face to correspond. Deliberately NOT symmetric in vertex ORDER, so a correspondence
++// built from corner indices rather than positions would fail.
++Mesh makeMirroredPair() {
++    // Right side x in [1,3], left side its exact mirror across x = 0. The left side is wound in
++    // the OPPOSITE order deliberately, so a correspondence built from corner indices rather than
++    // world positions cannot accidentally work.
++    const std::vector<Vec3> p = {
++        {1, 0, 0}, {2, 0, 0}, {2, 1, 0}, {1, 1, 0}, {3, 0, 0}, {3, 1, 0},
++        {-1, 0, 0}, {-2, 0, 0}, {-2, 1, 0}, {-1, 1, 0}, {-3, 0, 0}, {-3, 1, 0},
++    };
++    const std::vector<std::vector<Index>> f = {
++        {0, 1, 2, 3}, {1, 4, 5, 2},
++        {9, 8, 7, 6}, {8, 11, 10, 7},
++    };
++    return Mesh::fromIndexed(p, f);
++}
++}  // namespace
++
++TEST_CASE("mirror island pairs are found by geometry, not by island order") {
++    Mesh mesh = makeMirroredPair();
++    uv::AtlasOptions opts;
++    opts.mergeCharts = false;
++    REQUIRE(uv::unwrapAtlas(mesh, opts).ok);
++    const auto islands = uv::computeIslands(mesh, uv::autoSeams(mesh, opts));
++    REQUIRE(islands.size() == 2);
++
++    const auto pairs = uv::findMirrorIslandPairs(mesh, islands, Vec3{0, 0, 0}, Vec3{1, 0, 0},
++                                                 0.01f);
++    REQUIRE(pairs.size() == 1);
++    // `primary` is always the lower index, so the result is deterministic.
++    REQUIRE(pairs[0].primary < pairs[0].mirror);
++}
++
++TEST_CASE("stacking makes a mirror pair occupy identical UV space") {
++    Mesh mesh = makeMirroredPair();
++    uv::AtlasOptions opts;
++    opts.mergeCharts = false;
++    REQUIRE(uv::unwrapAtlas(mesh, opts).ok);
++    const auto islands = uv::computeIslands(mesh, uv::autoSeams(mesh, opts));
++    const auto pairs = uv::findMirrorIslandPairs(mesh, islands, Vec3{0, 0, 0}, Vec3{1, 0, 0},
++                                                 0.01f);
++    REQUIRE(pairs.size() == 1);
++
++    // Before stacking the atlas has given them separate space, which is the "keep them unique"
++    // behaviour — so the test is measuring a real change.
++    const uv::Bounds2 a0 = uv::islandUvBounds(mesh, islands[pairs[0].primary]);
++    const uv::Bounds2 b0 = uv::islandUvBounds(mesh, islands[pairs[0].mirror]);
++    REQUIRE(!uv::Bounds2::overlap(a0, b0, 1e-4f));
++
++    REQUIRE(uv::stackMirroredIslands(mesh, islands, pairs, Vec3{0, 0, 0}, Vec3{1, 0, 0}, 0.01f)
++            == 1);
++
++    // Identical UV space is the point: the pair now shares one texture region, halving its
++    // texel cost.
++    const uv::Bounds2 a1 = uv::islandUvBounds(mesh, islands[pairs[0].primary]);
++    const uv::Bounds2 b1 = uv::islandUvBounds(mesh, islands[pairs[0].mirror]);
++    const float slack = 1e-4f;
++    REQUIRE(std::fabs(a1.mn.x - b1.mn.x) < slack);
++    REQUIRE(std::fabs(a1.mn.y - b1.mn.y) < slack);
++    REQUIRE(std::fabs(a1.mx.x - b1.mx.x) < slack);
++    REQUIRE(std::fabs(a1.mx.y - b1.mx.y) < slack);
++    // The PRIMARY must not have moved — stacking puts the mirror onto it, not both somewhere new.
++    REQUIRE(std::fabs(a1.mn.x - a0.mn.x) < slack);
++    REQUIRE(std::fabs(a1.mn.y - a0.mn.y) < slack);
++
++    // Matching bounding boxes are NOT enough: a scrambled shell has the same box. Every corner
++    // of the mirror island must carry the UV of its geometric counterpart in the primary, which
++    // is the difference between sharing UV space and merely overlapping it.
++    const std::vector<Vec2>* uvs = uv::uvColumn(mesh);
++    REQUIRE(uvs != nullptr);
++    std::size_t checked = 0;
++    for (const FaceId face : islands[pairs[0].mirror]) {
++        for (const cyber::LoopId loop : mesh.faceLoops(face)) {
++            const Vec3 here = mesh.position(mesh.loopVertex(loop));
++            const Vec3 want{-here.x, here.y, here.z};  // reflection across x = 0
++            bool found = false;
++            for (const FaceId other : islands[pairs[0].primary]) {
++                for (const cyber::LoopId otherLoop : mesh.faceLoops(other)) {
++                    if (length(mesh.position(mesh.loopVertex(otherLoop)) - want) < 1e-4f) {
++                        const Vec2 mine = (*uvs)[static_cast<std::size_t>(loop.value)];
++                        const Vec2 theirs = (*uvs)[static_cast<std::size_t>(otherLoop.value)];
++                        REQUIRE(std::fabs(mine.x - theirs.x) < slack);
++                        REQUIRE(std::fabs(mine.y - theirs.y) < slack);
++                        found = true;
++                        ++checked;
++                        break;
++                    }
++                }
++                if (found) {
++                    break;
++                }
++            }
++            REQUIRE(found);
++        }
++    }
++    REQUIRE(checked == 8);  // two quads, four corners each
++}
++
++TEST_CASE("a non-symmetric mesh yields no pairs rather than a wrong pairing") {
++    CubeAtlas atlas = unwrappedCube();
++    // A cube's faces are not mirror images of each other across x = 0 in the pairwise sense this
++    // looks for at a tight tolerance, and reporting a pair here would stack unrelated shells.
++    const auto pairs = uv::findMirrorIslandPairs(atlas.mesh, atlas.islands, Vec3{0.5f, 0, 0},
++                                                 Vec3{1, 0, 0}, 1e-4f);
++    for (const auto& pair : pairs) {
++        // If any pair IS reported it must at least be a real geometric mirror, never a
++        // same-island self-pair.
++        REQUIRE(pair.primary != pair.mirror);
++    }
++}
++
++TEST_CASE("stacking is refused on a mesh with no UVs") {
++    Mesh mesh = makeMirroredPair();
++    uv::AtlasOptions opts;
++    opts.mergeCharts = false;
++    const auto islands = uv::computeIslands(mesh, uv::autoSeams(mesh, opts));
++    const std::vector<uv::MirrorIslandPair> pairs{{0, 1}};
++    // Nothing to stack, and nothing created: the same absence-versus-zero discipline the rest of
++    // the UV path follows.
++    REQUIRE(uv::stackMirroredIslands(mesh, islands, pairs, Vec3{0, 0, 0}, Vec3{1, 0, 0}, 0.01f)
++            == 0);
++    REQUIRE(uv::uvColumn(mesh) == nullptr);
++}

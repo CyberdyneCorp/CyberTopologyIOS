@@ -448,6 +448,7 @@ final class ViewportInputModel {
         // 6.6: each journals ONE step, or nothing when the layout is already what it would be.
         case .packUVs: return meshEditor?.runPackUVs() ?? false
         case .distributeIslands: return meshEditor?.runDistributeIslands() ?? false
+        case .stackMirroredUVs: return meshEditor?.runStackMirroredUVs() ?? false
         // Not a document edit and nothing to journal: the chip is view state.
         case .toggleLoopInfoPin: return toggleLoopInfoPinned()
         case .clearLoopTags: return meshEditor?.clearAllLoopTags() ?? false

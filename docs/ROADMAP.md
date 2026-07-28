@@ -124,7 +124,7 @@ landing, where rivals are undefined rather than slower — which needs no compet
 
 ### v0.3 — Public beta (target: Jun 2027) — "The pipeline's second stage"
 
-#### Phase 6 status — 5 of 8 (6.1, 6.4, 6.5, 6.2b, 6.6 done; 6.2 all but its 2D half)
+#### Phase 6 status — 6 of 8 (6.1, 6.4, 6.5, 6.2b, 6.6, 6.7 done; 6.2 all but its 2D half)
 
 The entry point landed as `add-uv-stage-foundation`: engine UV READBACK (the real gate — the
 atlas could write per-corner UVs that nothing could read, so a 2D view was impossible), the
@@ -156,8 +156,14 @@ contained was a destructive defect: the X gesture deleted faces in EVERY stage, 
 where the spec says it re-unwraps an island. An unset stage is now inert rather than
 retopology, so a context that forgets a stage can no longer be silently destructive.
 
-What the remaining tasks still need from the engine: **6.7** needs a document-model change,
-since the atlas writes ONE UV set into the unit square. **6.3** is the largest remaining piece
+**6.7 landed, and half my scoping claim was wrong in a useful way.** I had it needing a
+document-model change because "the atlas writes ONE UV set". True of UV sets; not true of UDIM,
+where a tile IS a region of UV space and an island's tile is therefore DERIVED, never stored — so
+UDIM needed no document change at all. Multiple UV SETS is split out as **6.7a** for a specific
+blocker: the payload is OBJ, which carries exactly one `vt` channel, so a second set cannot
+survive a save without sidecar persistence plus `MeshEditTransaction` integration.
+
+What the remaining tasks still need: **6.3** is the largest remaining piece
 and mostly has its engine primitives already (`layout.hpp` carries grid straightening, overlap
 distribution and island stitching; `transforms.hpp` the move/rotate/scale). The seam half of
 6.2's original scoping claim was wrong and is recorded as such.

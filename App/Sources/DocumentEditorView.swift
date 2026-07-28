@@ -151,6 +151,12 @@ struct DocumentEditorView: View {
                                 runUVCommand(.distributeIslands, success: "Islands distributed")
                             },
                             onFlipIsland: flipIsland,
+                            udimTiles: inputModel.meshEditor?.udimTiles() ?? [],
+                            straddlingIslandCount:
+                                inputModel.meshEditor?.straddlingIslandFaces().count ?? 0,
+                            onStackMirrored: {
+                                runUVCommand(.stackMirroredUVs, success: "Mirrored islands stacked")
+                            },
                             mode: $uvHeatmapMode,
                             textureSize: Mesh.AtlasParameters().textureSize
                         )

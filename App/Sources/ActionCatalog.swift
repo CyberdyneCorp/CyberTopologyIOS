@@ -427,6 +427,19 @@ extension EditorAction {
                     + "the same pixels.",
                 demoFrames: ["arrow.up.left.and.arrow.down.right", "square.grid.2x2"]
             )
+        case .stackMirroredUVs:
+            GalleryEntry(
+                title: "Stack mirrored UVs",
+                symbol: "rectangle.on.rectangle",
+                gesture: "Command",
+                notes: "Puts each left/right island pair into the SAME UV space, so both sides "
+                    + "share one texture region and cost half the texels. Needs symmetry "
+                    + "enabled — the mirror plane comes from your symmetry setting, not a "
+                    + "guess. Pairs are matched by shape, so a model that is not symmetric is "
+                    + "left alone rather than stacked wrongly. Only do this when both sides "
+                    + "should look identical.",
+                demoFrames: ["rectangle.on.rectangle", "square.grid.2x2"]
+            )
         case .proposeSeams:
             GalleryEntry(
                 title: "Propose seams",

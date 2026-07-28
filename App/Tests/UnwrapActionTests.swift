@@ -481,4 +481,31 @@ struct UnwrapActionTests {
             "an unannotated cage must still report its mirrored islands"
         )
     }
+
+    // MARK: - Symmetry stacking and UDIM (6.7)
+
+    @Test("Stacking REFUSES without mirror symmetry, naming the missing prerequisite")
+    func stackingNeedsMirrorSymmetry() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.runUnwrapUVs())
+
+        // The plane must come from the document, never a default axis. This is the same defect
+        // `resymmetrize` had to fix, where a symmetry-off document was mirrored about `.x`.
+        #expect(!harness.editor.runStackMirroredUVs())
+        let notice = try #require(harness.editor.lastUnwrapRefusal)
+        #expect(notice.contains("Enable mirror symmetry"))
+        #expect(harness.committed.count == 1, "only the unwrap journaled")
+    }
+
+    @Test("A single-tile layout reports tile 1001 and no straddling islands")
+    func udimReadout() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.udimTiles().isEmpty, "no tiles before an unwrap")
+
+        #expect(harness.editor.runUnwrapUVs())
+        #expect(harness.editor.udimTiles() == [1001])
+        #expect(harness.editor.straddlingIslandFaces().isEmpty)
+    }
 }

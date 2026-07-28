@@ -177,6 +177,51 @@ extension MeshEditController {
         }
     }
 
+    /// Stacks mirrored island pairs onto shared UV space as ONE journaled step (6.7).
+    ///
+    /// Refuses unless the document actually has a MIRROR axis enabled. The plane is taken from
+    /// the document's symmetry state rather than defaulting to `.x` — the defect task 4.5's
+    /// `resymmetrize` already had to fix, where a radial-only or symmetry-off document was
+    /// mirrored about an axis the artist never enabled.
+    @discardableResult
+    func runStackMirroredUVs() -> Bool {
+        guard let symmetry = contextProvider?()?.symmetry, symmetry.isEnabled,
+            let axis = symmetry.mirrorAxes.first
+        else {
+            unwrapRefusalStorage = "Enable mirror symmetry first — stacking needs a mirror plane"
+            return false
+        }
+        var stacked = 0
+        let committed = wholeMeshUVCommand(
+            verb: "uv.stackMirroredIslands", failure: "Could not stack these islands"
+        ) { mesh, seams in
+            stacked = try mesh.stackMirroredIslands(
+                planePoint: symmetry.origin, planeNormal: axis.normal, seams: seams
+            )
+        }
+        if !committed, stacked == 0 {
+            // Nothing matched. Distinct from a failure AND from a no-op: the mesh is simply not
+            // symmetric about this plane, and saying so points at the cause rather than implying
+            // the command is broken.
+            unwrapRefusalStorage = "No mirrored island pairs found about the \(axis.rawValue) axis"
+        }
+        return committed
+    }
+
+    /// Occupied UDIM tiles, for the panel's readout. Empty when there is no layout.
+    func udimTiles() -> [Int32] {
+        guard let context = contextProvider?(), let mesh = context.editMesh else { return [] }
+        let seams = context.editObject?.annotations?.seamEdges ?? []
+        return (try? mesh.udimTiles(seams: seams)) ?? []
+    }
+
+    /// One representative face of each island whose UVs span more than one tile.
+    func straddlingIslandFaces() -> [UInt32] {
+        guard let context = contextProvider?(), let mesh = context.editMesh else { return [] }
+        let seams = context.editObject?.annotations?.seamEdges ?? []
+        return (try? mesh.straddlingIslands(seams: seams)) ?? []
+    }
+
     /// One representative face of each mirrored island, for the panel's flip affordance.
     ///
     /// Read-only, so it neither journals nor refuses — an empty result means "none mirrored",
