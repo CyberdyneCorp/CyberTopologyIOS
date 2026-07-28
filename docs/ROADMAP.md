@@ -124,7 +124,7 @@ landing, where rivals are undefined rather than slower — which needs no compet
 
 ### v0.3 — Public beta (target: Jun 2027) — "The pipeline's second stage"
 
-#### Phase 6 status — 7 of 8 (6.1, 6.2b, 6.3, 6.4, 6.5, 6.6, 6.7 done; 6.2 all but its 2D half)
+#### Phase 6 status — 8 of 8 closed, 2 follow-ups open (6.1, 6.1a, 6.2b, 6.3, 6.4, 6.5, 6.6, 6.7 done; 6.2 all but its 2D half)
 
 The entry point landed as `add-uv-stage-foundation`: engine UV READBACK (the real gate — the
 atlas could write per-corner UVs that nothing could read, so a 2D view was impossible), the
@@ -167,11 +167,17 @@ survive a save without sidecar persistence plus `MeshEditTransaction` integratio
 missing — this time including a requirement that was already SHIPPED: "relax an island's UVs
 (corner auto-pinning)" is exactly `reunwrapIsland` from 6.2b.
 
-Remaining in Phase 6, all three split out with stated blockers rather than deferred for size:
-**6.1a** (UV-only project type + split-view gestures), **6.3b** (UV3D on-surface pinch — needs
-input arbitration against the camera pinch, plus a texture preview that does not exist yet), and
+**6.1a landed too, and corrected another of my own claims** — the "UV-only project type" needed no
+document type, UTI or browser change at all; the spec asks for a DERIVED behaviour ("an EditMesh
+with no Target"), and snapping was already disabled without a Target. Its split-view gesture also
+produced the one regression a unit test could not have caught: attaching the gesture above the
+viewport broke a camera UI test, so it now lives on the 2D panel where it cannot compete.
+
+Two follow-ups remain, both with stated blockers: **6.3b** (UV3D on-surface pinch — the
+arbitration mechanism turned out to already exist as `cameraFeedsArmedTool`, so the real gap is
+that NO textured render path exists for the "live texture feedback" it is specified against) and
 **6.7a** (multiple UV sets — the OBJ payload carries one `vt` channel, so it needs sidecar
-persistence plus transaction integration). The seam half of 6.2's original scoping claim was wrong
+persistence, riding the `compound` command mechanism annotations already use). The seam half of 6.2's original scoping claim was wrong
 and is recorded as such.
 
 Open TestFlight. This is the release that starts the clock against CozyBlanket Pro.

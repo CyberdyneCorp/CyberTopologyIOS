@@ -33,6 +33,9 @@ struct DocumentEditorView: View {
     /// In-progress 2D island drag (6.3). VIEW state: nothing is journaled until release, so an
     /// abandoned drag leaves the undo stack untouched.
     @State private var uvIslandDrag: UVLayoutPanelView.DragState?
+    /// Split-view layout (6.1a). VIEW state, not document state: which pane is maximized is not
+    /// something an undo should restore.
+    @State private var uvSplit: UVSplitLayout = .split
 
     /// Persisted camera sensitivity (spec: viewport-rendering / "Robust
     /// camera system" — orbit/zoom speed SHALL be user-adjustable).
@@ -137,37 +140,22 @@ struct DocumentEditorView: View {
                 // being replaced: CyberTopologyUITests taps "UV" and then performs camera
                 // swipes, pinches and multi-touch undo ON the viewport, so gating it would
                 // break gestures the tests already rely on.
-                HStack(alignment: .top, spacing: 12) {
+                // Both views stay in ONE container and only their widths change; see
+                // UVSplitLayout for why maximizing must never re-parent the viewport.
+                //
+                // NO GeometryReader and NO gesture at this level, deliberately. The layout
+                // gesture lives INSIDE the panel: a SwiftUI DragGesture attached above the
+                // viewport competes with its UIKit camera recognizers, which broke
+                // `testCameraGesturesDoNotConflictWithUndoTaps`. Keeping it on the panel — which
+                // has no camera gesture — removes the conflict by construction instead of tuning
+                // thresholds until the two stop overlapping.
+                HStack(alignment: .top, spacing: uvSplit == .split ? 12 : 0) {
                     viewport
-                    if document.bundle.manifest.stage == .uv {
-                        UVLayoutPanelView(
-                            state: uvLayoutState,
-                            report: meshEditorReport,
-                            notice: uvNotice,
-                            onUnwrap: runUnwrap,
-                            proposedSeamCount: proposedSeamCount,
-                            onAcceptSeams: acceptSeams,
-                            onDiscardSeams: discardSeams,
-                            flippedIslandFaces: flippedIslandFaces,
-                            onPack: { runUVCommand(.packUVs, success: "Packed") },
-                            onDistribute: {
-                                runUVCommand(.distributeIslands, success: "Islands distributed")
-                            },
-                            onFlipIsland: flipIsland,
-                            udimTiles: inputModel.meshEditor?.udimTiles() ?? [],
-                            straddlingIslandCount:
-                                inputModel.meshEditor?.straddlingIslandFaces().count ?? 0,
-                            onStackMirrored: {
-                                runUVCommand(.stackMirroredUVs, success: "Mirrored islands stacked")
-                            },
-                            onTransformIsland: transformIsland,
-                            onGridStraighten: gridStraightenIsland,
-                            activeDrag: $uvIslandDrag,
-                            mode: $uvHeatmapMode,
-                            textureSize: Mesh.AtlasParameters().textureSize
-                        )
-                        .frame(maxWidth: 340)
-                    }
+                        // Zero-width when the panel is maximized. Safe: setViewportSize ignores a
+                        // non-positive size, so the renderer keeps its last one rather than
+                        // rebuilding for a drawable nobody can see.
+                        .frame(width: uvSplit == .maximizedPanel ? 0 : nil)
+                    uvPanelIfNeeded()
                 }
                 if let statusMessage {
                     Text(statusMessage)
@@ -208,8 +196,8 @@ struct DocumentEditorView: View {
         ) { result in
             // The role must be read from state that dismissal does NOT
             // clear — see FileImportRequest for the regression this fixes.
-            if let role = importRequest.consumeRole() {
-                handleImport(result, role: role)
+            if let intent = importRequest.consumeIntent() {
+                handleImport(result, intent: intent)
             }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -272,6 +260,10 @@ struct DocumentEditorView: View {
                 Button("Import Target…") { importRequest.begin(.target) }
                     .accessibilityIdentifier("import-target")
                 Button("Import EditMesh…") { importRequest.begin(.editMesh) }
+            // 6.1a: unwrap an existing low-poly with no high-poly reference. A distinct entry
+            // point rather than a mode, because it is a different STARTING POINT for a project
+            // and an artist choosing it has already decided there is no Target.
+            Button("Import for UV only…") { importRequest.begin(.uvOnlyProject) }
                     .accessibilityIdentifier("import-editmesh")
                 Button("Export EditMeshes") { exportNow() }
                     .accessibilityIdentifier("export-editmeshes")
@@ -825,6 +817,79 @@ struct DocumentEditorView: View {
     /// Recomputed per body pass. Acceptable because the panel only exists in the UV stage
     /// and an EditMesh cage is hundreds to low thousands of faces; if that ever stops being
     /// true the fix is to memoize on `(objectID, revision)`, not to read the live handle.
+    /// The 2D panel, sized by the split layout and carrying the layout gesture.
+    ///
+    /// A maximized panel must be able to fill the workspace, so the width cap is lifted rather
+    /// than left at the split-state maximum.
+    @ViewBuilder
+    private func uvPanelIfNeeded() -> some View {
+        if document.bundle.manifest.stage == .uv {
+                        UVLayoutPanelView(
+                state: uvLayoutState,
+                report: meshEditorReport,
+                notice: uvNotice,
+                onUnwrap: runUnwrap,
+                proposedSeamCount: proposedSeamCount,
+                onAcceptSeams: acceptSeams,
+                onDiscardSeams: discardSeams,
+                flippedIslandFaces: flippedIslandFaces,
+                onPack: { runUVCommand(.packUVs, success: "Packed") },
+                onDistribute: {
+                    runUVCommand(.distributeIslands, success: "Islands distributed")
+                },
+                onFlipIsland: flipIsland,
+                udimTiles: inputModel.meshEditor?.udimTiles() ?? [],
+                straddlingIslandCount:
+                    inputModel.meshEditor?.straddlingIslandFaces().count ?? 0,
+                onStackMirrored: {
+                    runUVCommand(.stackMirroredUVs, success: "Mirrored islands stacked")
+                },
+                onTransformIsland: transformIsland,
+                onGridStraighten: gridStraightenIsland,
+                activeDrag: $uvIslandDrag,
+                mode: $uvHeatmapMode,
+                textureSize: Mesh.AtlasParameters().textureSize
+            )
+
+            // Collapsed to a grab STRIP rather than hidden when the viewport is maximized: a
+            // hidden panel would take its own gesture surface with it, making that state a dead
+            // end the artist can enter with one swipe and not leave.
+            .frame(
+                maxWidth: uvSplit == .maximizedPanel
+                    ? .infinity
+                    : (uvSplit == .maximizedViewport ? UVSplitLayout.grabStripWidth : 340)
+            )
+            .clipped()
+            // The gesture is scoped to the panel: in BOTH reachable states the screen's trailing
+            // edge and (when maximized) its middle lie over the panel, so nothing is lost by
+            // keeping it here — and the camera keeps every touch that starts on the viewport.
+            .overlay {
+                GeometryReader { geometry in
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(splitLayoutGesture(in: geometry.size))
+                }
+            }
+        }
+    }
+
+    /// Edge-swipe / divider-line layout gestures (6.1a).
+    ///
+    /// Only active in the UV stage: outside it there is no split to maximize, and a stray
+    /// gesture must not silently change a layout the artist cannot see.
+    private func splitLayoutGesture(in size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 24, coordinateSpace: .local)
+            .onEnded { value in
+                guard document.bundle.manifest.stage == .uv else { return }
+                // Asks the CURRENT layout, so a divider line is only claimed when there is a
+                // split to restore — see `UVSplitLayout.gesture(from:to:in:)`.
+                guard let gesture = uvSplit.gesture(
+                    from: value.startLocation, to: value.location, in: size
+                ) else { return }
+                uvSplit = uvSplit.applying(gesture)
+            }
+    }
+
     private var uvLayoutState: UVLayoutGeometry.State {
         UVLayoutGeometry.state(inDocument: document.bundle)
     }
@@ -942,6 +1007,21 @@ struct DocumentEditorView: View {
 
     /// Internal (not private) so unit tests can drive the import result
     /// path directly — the Files picker itself is system UI.
+    func handleImport(_ result: Result<URL, Error>, intent: FileImportRequest.Intent) {
+        guard intent == .uvOnlyProject else {
+            handleImport(result, role: intent.role)
+            return
+        }
+        do {
+            let url = try result.get()
+            try document.importUVOnlyProject(at: url)
+            journal.handle(.documentEdited)
+            statusMessage = "Imported for UV only — no Target, snapping off"
+        } catch {
+            statusMessage = "Import failed: \(error.localizedDescription)"
+        }
+    }
+
     func handleImport(_ result: Result<URL, Error>, role: DocumentManifest.Object.Role) {
         do {
             let url = try result.get()

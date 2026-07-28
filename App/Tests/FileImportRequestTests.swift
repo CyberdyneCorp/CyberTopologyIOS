@@ -18,7 +18,7 @@ struct FileImportRequestTests {
         #expect(!request.isPresented)
         #expect(request.role == nil)
 
-        request.begin(.target)
+        request.begin(FileImportRequest.Intent.target)
         #expect(request.isPresented)
         #expect(request.role == .target)
     }
@@ -27,7 +27,7 @@ struct FileImportRequestTests {
     /// the completion handler has nothing to import as.
     @Test func roleSurvivesDismissalSoTheCompletionCanStillImport() {
         var request = FileImportRequest()
-        request.begin(.target)
+        request.begin(FileImportRequest.Intent.target)
 
         // Exactly what SwiftUI does when the picker closes.
         request.isPresented = false
@@ -38,7 +38,7 @@ struct FileImportRequestTests {
 
     @Test func roleSurvivesDismissalForEditMeshToo() {
         var request = FileImportRequest()
-        request.begin(.editMesh)
+        request.begin(FileImportRequest.Intent.editMesh)
         request.isPresented = false
         #expect(request.consumeRole() == .editMesh)
     }
@@ -47,7 +47,7 @@ struct FileImportRequestTests {
     /// not import again.
     @Test func roleIsConsumedOnlyOnce() {
         var request = FileImportRequest()
-        request.begin(.target)
+        request.begin(FileImportRequest.Intent.target)
         request.isPresented = false
 
         #expect(request.consumeRole() == .target)
@@ -65,11 +65,34 @@ struct FileImportRequestTests {
     /// leaving the first to fire later.
     @Test func beginningAgainReplacesThePendingRole() {
         var request = FileImportRequest()
-        request.begin(.target)
-        request.begin(.editMesh)
+        request.begin(FileImportRequest.Intent.target)
+        request.begin(FileImportRequest.Intent.editMesh)
 
         #expect(request.isPresented)
         #expect(request.consumeRole() == .editMesh)
         #expect(request.consumeRole() == nil)
+    }
+
+    @Test("A UV-only intent imports as the EDIT MESH, so role cannot desync from intent")
+    func uvOnlyIntentMapsToEditMesh() {
+        var request = FileImportRequest()
+        request.begin(FileImportRequest.Intent.uvOnlyProject)
+        // The role is DERIVED from the intent rather than stored beside it. A second flag could
+        // desync from `role` — the exact class of regression this struct exists to prevent.
+        #expect(request.role == .editMesh)
+        #expect(request.consumeIntent() == .uvOnlyProject)
+        #expect(request.role == nil, "consumed exactly once")
+    }
+
+    @Test("Every intent maps to a role, so no intent can import as nothing")
+    func everyIntentHasARole() {
+        for intent in [
+            FileImportRequest.Intent.target, .editMesh, .uvOnlyProject,
+        ] {
+            var request = FileImportRequest()
+            request.begin(intent)
+            #expect(request.role != nil)
+            #expect(request.consumeRole() == intent.role)
+        }
     }
 }

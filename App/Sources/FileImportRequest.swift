@@ -18,20 +18,48 @@ struct FileImportRequest: Equatable {
     /// Drives the sheet. Independent of `role` by design — see above.
     var isPresented = false
 
-    /// Role the completed picker session should import as. Survives
-    /// dismissal; cleared only by `consumeRole()`.
-    private(set) var role: DocumentManifest.Object.Role?
+    /// What the completed picker session should DO with the file.
+    ///
+    /// An intent rather than a bare role (6.1a), because a UV-only project import is
+    /// `role: .editMesh` PLUS a stage switch. Carrying the extra decision as a second flag
+    /// beside `role` would let the two desync — which is precisely the regression this struct
+    /// exists to prevent — so there is one value and the role is derived from it.
+    enum Intent: Equatable {
+        case target
+        case editMesh
+        /// Import as the EditMesh with no Target and open in the UV stage, as one undo step.
+        case uvOnlyProject
 
-    /// Opens the picker for `role`.
-    mutating func begin(_ role: DocumentManifest.Object.Role) {
-        self.role = role
+        var role: DocumentManifest.Object.Role {
+            switch self {
+            case .target: return .target
+            case .editMesh, .uvOnlyProject: return .editMesh
+            }
+        }
+    }
+
+    /// Intent the completed picker session should apply. Survives dismissal; cleared only by
+    /// `consumeIntent()`.
+    private(set) var intent: Intent?
+
+    /// The role the pending session would import as, or nil when none is pending.
+    var role: DocumentManifest.Object.Role? { intent?.role }
+
+    /// Opens the picker for `intent`.
+    mutating func begin(_ intent: Intent) {
+        self.intent = intent
         isPresented = true
     }
 
-    /// Role for the session that just completed, consumed exactly once so
-    /// a second completion (or a stale one) cannot import again.
+    /// Intent for the session that just completed, consumed exactly once so a second completion
+    /// (or a stale one) cannot import again.
+    mutating func consumeIntent() -> Intent? {
+        defer { intent = nil }
+        return intent
+    }
+
+    /// Role for the session that just completed, consumed exactly once.
     mutating func consumeRole() -> DocumentManifest.Object.Role? {
-        defer { role = nil }
-        return role
+        consumeIntent()?.role
     }
 }

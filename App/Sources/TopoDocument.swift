@@ -137,6 +137,51 @@ final class TopoDocument: UIDocument, ObservableObject {
         perform(command)
     }
 
+    /// Imports a low-poly mesh as a UV-ONLY project: the EditMesh with no Target, opening
+    /// directly in the UV stage (openspec add-uv-only-projects, 6.1a; spec: document-model /
+    /// "UV-only document without a Target").
+    ///
+    /// A COMPOUND command, so the import and the stage switch are ONE undo. Two separate
+    /// commands would leave an undo that removed the mesh while stranding the document in a UV
+    /// stage with nothing to unwrap, and a second undo needed to get back.
+    ///
+    /// A "project type" here is a derived BEHAVIOUR, not stored state: "an EditMesh with no
+    /// Target" is the whole definition, exactly as a UDIM tile is derived from where an island's
+    /// UVs are. It needs no manifest field, no second document type and no separate browser
+    /// entry — the earlier scoping note claiming otherwise was wrong. Snapping is disabled for
+    /// free, because `MetalViewport.syncTargetSnapper` leaves `targetSnapper` nil when the
+    /// document has no Target.
+    func importUVOnlyProject(at url: URL) throws {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let name = url.deletingPathExtension().lastPathComponent
+        let importCommand = try bundle.importCommand(for: url, name: name, role: .editMesh)
+        let stage = bundle.manifest.stage
+        guard stage != .uv else {
+            // Already in UV: a compound carrying a no-op `setStage(from: .uv, to: .uv)` would
+            // journal a step that changes nothing on undo.
+            perform(importCommand)
+            return
+        }
+        perform(
+            .compound(
+                verb: "import.uvOnlyProject",
+                commands: [importCommand, .setStage(from: stage, to: .uv)]
+            )
+        )
+    }
+
+    /// True when this document is a UV-only project: an EditMesh and no Target.
+    ///
+    /// Derived, never stored — see `importUVOnlyProject`. Any document can become one by having
+    /// its Target removed, and must then behave the same way, which a stored flag would not
+    /// survive.
+    var isUVOnlyProject: Bool {
+        let objects = bundle.manifest.objects
+        return objects.contains { $0.role == .editMesh }
+            && !objects.contains { $0.role == .target }
+    }
+
     /// Removes the object `id` (delete affordance) as one undoable step.
     /// No-op for an unknown id.
     func removeObject(id: UUID) {
