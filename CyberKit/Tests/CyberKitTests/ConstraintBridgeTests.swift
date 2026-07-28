@@ -463,6 +463,74 @@ struct FrozenFaceAnnotationTests {
         }
     }
 
+    @Test("Seams toggle, sew, and are distinct from tagged edges")
+    func seamsToggleAndAreDistinct() {
+        let empty = MeshAnnotations()
+        #expect(empty.seamEdges.isEmpty)
+        #expect(!empty.isSeam(3))
+
+        let cut = empty.togglingSeams(on: [7, 3])
+        #expect(cut.seamEdges == [3, 7], "stored sorted, for deterministic encoding")
+        #expect(cut.isSeam(7))
+        // An all-seam selection SEWS, matching the engine's own SeamSet.toggle and the flip
+        // shape pins, tags and frozen faces use.
+        #expect(cut.togglingSeams(on: [7, 3]).seamEdges.isEmpty)
+        #expect(cut.clearingAllSeams().seamEdges.isEmpty)
+
+        // A seam is a CUT for unwrapping; a tag is a FLOW hint for the retopology solver.
+        // Sharing one edge set would mean tagging a loop silently cut the atlas open.
+        let tagged = empty.togglingTags(on: [3], color: 0)
+        #expect(tagged.seamEdges.isEmpty)
+        #expect(cut.taggedEdges.isEmpty)
+    }
+
+    @Test("Seaming alone makes annotations non-empty")
+    func seamingCountsAsState() {
+        // isEmpty gates whether annotations are journaled at all, so a seam-only state
+        // reading as empty would discard the artist's seams on the next edit.
+        #expect(!MeshAnnotations(seamEdges: [1]).isEmpty)
+    }
+
+    @Test("EVERY transform preserves seams")
+    func everyTransformPreservesSeams() {
+        // Same trap as frozenFaces: eight reconstruction sites, and a field missed at any
+        // one of them silently drops document state. They route through `replacing`; this
+        // asserts they still do.
+        let base = MeshAnnotations(
+            taggedEdges: [5], tagColorIndices: [2], hiddenFaces: [9],
+            pinnedVertices: [4], frozenFaces: [11], seamEdges: [21, 22]
+        )
+        let transforms: [(String, MeshAnnotations)] = [
+            ("togglingTags", base.togglingTags(on: [6], color: 1)),
+            ("clearingTags", base.clearingTags(on: [5])),
+            ("clearingAllTags", base.clearingAllTags()),
+            ("togglingPins", base.togglingPins(on: [8])),
+            ("clearingAllPins", base.clearingAllPins()),
+            ("togglingFrozen", base.togglingFrozen(on: [12])),
+            ("clearingAllFrozen", base.clearingAllFrozen()),
+            ("hiding", base.hiding(faces: [20])),
+            ("invertingVisibility", base.invertingVisibility(allFaces: [9, 20])),
+            ("showingAll", base.showingAll()),
+        ]
+        for (name, result) in transforms {
+            #expect(result.seamEdges == [21, 22], "\(name) dropped the seams")
+        }
+    }
+
+    @Test("Seams survive a Codable round-trip, and pre-6.2 documents still decode")
+    func seamsRoundTrip() throws {
+        let original = MeshAnnotations(frozenFaces: [1], seamEdges: [4, 9])
+        let restored = try JSONDecoder().decode(
+            MeshAnnotations.self, from: try JSONEncoder().encode(original)
+        )
+        #expect(restored == original)
+
+        // A document written before seams existed has no key at all.
+        let legacy = Data(#"{"taggedEdges":[1],"tagColorIndices":[0]}"#.utf8)
+        let decoded = try JSONDecoder().decode(MeshAnnotations.self, from: legacy)
+        #expect(decoded.seamEdges.isEmpty)
+    }
+
     @Test("Frozen faces survive a Codable round-trip, and older documents still decode")
     func codableRoundTrip() throws {
         let original = MeshAnnotations(pinnedVertices: [2], frozenFaces: [3, 4])

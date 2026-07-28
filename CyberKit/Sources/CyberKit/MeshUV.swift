@@ -109,10 +109,11 @@ extension Mesh {
     /// Throws when the atlas cannot produce a layout, or when the engine was built
     /// without the UV module.
     public func unwrapped(
-        parameters: AtlasParameters = AtlasParameters()
+        parameters: AtlasParameters = AtlasParameters(),
+        seams: [UInt32] = []
     ) throws -> (mesh: Mesh, report: AtlasReport) {
         let copy = try duplicated()
-        return (copy, try copy.unwrapInPlace(parameters: parameters))
+        return (copy, try copy.unwrapInPlace(parameters: parameters, seams: seams))
     }
 
     /// Unwraps THIS mesh in place, returning what the atlas produced.
@@ -131,12 +132,36 @@ extension Mesh {
     /// does not half-apply.
     @discardableResult
     public func unwrapInPlace(
-        parameters: AtlasParameters = AtlasParameters()
+        parameters: AtlasParameters = AtlasParameters(),
+        seams: [UInt32] = []
     ) throws -> AtlasReport {
+        // Seams ride the handle like the solve region and density scales. Set
+        // unconditionally — including to empty — so an unwrap cannot inherit a seam set
+        // left behind by a previous one.
+        try setSeamEdges(seams)
         var raw = parameters.raw
         var result = CyberAtlasResult()
         try check(cyber_uv_atlas(handle, &raw, &result))
         return AtlasReport(result)
+    }
+
+    /// Hand-drawn UV seam edges for the next unwrap. Empty clears.
+    ///
+    /// The atlas cuts along exactly these instead of generating its own. Authored seams
+    /// REPLACE the automatic ones rather than adding to them: cutting where the artist did
+    /// not ask is a worse failure than an under-cut layout, and the distortion report plus
+    /// the per-face heatmap already surface the latter.
+    ///
+    /// Every id is validated by the engine before anything is stored, so a rejected call
+    /// leaves the mesh untouched.
+    public func setSeamEdges(_ edges: [UInt32]) throws {
+        if edges.isEmpty {
+            try check(cyber_mesh_set_seam_edges(handle, nil, 0))
+            return
+        }
+        try edges.withUnsafeBufferPointer { buffer in
+            try check(cyber_mesh_set_seam_edges(handle, buffer.baseAddress, edges.count))
+        }
     }
 
     /// Per-corner UV coordinates over the same triangulation `withRenderBuffers`'

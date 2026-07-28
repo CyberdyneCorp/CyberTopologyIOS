@@ -186,6 +186,43 @@ struct MeshUVTests {
         #expect(quadsChecked > 0, "the cube fixture should have contributed quads")
     }
 
+    // MARK: - Hand-drawn seams (6.2)
+
+    @Test("Authored seams REPLACE the automatic ones rather than supplementing them")
+    func authoredSeamsReplaceAutoSeams() throws {
+        let autoRun = try cube().unwrapped()
+        #expect(autoRun.report.seamEdges > 0)
+
+        // Exactly two authored seams.
+        let seamed = try cube()
+        let authored: [UInt32] = [0, 1]
+        let seamRun = try seamed.unwrapped(seams: authored)
+        // If auto-seams were unioned in, this would report the baseline count or more, and
+        // the artist would get cuts they never drew.
+        #expect(seamRun.report.seamEdges == authored.count)
+    }
+
+    @Test("No authored seams is unchanged behaviour")
+    func noSeamsIsUnchanged() throws {
+        // The inertness property: the capability must not alter existing output by existing.
+        let plain = try cube().unwrapped()
+        let explicitlyEmpty = try cube().unwrapped(seams: [])
+        #expect(plain.report.seamEdges == explicitlyEmpty.report.seamEdges)
+        #expect(plain.report.chartCount == explicitlyEmpty.report.chartCount)
+        #expect(try plain.mesh.payloadData() == explicitlyEmpty.mesh.payloadData())
+    }
+
+    @Test("A rejected seam id leaves the mesh untouched")
+    func rejectedSeamIdIsAtomic() throws {
+        let subject = try cube()
+        try subject.setSeamEdges([0])
+        // Validated as a whole before anything is stored, so a bad id in the middle cannot
+        // leave a half-updated seam set behind.
+        #expect(throws: (any Error).self) { try subject.setSeamEdges([0, 999_999]) }
+        let after = try subject.unwrapped(seams: [0])
+        #expect(after.report.seamEdges == 1)
+    }
+
     // MARK: - Per-face distortion (6.4)
 
     @Test("Distortion is NIL before an unwrap and one entry per face after")

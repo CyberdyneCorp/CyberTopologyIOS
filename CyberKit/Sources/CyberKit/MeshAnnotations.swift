@@ -60,11 +60,19 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
     /// SOLVER constraint. A face can be frozen and visible, which is the
     /// normal case — you generally want to see what you are protecting.
     public private(set) var frozenFaces: [UInt32]
+    /// UV SEAM edges, sorted ascending (deterministic encoding). The atlas cuts along
+    /// exactly these instead of generating its own (openspec add-uv-seam-authoring;
+    /// spec: uv-workflow / "An unwrap honours authored seams").
+    ///
+    /// Distinct from `taggedEdges`: a tag is a FLOW hint that steers the retopology
+    /// solver's cross field, a seam is a CUT for UV unwrapping. Overloading one edge set
+    /// for both would mean tagging a loop for flow silently cut the atlas open.
+    public private(set) var seamEdges: [UInt32]
 
     public init(
         taggedEdges: [UInt32] = [], tagColorIndices: [UInt8] = [],
         hiddenFaces: [UInt32] = [], pinnedVertices: [UInt32] = [],
-        frozenFaces: [UInt32] = []
+        frozenFaces: [UInt32] = [], seamEdges: [UInt32] = []
     ) {
         // Sort tags and their colors together so the parallel arrays stay
         // aligned no matter what order the caller supplies, and DEDUPLICATE
@@ -90,6 +98,7 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
         self.hiddenFaces = Array(Set(hiddenFaces)).sorted()
         self.pinnedVertices = Array(Set(pinnedVertices)).sorted()
         self.frozenFaces = Array(Set(frozenFaces)).sorted()
+        self.seamEdges = Array(Set(seamEdges)).sorted()
     }
 
     /// This state with only the named fields replaced.
@@ -106,14 +115,15 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
     func replacing(
         taggedEdges: [UInt32]? = nil, tagColorIndices: [UInt8]? = nil,
         hiddenFaces: [UInt32]? = nil, pinnedVertices: [UInt32]? = nil,
-        frozenFaces: [UInt32]? = nil
+        frozenFaces: [UInt32]? = nil, seamEdges: [UInt32]? = nil
     ) -> MeshAnnotations {
         MeshAnnotations(
             taggedEdges: taggedEdges ?? self.taggedEdges,
             tagColorIndices: tagColorIndices ?? self.tagColorIndices,
             hiddenFaces: hiddenFaces ?? self.hiddenFaces,
             pinnedVertices: pinnedVertices ?? self.pinnedVertices,
-            frozenFaces: frozenFaces ?? self.frozenFaces
+            frozenFaces: frozenFaces ?? self.frozenFaces,
+            seamEdges: seamEdges ?? self.seamEdges
         )
     }
 
@@ -129,7 +139,7 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
 
     public var isEmpty: Bool {
         taggedEdges.isEmpty && hiddenFaces.isEmpty && pinnedVertices.isEmpty
-            && frozenFaces.isEmpty
+            && frozenFaces.isEmpty && seamEdges.isEmpty
     }
 
     /// Palette index of `edge`, or nil when it carries no tag.
@@ -211,6 +221,29 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
         replacing(pinnedVertices: [])
     }
 
+    // MARK: - UV seams
+
+    /// True when `edge` is a UV seam.
+    public func isSeam(_ edge: UInt32) -> Bool { seamEdges.contains(edge) }
+
+    /// This state with `edges` flipped: an all-seam selection SEWS, anything else cuts —
+    /// which is exactly what the engine's own `SeamSet.toggle` describes, and the same flip
+    /// shape pins, tags and frozen faces use.
+    public func togglingSeams(on edges: [UInt32]) -> MeshAnnotations {
+        let incoming = Set(edges)
+        guard !incoming.isEmpty else { return self }
+        var seams = Set(seamEdges)
+        if incoming.isSubset(of: seams) {
+            seams.subtract(incoming)
+        } else {
+            seams.formUnion(incoming)
+        }
+        return replacing(seamEdges: Array(seams))
+    }
+
+    /// This state with every seam sewn.
+    public func clearingAllSeams() -> MeshAnnotations { replacing(seamEdges: []) }
+
     // MARK: - Frozen faces
 
     /// True when `face` is frozen.
@@ -257,6 +290,7 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case taggedEdges, tagColorIndices, hiddenFaces, pinnedVertices, frozenFaces
+        case seamEdges
     }
 
     /// Explicit decode so pre-4.3 documents (no pins, no tag colors) round
@@ -270,7 +304,8 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
             hiddenFaces: try container.decodeIfPresent([UInt32].self, forKey: .hiddenFaces) ?? [],
             pinnedVertices: try container.decodeIfPresent(
                 [UInt32].self, forKey: .pinnedVertices) ?? [],
-            frozenFaces: try container.decodeIfPresent([UInt32].self, forKey: .frozenFaces) ?? []
+            frozenFaces: try container.decodeIfPresent([UInt32].self, forKey: .frozenFaces) ?? [],
+            seamEdges: try container.decodeIfPresent([UInt32].self, forKey: .seamEdges) ?? []
         )
     }
 }

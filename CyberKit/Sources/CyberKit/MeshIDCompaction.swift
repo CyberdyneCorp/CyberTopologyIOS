@@ -235,6 +235,7 @@ extension MeshAnnotations {
         let pins = pinnedVertices.compactMap { compaction.vertices[$0] }
         let hidden = hiddenFaces.compactMap { compaction.faces[$0] }
         let frozen = frozenFaces.compactMap { compaction.faces[$0] }
+        let seams = seamEdges.compactMap { compaction.edges[$0] }
         var tags: [UInt32] = []
         var colors: [UInt8] = []
         for (edge, color) in zip(taggedEdges, tagColorIndices) {
@@ -242,12 +243,15 @@ extension MeshAnnotations {
             tags.append(mapped)
             colors.append(color)
         }
-        guard !pins.isEmpty || !hidden.isEmpty || !tags.isEmpty || !frozen.isEmpty else {
+        guard !pins.isEmpty || !hidden.isEmpty || !tags.isEmpty || !frozen.isEmpty
+            || !seams.isEmpty
+        else {
             return nil
         }
         return replacing(
             taggedEdges: tags, tagColorIndices: colors,
-            hiddenFaces: hidden, pinnedVertices: pins, frozenFaces: frozen
+            hiddenFaces: hidden, pinnedVertices: pins, frozenFaces: frozen,
+            seamEdges: seams
         )
     }
 }

@@ -57,7 +57,11 @@ extension MeshEditController {
         journalOrDiscard(verb: verb) {
             // In place, inside the transaction: the atlas rewrites the corner UV attribute
             // on this handle, and the transaction captures the payload either side of it.
-            report = try mesh.unwrapInPlace(parameters: parameters)
+            // The document's authored seams, so the layout is the one the artist's seams
+            // describe rather than whatever automatic chart growth produces.
+            report = try mesh.unwrapInPlace(
+                parameters: parameters, seams: object.annotations?.seamEdges ?? []
+            )
             onLiveEdit?()
             // Unwrapping rewrites no element ids — it adds a corner attribute — so the
             // annotations survive intact. The payload round trip's id compaction is still

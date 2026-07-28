@@ -1,0 +1,190 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index 8024a28..21855ad 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -429,6 +429,18 @@ const uint32_t* cyber_mesh_tagged_edge_indices_ptr(const CyberMesh* mesh,
+  * brush there needs an id mapping first. */
+ CyberStatus cyber_mesh_set_density_scales(CyberMesh* mesh, const float* scales, size_t count);
+ 
++/* Hand-drawn UV SEAM edges for the next cyber_uv_atlas (add-uv-seam-authoring). The
++ * atlas cuts along exactly these instead of generating its own; count == 0 clears.
++ *
++ * Authored seams REPLACE the automatic ones rather than being added to them: cutting
++ * where the artist did not ask is a worse failure than an under-cut layout, which the
++ * distortion report and the per-face heatmap already surface.
++ *
++ * Every id is validated before anything is stored, so a rejected call leaves the handle
++ * exactly as it was. Rides the handle like cyber_mesh_set_solve_region. */
++CyberStatus cyber_mesh_set_seam_edges(CyberMesh* mesh, const uint32_t* edge_ids,
++                                      size_t count);
++
+ CyberStatus cyber_mesh_set_region_reference(CyberMesh* mesh, const CyberMesh* reference);
+ 
+ CyberStatus cyber_mesh_set_solve_region(CyberMesh* mesh, const uint32_t* face_ids, size_t count);
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index 49713c8..a2ac187 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -142,6 +142,9 @@ struct CyberMesh {
+     // whole-mesh path remeshes per island and extractIsland renumbers vertices, so
+     // these indices would not survive it.
+     std::vector<float> densityScales;
++    // Hand-drawn UV seam edges for the next atlas (add-uv-seam-authoring). Handle
++    // side-channel, like solveRegionFaces above; does not affect rendering.
++    std::vector<std::uint32_t> seamEdges;
+     // CACHED reference surface for when THIS handle is used as someone's reference.
+     // Mandatory rather than an optimisation: construction is ~636 us per 1k faces,
+     // so ~3 s at 4.8M, and a Weave Fill solves synchronously on the main actor.
+@@ -563,6 +566,15 @@ CyberStatus cyber_uv_atlas([[maybe_unused]] CyberMesh* mesh,
+             opts.mergeCharts = params->mergeCharts != 0;
+             opts.maxChartDistortion = params->maxChartDistortion;
+         }
++        // Hand-drawn seams, when the caller supplied any. Built here rather than stored as
++        // a SeamSet on the handle so the C surface stays plain ids.
++        cyber::uv::SeamSet authored;
++        for (const std::uint32_t id : mesh->seamEdges) {
++            authored.mark(cyber::EdgeId{id});
++        }
++        if (!authored.empty()) {
++            opts.seams = &authored;
++        }
+         const cyber::uv::AtlasResult r = cyber::uv::unwrapAtlas(mesh->mesh, opts);
+         // The atlas WRITES the per-corner UV attribute, so any cache built before it ran
+         // is stale. It previously did not invalidate -- harmless while nothing could read
+@@ -1208,6 +1220,36 @@ CyberStatus copyIds(const Container& src, Project project, uint32_t* out_ids, si
+ 
+ }  // namespace
+ 
++CyberStatus cyber_mesh_set_seam_edges(CyberMesh* mesh, const uint32_t* edge_ids,
++                                      size_t count) {
++    if (mesh == nullptr || (edge_ids == nullptr && count > 0)) {
++        setError("cyber_mesh_set_seam_edges: null argument");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        if (count == 0) {
++            mesh->seamEdges.clear();
++            clearError();
++            return CYBER_OK;
++        }
++        // Validate the WHOLE array before storing any of it, so a rejected call leaves the
++        // handle exactly as it was rather than half-updated.
++        for (size_t i = 0; i < count; ++i) {
++            const cyber::EdgeId edge{edge_ids[i]};
++            if (edge_ids[i] >= mesh->mesh.edgeCapacity() || !mesh->mesh.isAlive(edge)) {
++                setError("cyber_mesh_set_seam_edges: dead or out-of-range edge id");
++                return CYBER_ERR_INVALID_ARG;
++            }
++        }
++        mesh->seamEdges.assign(edge_ids, edge_ids + count);
++        clearError();
++        return CYBER_OK;
++    } catch (const std::exception& e) {
++        setError(e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++}
++
+ CyberStatus cyber_mesh_set_density_scales(CyberMesh* mesh, const float* scales, size_t count) {
+     if (mesh == nullptr || (scales == nullptr && count > 0)) {
+         setError("cyber_mesh_set_density_scales: null argument");
+diff --git a/src/uv/include/cyber/uv/atlas.hpp b/src/uv/include/cyber/uv/atlas.hpp
+index 8cae00b..d26663b 100644
+--- a/src/uv/include/cyber/uv/atlas.hpp
++++ b/src/uv/include/cyber/uv/atlas.hpp
+@@ -39,6 +39,18 @@ struct AtlasOptions {
+     bool reorientCharts = true;
+     UnwrapOptions unwrap{};
+     PackParams pack{};
++    // HAND-DRAWN seams (add-uv-seam-authoring). When non-null, `unwrapAtlas` cuts
++    // along exactly these instead of calling `autoSeams` — everything downstream
++    // (computeIslands, LSCM per island, packing) already honours a seam set, so
++    // this is the only hook the interactive path needed.
++    //
++    // REPLACES the automatic seams rather than adding to them. A union would cut
++    // where the artist did not ask, and "I drew three seams and got eleven" is a
++    // worse failure than an under-cut layout — which the distortion report and the
++    // heatmap already surface, so the artist can add another seam and re-run.
++    //
++    // Null (the default) is the previous behaviour byte-for-byte.
++    const SeamSet* seams = nullptr;
+ };
+ 
+ struct AtlasResult {
+diff --git a/src/uv/src/atlas.cpp b/src/uv/src/atlas.cpp
+index f355174..00ceabe 100644
+--- a/src/uv/src/atlas.cpp
++++ b/src/uv/src/atlas.cpp
+@@ -477,7 +477,10 @@ SeamSet autoSeams(const Mesh& mesh, const AtlasOptions& options) {
+ 
+ AtlasResult unwrapAtlas(Mesh& mesh, const AtlasOptions& options) {
+     AtlasResult result;
+-    const SeamSet seams = autoSeams(mesh, options);
++    // Hand-drawn seams win outright when supplied; see AtlasOptions::seams for why they
++    // replace the automatic ones rather than being unioned with them.
++    const SeamSet seams =
++        options.seams != nullptr ? *options.seams : autoSeams(mesh, options);
+     result.seamEdges = seams.size();
+ 
+     const std::vector<std::vector<FaceId>> islands = computeIslands(mesh, seams);
+diff --git a/tests/capi/test_capi.cpp b/tests/capi/test_capi.cpp
+index d475b1b..d7f1814 100644
+--- a/tests/capi/test_capi.cpp
++++ b/tests/capi/test_capi.cpp
+@@ -467,3 +467,56 @@ TEST_CASE("capi per-face UV distortion: absent before an unwrap, one entry per f
+     std::error_code ec;
+     std::filesystem::remove(objPath, ec);
+ }
++
++// Hand-drawn UV seams (openspec add-uv-seam-authoring, task 1).
++//
++// The property worth protecting is that authored seams REPLACE the automatic ones. A union
++// would cut where the artist did not ask, and that is invisible from the chart count alone
++// unless the test compares against the auto-seamed baseline.
++TEST_CASE("capi hand-drawn seams replace auto-seams rather than supplementing them") {
++    const std::filesystem::path objPath = writeCubeObj();
++
++    // Baseline: the automatic path on a cube.
++    CyberMesh* autoMesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &autoMesh) == CYBER_OK);
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++    CyberAtlasResult autoAtlas{};
++    REQUIRE(cyber_uv_atlas(autoMesh, &params, &autoAtlas) == CYBER_OK);
++    CHECK(autoAtlas.seamEdges > 0);
++
++    // Now the same cube with exactly TWO authored seam edges.
++    CyberMesh* seamMesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &seamMesh) == CYBER_OK);
++    size_t edgeIndexCount = 0;
++    cyber_mesh_edge_indices_ptr(seamMesh, &edgeIndexCount);
++    REQUIRE(edgeIndexCount >= 4);  // at least two edges exist
++
++    const uint32_t authored[2] = {0, 1};
++    REQUIRE(cyber_mesh_set_seam_edges(seamMesh, authored, 2) == CYBER_OK);
++    CyberAtlasResult seamAtlas{};
++    REQUIRE(cyber_uv_atlas(seamMesh, &params, &seamAtlas) == CYBER_OK);
++
++    // Exactly the authored count: if auto-seams were unioned in, this would report the
++    // baseline's seam count or more, and the artist would get cuts they never drew.
++    CHECK(seamAtlas.seamEdges == 2);
++
++    // A rejected id must leave the handle untouched rather than half-updated.
++    const uint32_t bad[2] = {0, 999999};
++    CHECK(cyber_mesh_set_seam_edges(seamMesh, bad, 2) == CYBER_ERR_INVALID_ARG);
++    CyberAtlasResult afterBad{};
++    REQUIRE(cyber_uv_atlas(seamMesh, &params, &afterBad) == CYBER_OK);
++    CHECK(afterBad.seamEdges == 2);
++
++    // Clearing returns to the automatic path exactly, so the capability is inert when unused.
++    REQUIRE(cyber_mesh_set_seam_edges(seamMesh, nullptr, 0) == CYBER_OK);
++    CyberAtlasResult cleared{};
++    REQUIRE(cyber_uv_atlas(seamMesh, &params, &cleared) == CYBER_OK);
++    CHECK(cleared.seamEdges == autoAtlas.seamEdges);
++    CHECK(cleared.chartCount == autoAtlas.chartCount);
++
++    cyber_mesh_free(autoMesh);
++    cyber_mesh_free(seamMesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}

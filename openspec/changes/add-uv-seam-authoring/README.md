@@ -1,0 +1,3 @@
+# add-uv-seam-authoring
+
+Phase 6's 6.2, first slice: hand-drawn UV seams. Corrects another of my estimates — I said 6.2 had "no API to supply seams", but `SeamSet` exists, `computeIslands` already honours it, and `unwrapAtlas` already composes autoSeams → computeIslands → LSCM → pack. So the engine change is ONE optional field; the work is document state and the authoring surface. Authored seams REPLACE the automatic ones rather than being unioned with them: cutting where the artist did not ask is worse than a distorted layout, which the distortion report already surfaces. Corner pinning genuinely does not exist (`choosePins` is automatic) and is split out as 6.2b with the X-gesture.
