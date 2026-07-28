@@ -131,6 +131,8 @@ targets:
       - path: CyberKit/Tests/CyberKitTests/ImplicitInterfaceSizingTests.swift
       # Outliner document state (8.1): public-API only, so it runs on device too.
       - path: CyberKit/Tests/CyberKitTests/OutlinerStateTests.swift
+      # UV unwrap + readback (6.1): public-API only, so it runs on device too.
+      - path: CyberKit/Tests/CyberKitTests/MeshUVTests.swift
       # Context-aware create-face: public-API + inline mesh, runs on device too.
       - path: CyberKit/Tests/CyberKitTests/ContextAwareCreateFaceTests.swift
       # Relax boundary preservation: public-API + inline mesh, runs on device too.

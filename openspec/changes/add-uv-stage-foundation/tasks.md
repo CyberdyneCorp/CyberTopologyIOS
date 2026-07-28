@@ -23,12 +23,12 @@ no 2D view is possible, so nothing downstream is worth writing until it exists.
 
 ## 2. CyberKit
 
-- [ ] 2.1 `Mesh.uvCoordinates()` returning nil (not empty) when the mesh has no UVs, so the
+- [x] 2.1 `Mesh.uvCoordinates()` returning nil (not empty) when the mesh has no UVs, so the
       Swift type carries the same distinction the C API does.
-- [ ] 2.2 `Mesh.unwrapped(...)` over `cyber_uv_atlas`, returning the `CyberAtlasResult`
+- [x] 2.2 `Mesh.unwrapped(...)` over `cyber_uv_atlas`, returning the `CyberAtlasResult`
       report as a Swift value. Following `remeshed`: never mutate the receiver, so a refused
       or cancelled unwrap leaves the caller's mesh untouched.
-- [ ] 2.3 Tests: round-trip UVs; a never-unwrapped mesh reports nil; the report's fields
+- [x] 2.3 Tests: round-trip UVs; a never-unwrapped mesh reports nil; the report's fields
       match what the engine produced.
 
 ## 3. The UV stage branches
