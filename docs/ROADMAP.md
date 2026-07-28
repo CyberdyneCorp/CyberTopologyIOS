@@ -124,7 +124,7 @@ landing, where rivals are undefined rather than slower — which needs no compet
 
 ### v0.3 — Public beta (target: Jun 2027) — "The pipeline's second stage"
 
-#### Phase 6 status — 10 of 11 closed (6.1, 6.1a, 6.2b, 6.3, 6.3b, 6.4, 6.5, 6.6, 6.7, 6.7a done; 6.2 all but its 2D half; 6.3c open)
+#### Phase 6 status — 11 of 12 closed (6.1, 6.1a, 6.2b, 6.3, 6.3b, 6.3c, 6.4, 6.5, 6.6, 6.7, 6.7a done; 6.2 all but its 2D half; 6.3d open)
 
 The entry point landed as `add-uv-stage-foundation`: engine UV READBACK (the real gate — the
 atlas could write per-corner UVs that nothing could read, so a 2D view was impossible), the
@@ -185,10 +185,15 @@ provides the camera-as-manipulator routing, three tools already use it, and ther
 conflict with "finger strokes never author" (which is about strokes creating geometry). That makes
 **five** Phase 6 tasks where checking the code beat trusting my own task text.
 
-One follow-up remains: **6.3c** (live texture feedback + UV2D per-vertex mode). This one is a real
-new subsystem rather than a mis-scoped blocker — no shader in the app samples a texture and neither
-the Target nor the overlay vertex stream carries UVs, so it needs a new render path with
-corner-expanded vertices, a shader pair and its own offscreen harness. The seam half of 6.2's original scoping claim was wrong
+**6.3c landed**: the app's first textured render path, a procedural UV checker on the 3D surface.
+Corner-expanded and non-indexed by necessity, since UVs are per-corner and a vertex-indexed stream
+would weld every seam shut. Its offscreen test took three attempts — the first two passed against a
+deliberately broken shader, and only mutation testing exposed them; the shipped version asserts the
+image DEPENDS on UV and on density.
+
+What remains is **6.3d**: an imported-image preview (asset loading plus a real texture, on top of the
+checker path that now exists) and UV2D per-vertex mode. Neither blocks the UV pipeline: import →
+retopo → seam → unwrap → judge → pack → export is complete and exercised end to end. The seam half of 6.2's original scoping claim was wrong
 and is recorded as such.
 
 Open TestFlight. This is the release that starts the clock against CozyBlanket Pro.

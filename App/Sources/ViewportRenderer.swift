@@ -73,6 +73,13 @@ final class ViewportRenderer: NSObject {
     let editMeshFillPath: GhostRenderPath
     /// Amber world-space guide-line overlay (add-guide-stroke-authoring).
     let guideLinePath: GuideLineRenderPath
+    /// Checker texture preview on the 3D surface (6.3c). Off unless loaded.
+    let uvCheckerPath: UVCheckerRenderPath
+    /// Checker appearance. Settable so density is adjustable — and so a test can switch SHADING
+    /// off: with wrap shading on, tone varies across a face regardless of the checker, which is
+    /// enough to make a "two distinct tones" assertion pass even for a single-colour shader. It did,
+    /// until a mutation exposed it.
+    var uvCheckerSettings = UVCheckerSettings()
     /// Render-time probe over every submitted frame (perf harness).
     let frameProbe = FrameTimeProbe()
 
@@ -96,6 +103,27 @@ final class ViewportRenderer: NSObject {
     var hasOverlay: Bool { overlayPath.hasGeometry }
     var hasGhost: Bool { ghostPath.hasGeometry }
     var hasGuideLines: Bool { guideLinePath.hasGeometry }
+    var hasUVChecker: Bool { uvCheckerPath.hasGeometry }
+
+    /// Loads (or clears) the checker preview from an EditMesh's UVs.
+    ///
+    /// Returns whether anything is now drawable, so a caller can tell "no layout" from "loaded".
+    @discardableResult
+    func loadUVChecker(from mesh: Mesh?) -> Bool {
+        guard let mesh, let vertices = UVCheckerGeometry.build(from: mesh) else {
+            uvCheckerPath.clear()
+            invalidate()
+            return false
+        }
+        let loaded = uvCheckerPath.load(vertices: vertices)
+        invalidate()
+        return loaded
+    }
+
+    func clearUVChecker() {
+        uvCheckerPath.clear()
+        invalidate()
+    }
     var hasHoverGhost: Bool { hoverGhostPath.hasGeometry }
     /// Whether a subdivision preview surface is currently loaded (task 4.6).
     var hasSubdivisionPreview: Bool { subdivisionPreviewPath.hasGeometry }
@@ -336,10 +364,14 @@ final class ViewportRenderer: NSObject {
             device: device, commandQueue: queue,
             preferPrivateStorage: pool.usesPrivateStorage
         )
+        let uvChecker = UVCheckerRenderPath(
+            device: device, commandQueue: queue,
+            preferPrivateStorage: pool.usesPrivateStorage
+        )
 
         guard
             let path, let overlay, let ghost, let hoverGhost, let subdivisionPreview,
-            let editMeshFill, let guideLines,
+            let editMeshFill, let guideLines, let uvChecker,
             let depth = device.makeDepthStencilState(descriptor: depthDescriptor)
         else { return nil }
 
@@ -354,6 +386,7 @@ final class ViewportRenderer: NSObject {
         self.subdivisionPreviewPath = subdivisionPreview
         self.editMeshFillPath = editMeshFill
         self.guideLinePath = guideLines
+        self.uvCheckerPath = uvChecker
         self.depthState = depth
         super.init()
     }
@@ -1038,6 +1071,19 @@ final class ViewportRenderer: NSObject {
             ),
             animationProgress: OverlayAnimation.progress(
                 creationTime: overlayCreationTime, now: time
+            )
+        )
+
+        // Checker preview (6.3c) BEFORE the line overlays: it is opaque surface shading with depth
+        // writes on, so the wireframe, guides and annotations must be encoded after it to sit on
+        // top rather than being occluded by the surface they describe.
+        uvCheckerPath.encode(
+            into: encoder,
+            uniforms: UVCheckerUniformsFactory.uniforms(
+                mvp: mvp,
+                density: uvCheckerSettings.density,
+                opacity: uvCheckerSettings.opacity,
+                shading: uvCheckerSettings.shading
             )
         )
 

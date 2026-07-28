@@ -731,7 +731,14 @@ struct MetalViewport: UIViewRepresentable {
             syncTargetSnapper(from: bundle)
             syncOverlay(from: bundle, renderer: renderer)
             syncSymmetry(from: bundle, renderer: renderer)
+            let previousStage = documentStage
             documentStage = bundle.manifest.stage
+            // A stage switch alone changes whether the checker should be drawn, and it moves no
+            // payload — so without this, entering the UV stage would show no preview until the next
+            // mesh edit happened to reload the overlay.
+            if previousStage != documentStage, let mesh = recognizerEditMesh {
+                syncUVChecker(mesh: mesh)
+            }
             inputModel.setSceneBounds(
                 center: renderer.bounds.center, radius: renderer.bounds.radius
             )
@@ -907,6 +914,7 @@ struct MetalViewport: UIViewRepresentable {
             recognizerEditMesh = mesh
             renderer.loadOverlay(
                 mesh: mesh, annotations: object.annotations, restartAnimation: isNewObject)
+            syncUVChecker(mesh: mesh)
             // The base cage changed in the DOCUMENT (a commit, an undo, an
             // import): the preview must follow it exactly, throttle or not.
             rebuildSubdivisionPreview(duringStroke: false)
@@ -1050,6 +1058,30 @@ struct MetalViewport: UIViewRepresentable {
             subdivisionPreviewRebuildCount += 1
             subdivisionPreviewMesh = preview
             renderer.loadSubdivisionPreview(mesh: preview)
+        }
+
+        /// Loads or clears the checker preview (6.3c).
+        ///
+        /// Gated on the UV STAGE: a checker over the cage in retopology would hide the very
+        /// topology being authored, and the preview exists to judge a layout, which is a UV-stage
+        /// question. Also cleared when the mesh has no layout, so an un-unwrapped cage shows the
+        /// wireframe rather than an untextured surface pretending to be a preview.
+        private func syncUVChecker(mesh: Mesh) {
+            guard let renderer else { return }
+            guard documentStage == .uv, uvCheckerEnabled else {
+                renderer.clearUVChecker()
+                return
+            }
+            renderer.loadUVChecker(from: mesh)
+        }
+
+        /// Whether the artist wants the checker. VIEW state — not journaled, since a preview
+        /// toggle is not a document change.
+        var uvCheckerEnabled = true {
+            didSet {
+                guard uvCheckerEnabled != oldValue, let mesh = recognizerEditMesh else { return }
+                syncUVChecker(mesh: mesh)
+            }
         }
 
         /// Builds a live EditMesh from payload bytes, restoring its UV-set sidecar (6.7a).
