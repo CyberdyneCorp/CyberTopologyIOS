@@ -124,7 +124,7 @@ landing, where rivals are undefined rather than slower — which needs no compet
 
 ### v0.3 — Public beta (target: Jun 2027) — "The pipeline's second stage"
 
-#### Phase 6 status — 1 of 8 (6.1 done)
+#### Phase 6 status — 2 of 8 (6.1, 6.4 done)
 
 The entry point landed as `add-uv-stage-foundation`: engine UV READBACK (the real gate — the
 atlas could write per-corner UVs that nothing could read, so a 2D view was impossible), the
@@ -133,10 +133,16 @@ view is a SwiftUI `Canvas`, which also keeps 6.4's heatmap a fill rather than a 
 
 Split out as **6.1a**: the UV-only project type and split-view gestures.
 
-What the next tasks still need from the engine, found while scoping: **6.2** has no API to
-SUPPLY seams and no corner pinning; **6.4**'s heatmap needs a PER-FACE distortion readout
-(`CyberAtlasResult` reports aggregate max/RMS only); **6.7** needs a document-model change,
-since the atlas writes ONE UV set into the unit square.
+**6.4 also landed**, and cheaper than that scoping claimed: I had recorded that its heatmap
+needed a per-face distortion readout "that does not exist". It existed —
+`cyber::uv::measureDistortion` already computed per-face angle error, area ratio and flipped
+winding, and already drove the aggregate figures. Only the C API exposure was missing, so 6.4
+was an exposure plus a fill in the Canvas. Texel density derives from the same area ratio,
+which is what stops the per-face and aggregate numbers drifting apart.
+
+What the remaining tasks still need from the engine: **6.2** has no API to SUPPLY seams and
+no corner pinning; **6.7** needs a document-model change, since the atlas writes ONE UV set
+into the unit square.
 
 Open TestFlight. This is the release that starts the clock against CozyBlanket Pro.
 

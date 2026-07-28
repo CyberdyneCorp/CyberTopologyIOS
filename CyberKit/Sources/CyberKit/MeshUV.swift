@@ -160,6 +160,58 @@ extension Mesh {
         }
     }
 
+    /// Per-face UV distortion, or nil when the mesh has no layout.
+    ///
+    /// **nil rather than an array of zeros**, for the same reason `uvCoordinates()` returns
+    /// nil: no layout and a perfect layout are different states, and zeros for both would
+    /// render a never-unwrapped mesh as flawless.
+    ///
+    /// One entry per live face, in the engine's live-face order — the same order
+    /// `liveFaceIDs()` walks — so a caller can index it against face rings it reconstructed
+    /// itself without a second mapping to keep in sync.
+    public struct FaceDistortion: Equatable, Sendable {
+        /// Conformal (angle) error in [0, 1). 0 is angle-preserving.
+        public var angle: Float
+        /// |uvArea| / surfaceArea, unnormalised. 0 for a collapsed face.
+        public var area: Float
+        /// The face's UV winding is reversed. A DEFECT, not a point on a scale — a mirrored
+        /// face bakes inverted detail — so callers should call it out rather than shade it.
+        public var flipped: Bool
+
+        /// Public so a caller can construct one — a heatmap's colour mapping is worth
+        /// testing against specific values, and without this every test would have to
+        /// unwrap a real mesh and hope it happened to contain the case it needed.
+        public init(angle: Float, area: Float, flipped: Bool) {
+            self.angle = angle
+            self.area = area
+            self.flipped = flipped
+        }
+
+        /// Texels per unit surface area at `textureSize`.
+        ///
+        /// Takes the size as a PARAMETER rather than baking one in: a texel density is
+        /// meaningless without the resolution it is expressed against, and hiding a default
+        /// would let two parts of the UI quote different numbers for the same face.
+        public func texelDensity(textureSize: Int) -> Float {
+            let side = Float(max(textureSize, 0))
+            return area * side * side
+        }
+    }
+
+    public func uvDistortion() -> [FaceDistortion]? {
+        withExtendedLifetime(self) {
+            var count = 0
+            guard let raw = cyber_mesh_uv_distortion_ptr(handle, &count), count > 0 else {
+                return nil
+            }
+            return (0..<count).map {
+                FaceDistortion(
+                    angle: raw[$0].angle, area: raw[$0].area, flipped: raw[$0].flipped != 0
+                )
+            }
+        }
+    }
+
     /// Whether this mesh carries a UV layout at all — the cheap question, without
     /// materialising the coordinates.
     public var hasUVLayout: Bool {

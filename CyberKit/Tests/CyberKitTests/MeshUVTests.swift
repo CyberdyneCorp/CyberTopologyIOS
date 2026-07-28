@@ -186,6 +186,52 @@ struct MeshUVTests {
         #expect(quadsChecked > 0, "the cube fixture should have contributed quads")
     }
 
+    // MARK: - Per-face distortion (6.4)
+
+    @Test("Distortion is NIL before an unwrap and one entry per face after")
+    func distortionAbsenceIsNotZero() throws {
+        let subject = try cube()
+        // nil, not an array of zeros: no layout and a perfect layout are different states,
+        // and zeros for both would render a never-unwrapped mesh as flawless.
+        #expect(subject.uvDistortion() == nil)
+
+        let (unwrapped, _) = try subject.unwrapped()
+        let measured = try #require(unwrapped.uvDistortion())
+        #expect(measured.count == unwrapped.liveFaceIDs().count)
+    }
+
+    @Test("Per-face angle error is bounded and agrees with the atlas aggregate")
+    func distortionAgreesWithTheReport() throws {
+        let (unwrapped, report) = try cube().unwrapped()
+        let measured = try #require(unwrapped.uvDistortion())
+
+        for face in measured {
+            // Conformal error is defined on [0,1); a NaN would shade as nothing rather
+            // than as an error, so finiteness is asserted too.
+            #expect(face.angle >= 0 && face.angle < 1)
+            #expect(face.area >= 0 && face.area.isFinite)
+        }
+        // Both come from the SAME engine measurement, so the worst per-face value cannot
+        // exceed the aggregate the atlas reported. If it could, the panel and the report
+        // would be two sources of truth for one question.
+        let worst = measured.map(\.angle).max() ?? 0
+        #expect(worst <= report.maxAngleDistortion + 1e-4)
+    }
+
+    @Test("Texel density scales with the SQUARE of the texture size")
+    func texelDensityScalesQuadratically() throws {
+        let (unwrapped, _) = try cube().unwrapped()
+        let face = try #require(unwrapped.uvDistortion()?.first { $0.area > 0 })
+
+        let atOneK = face.texelDensity(textureSize: 1024)
+        let atTwoK = face.texelDensity(textureSize: 2048)
+        // Density is texels per unit surface, and texels go as size²; a linear
+        // relationship would understate the effect of doubling a texture.
+        #expect(abs(atTwoK - atOneK * 4) < atOneK * 0.001)
+        // Zero is a legitimate answer for a nonsensical size, not a crash.
+        #expect(face.texelDensity(textureSize: 0) == 0)
+    }
+
     @Test("Atlas defaults come from the engine rather than being invented in Swift")
     func defaultsComeFromTheEngine() {
         let parameters = Mesh.AtlasParameters()

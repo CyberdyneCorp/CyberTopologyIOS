@@ -1,0 +1,171 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index b9bd818..8024a28 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -301,6 +301,26 @@ typedef struct CyberMeshlet {
+  * Same lifetime rules as the other pointer views: valid until the next mutating call. */
+ const float* cyber_mesh_uvs_ptr(const CyberMesh* mesh, size_t* out_count);
+ 
++/* Per-face UV distortion (add-uv-distortion-heatmaps). One entry per LIVE face, in the
++ * same order cyber_mesh_solved_faces / the face walk uses, so a caller can index it
++ * against face rings it reconstructed itself. */
++typedef struct CyberFaceDistortion {
++    float angle;   /* conformal error in [0,1); 0 is angle-preserving */
++    float area;    /* |uvArea| / surfaceArea, unnormalized; 0 for a collapsed face */
++    int flipped;   /* non-zero when the face's UV winding is reversed */
++} CyberFaceDistortion;
++
++/* Returns NULL with *out_count == 0 when the mesh has NO UV layout. Deliberately
++ * distinguishable from zero distortion: no layout and a perfect layout are different
++ * states, and reporting zeros for both would show a never-unwrapped mesh as flawless.
++ *
++ * Computed by the same cyber::uv::measureDistortion the atlas uses for its aggregate
++ * figures, so the per-face view and CyberAtlasResult cannot disagree.
++ *
++ * Same lifetime rules as the other pointer views: valid until the next mutating call. */
++const CyberFaceDistortion* cyber_mesh_uv_distortion_ptr(const CyberMesh* mesh,
++                                                        size_t* out_count);
++
+ const CyberMeshlet* cyber_mesh_meshlets_ptr(const CyberMesh* mesh, size_t* out_count);
+ /* Global vertex indices, grouped per meshlet (index into the position and
+  * normal pointer views). */
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index 54bf8ea..49713c8 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -23,6 +23,7 @@
+ 
+ #include "cyber/bake/bake.hpp"
+ #include "cyber/core/io.hpp"
++#include "cyber/uv/distortion.hpp"
+ #include "cyber/core/mesh.hpp"
+ #include "cyber/core/pipeline.hpp"
+ #include "cyber/core/meshlet.hpp"
+@@ -85,6 +86,10 @@ struct CyberRenderCache {
+     // and a seam gives one vertex several different UVs -- collapsing them to the
+     // vertex would silently weld every seam shut in the 2D view.
+     std::vector<float> uvs;
++    // Per-face distortion, lazily built on first request (only the heatmap wants it) and
++    // cleared with the rest of the cache, since it derives from geometry AND the UVs.
++    std::vector<CyberFaceDistortion> distortion;
++    bool distortionBuilt = false;
+     // Distinguishes "this mesh has never been unwrapped" from "its UVs are all zero".
+     // Returning zeros for both would make an un-unwrapped mesh look like a
+     // catastrophically collapsed layout.
+@@ -940,6 +945,53 @@ const CyberRenderCache* ensureMeshlets(const CyberMesh* mesh) {
+ 
+ }  // namespace
+ 
++const CyberFaceDistortion* cyber_mesh_uv_distortion_ptr(const CyberMesh* mesh,
++                                                        size_t* out_count) {
++    if (mesh == nullptr) {
++        if (out_count != nullptr) {
++            *out_count = 0;
++        }
++        return nullptr;
++    }
++    // Lazy, cached beside the render streams and dropped by the same invalidation hook:
++    // distortion is derived from geometry AND from the UV attribute, so anything that
++    // changes either must drop it. Built on first request because only the heatmap wants it.
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    if (cache == nullptr || !cache->hasUvs) {
++        // No layout means no distortion, which is NOT zero distortion.
++        if (out_count != nullptr) {
++            *out_count = 0;
++        }
++        return nullptr;
++    }
++    auto& mutableCache = const_cast<CyberRenderCache&>(*cache);
++    if (!cache->distortionBuilt) {
++        mutableCache.distortionBuilt = true;
++        // Reuses the engine's own measurement rather than recomputing it here: a second
++        // implementation would let the per-face view and CyberAtlasResult disagree about
++        // the same mesh.
++        std::vector<cyber::FaceId> live;
++        live.reserve(mesh->mesh.faceCapacity());
++        for (cyber::Index i = 0; i < mesh->mesh.faceCapacity(); ++i) {
++            const cyber::FaceId face{i};
++            if (mesh->mesh.isAlive(face)) {
++                live.push_back(face);
++            }
++        }
++        const cyber::uv::IslandDistortion measured =
++            cyber::uv::measureDistortion(mesh->mesh, live);
++        mutableCache.distortion.reserve(measured.faces.size());
++        for (const cyber::uv::FaceDistortion& face : measured.faces) {
++            CyberFaceDistortion out{};
++            out.angle = face.angle;
++            out.area = face.area;
++            out.flipped = face.flipped ? 1 : 0;
++            mutableCache.distortion.push_back(out);
++        }
++    }
++    return bufferView(&cache->distortion, out_count);
++}
++
+ const float* cyber_mesh_uvs_ptr(const CyberMesh* mesh, size_t* out_count) {
+     const CyberRenderCache* cache = ensureRenderCache(mesh);
+     // NULL for a mesh that was never unwrapped, and an EMPTY-but-non-null view is
+diff --git a/tests/capi/test_capi.cpp b/tests/capi/test_capi.cpp
+index 9bb5b55..d475b1b 100644
+--- a/tests/capi/test_capi.cpp
++++ b/tests/capi/test_capi.cpp
+@@ -412,3 +412,58 @@ TEST_CASE("capi UV readback: absent before an unwrap, per-corner after one") {
+     std::error_code ec;
+     std::filesystem::remove(objPath, ec);
+ }
++
++// Per-face UV distortion readback (openspec add-uv-distortion-heatmaps, task 1).
++//
++// The heatmap's whole value is saying WHERE distortion is, so the per-face array has to
++// line up with the live-face walk the caller uses to rebuild rings. And absence has to
++// stay distinguishable from zero: reporting zeros for a never-unwrapped mesh would draw
++// it as a flawless layout.
++TEST_CASE("capi per-face UV distortion: absent before an unwrap, one entry per face after") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    REQUIRE(mesh != nullptr);
++
++    size_t count = 4242;  // poisoned, to catch a callee that forgets to write it
++    const CyberFaceDistortion* distortion = cyber_mesh_uv_distortion_ptr(mesh, &count);
++    CHECK(distortion == nullptr);
++    CHECK(count == 0);
++
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++    CyberAtlasResult atlas{};
++    REQUIRE(cyber_uv_atlas(mesh, &params, &atlas) == CYBER_OK);
++
++    count = 0;
++    distortion = cyber_mesh_uv_distortion_ptr(mesh, &count);
++    REQUIRE(distortion != nullptr);
++    // Six quads on a cube, so one entry each — the cube is unchanged by unwrapping, which
++    // only adds a corner attribute.
++    CHECK(count == 6);
++
++    bool sane = true;
++    for (size_t i = 0; i < count; ++i) {
++        // Conformal error is defined on [0,1); an area ratio must be finite and
++        // non-negative. A NaN would shade as nothing rather than as an error.
++        if (!(distortion[i].angle >= 0.0f && distortion[i].angle < 1.0f)) {
++            sane = false;
++        }
++        if (!(distortion[i].area >= 0.0f) || !std::isfinite(distortion[i].area)) {
++            sane = false;
++        }
++    }
++    CHECK(sane);
++
++    // Agrees with the aggregate the atlas reported, because both come from the same
++    // measurement rather than two implementations of it.
++    float worst = 0.0f;
++    for (size_t i = 0; i < count; ++i) {
++        worst = std::fmax(worst, distortion[i].angle);
++    }
++    CHECK(worst <= atlas.maxAngleDistortion + 1e-4f);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}

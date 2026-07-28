@@ -156,6 +156,99 @@ struct UVLayoutTests {
         #expect(box.maxY == 220)
     }
 
+    // MARK: - Heatmap colour mapping (6.4)
+
+    @Test("A flipped face is RED in either mode, because it is a defect not a magnitude")
+    func flippedIsRed() {
+        let flipped = Mesh.FaceDistortion(angle: 0.01, area: 1, flipped: true)
+        // Low angle error would otherwise shade it "good", hiding a face that will bake
+        // inverted detail.
+        for mode in UVLayoutGeometry.HeatmapMode.allCases {
+            #expect(
+                UVLayoutPanelView.color(
+                    for: flipped, mode: mode, textureSize: 1024, reference: 1
+                ) == Color.red.opacity(0.55)
+            )
+        }
+    }
+
+    @Test("Angle mode shades a distorted face differently from a clean one")
+    func angleModeDiscriminates() {
+        let clean = Mesh.FaceDistortion(angle: 0, area: 1, flipped: false)
+        let bad = Mesh.FaceDistortion(angle: 0.9, area: 1, flipped: false)
+        let cleanColor = UVLayoutPanelView.color(
+            for: clean, mode: .angle, textureSize: 1024, reference: 1
+        )
+        let badColor = UVLayoutPanelView.color(
+            for: bad, mode: .angle, textureSize: 1024, reference: 1
+        )
+        // The whole point of a heatmap: if these matched, the view would say a stretched
+        // face and a perfect one are the same.
+        #expect(cleanColor != badColor)
+    }
+
+    @Test("Density mode needs a reference and yields nothing without one")
+    func densityNeedsAReference() {
+        let face = Mesh.FaceDistortion(angle: 0, area: 1, flipped: false)
+        // No reference means no meaningful relative scale, so it shades nothing rather
+        // than inventing an absolute target density nobody specified.
+        #expect(
+            UVLayoutPanelView.color(
+                for: face, mode: .texelDensity, textureSize: 1024, reference: 0
+            ) == Color.clear
+        )
+    }
+
+    @Test("Density mode reads UNDER-sampled faces as hot")
+    func underSampledIsHot() {
+        let sparse = Mesh.FaceDistortion(angle: 0, area: 0.1, flipped: false)
+        let dense = Mesh.FaceDistortion(angle: 0, area: 10, flipped: false)
+        let reference = Mesh.FaceDistortion(angle: 0, area: 1, flipped: false)
+            .texelDensity(textureSize: 512)
+        // A face receiving FEWER texels than its neighbours is the problem worth seeing,
+        // so low density must not read as "fine".
+        #expect(
+            UVLayoutPanelView.color(
+                for: sparse, mode: .texelDensity, textureSize: 512, reference: reference
+            ) != UVLayoutPanelView.color(
+                for: dense, mode: .texelDensity, textureSize: 512, reference: reference
+            )
+        )
+    }
+
+    @Test("The density reference is a MEDIAN, so one outlier cannot wash out the scale")
+    func referenceIsMedian() throws {
+        let (unwrapped, _) = try cage().unwrapped()
+        guard case .laidOut(var layout) = UVLayoutGeometry.state(of: unwrapped) else {
+            Issue.record("expected .laidOut")
+            return
+        }
+        let honest = layout.referenceDensity(textureSize: 1024)
+        #expect(honest > 0)
+
+        // Add one enormous outlier. A MEAN would move sharply; a median barely notices,
+        // which is why it is the median — a single vast chart must not flatten every other
+        // face to the same colour.
+        layout.distortion.append(
+            Mesh.FaceDistortion(angle: 0, area: 100_000, flipped: false)
+        )
+        let withOutlier = layout.referenceDensity(textureSize: 1024)
+        #expect(abs(withOutlier - honest) < honest * 0.5)
+    }
+
+    @Test("Distortion is paired with rings only when the counts agree")
+    func mismatchedDistortionIsDropped() throws {
+        let (unwrapped, _) = try cage().unwrapped()
+        guard case .laidOut(let layout) = UVLayoutGeometry.state(of: unwrapped) else {
+            Issue.record("expected .laidOut")
+            return
+        }
+        // The guard exists because colouring face N with face M's measurement is visually
+        // plausible and completely wrong — the same failure the corner-stream check
+        // prevents for the rings themselves.
+        #expect(layout.distortion.count == layout.rings.count)
+    }
+
     @Test("A ring with fewer than two corners is skipped rather than crashing")
     func degenerateRingsAreSkipped() {
         let path = UVLayoutPanelView.path(

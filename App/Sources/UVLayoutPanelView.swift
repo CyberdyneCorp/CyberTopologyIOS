@@ -26,6 +26,11 @@ struct UVLayoutPanelView: View {
     /// unwrapped" case, which is not an error.
     let notice: String?
     let onUnwrap: () -> Void
+    /// What the fill shades by. Held by the caller so the choice survives a body pass.
+    @Binding var mode: UVLayoutGeometry.HeatmapMode
+    /// The texture size texel density is expressed against. A density figure is meaningless
+    /// without it, so it is shown alongside rather than assumed.
+    let textureSize: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -35,6 +40,15 @@ struct UVLayoutPanelView: View {
 
             switch state {
             case .laidOut(let layout):
+                if !layout.distortion.isEmpty {
+                    Picker("Shade by", selection: $mode) {
+                        ForEach(UVLayoutGeometry.HeatmapMode.allCases, id: \.self) {
+                            Text($0.rawValue).tag($0)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("uv-heatmap-mode")
+                }
                 layoutCanvas(layout)
                 footer(layout)
             case .notUnwrapped(let faceCount):
@@ -85,6 +99,24 @@ struct UVLayoutPanelView: View {
             context.stroke(
                 Path(rect), with: .color(.secondary.opacity(0.6)), lineWidth: 1
             )
+            // FILL first, then stroke: the fill answers "where is the distortion" and the
+            // stroke keeps face boundaries legible on top of it. Filling per ring rather
+            // than one merged path because each face carries its own measurement.
+            if !layout.distortion.isEmpty {
+                for (index, ring) in layout.rings.enumerated()
+                where index < layout.distortion.count {
+                    let face = layout.distortion[index]
+                    context.fill(
+                        Self.path(for: [ring], in: rect),
+                        with: .color(
+                            Self.color(
+                                for: face, mode: mode, textureSize: textureSize,
+                                reference: layout.referenceDensity(textureSize: textureSize)
+                            )
+                        )
+                    )
+                }
+            }
             context.stroke(
                 Self.path(for: layout.rings, in: rect),
                 with: .color(Color(rgb: OverlayUniformsFactory.wireColor)),
@@ -110,6 +142,20 @@ struct UVLayoutPanelView: View {
             if layout.overflowCorners > 0 {
                 Text("\(layout.overflowCorners) corners outside the unit square")
                     .foregroundStyle(.orange)
+            }
+            // Flipped faces are NAMED, not merely shaded: a mirrored face bakes inverted
+            // detail, so it is a defect rather than a point on the scale.
+            if layout.flippedFaces > 0 {
+                Text("\(layout.flippedFaces) FLIPPED face\(layout.flippedFaces == 1 ? "" : "s")")
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier("uv-flipped")
+            }
+            if mode == .texelDensity, !layout.distortion.isEmpty {
+                // The size the figure is expressed against, stated rather than implied.
+                Text("density at \(textureSize)px")
+            }
+            if let worst = layout.worstAngle {
+                Text(String(format: "worst angle error %.3f", worst))
             }
             if let report {
                 Text(report.summary)
@@ -157,6 +203,40 @@ struct UVLayoutPanelView: View {
             x: (size.width - side) / 2, y: (size.height - side) / 2,
             width: side, height: side
         )
+    }
+
+    /// Heat colour for one face.
+    ///
+    /// Angle error is already normalised to [0, 1) by definition, so it maps directly.
+    /// Texel density has no natural ceiling, so it is shown RELATIVE to the layout's own
+    /// median — an absolute scale would need a target density nobody has specified, and
+    /// inventing one would make the colours mean something the artist never asked for.
+    /// Relative shading answers the question density is actually asked for: which faces get
+    /// fewer texels than the rest.
+    ///
+    /// A flipped face is red regardless of mode, because it is a defect rather than a
+    /// magnitude.
+    static func color(
+        for face: Mesh.FaceDistortion, mode: UVLayoutGeometry.HeatmapMode,
+        textureSize: Int, reference: Float
+    ) -> Color {
+        if face.flipped { return .red.opacity(0.55) }
+        let t: Float
+        switch mode {
+        case .angle:
+            t = min(max(face.angle, 0), 1)
+        case .texelDensity:
+            guard reference > 0 else { return .clear }
+            // Below reference is under-sampled and is what needs attention, so LOW density
+            // reads as hot. Clamped at twice the reference: beyond that the difference stops
+            // being actionable and a longer tail would flatten everything else.
+            let ratio = face.texelDensity(textureSize: textureSize) / reference
+            t = min(max(1 - ratio, 0), 1)
+        }
+        // Cool (fine) to warm (bad). Kept deliberately plain: a ramp is presentation, and
+        // this change does not pretend to have measured which one reads best.
+        return Color(hue: Double(0.58 - 0.58 * Double(t)), saturation: 0.85, brightness: 0.9)
+            .opacity(0.45)
     }
 
     /// Closed polygons for each ring, mapped into `rect`.

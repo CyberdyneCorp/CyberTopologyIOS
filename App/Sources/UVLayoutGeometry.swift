@@ -25,9 +25,34 @@ enum UVLayoutGeometry {
         /// Corners falling outside the unit square. Reported rather than clamped, because
         /// an overflowing layout is a real defect the artist needs to see.
         var overflowCorners: Int
+        /// Per-face distortion, parallel to `rings`, or empty when the engine reported none.
+        /// Parallel rather than a dictionary because both come from the same live-face walk,
+        /// and an index is impossible to desynchronise where a key lookup could silently miss.
+        var distortion: [Mesh.FaceDistortion]
 
         var ringCount: Int { rings.count }
         var cornerCount: Int { rings.reduce(0) { $0 + $1.count } }
+        /// Faces whose UV winding is reversed — a defect, counted so the panel can name it.
+        var flippedFaces: Int { distortion.filter(\.flipped).count }
+        /// Worst per-face angle error, or nil when distortion was unavailable.
+        var worstAngle: Float? { distortion.map(\.angle).max() }
+
+        /// The MEDIAN texel density, used as the reference a density heatmap shades against.
+        /// Median rather than mean because one collapsed face at density 0, or one enormous
+        /// chart, would drag a mean far enough to wash out every other face.
+        func referenceDensity(textureSize: Int) -> Float {
+            let values = distortion.map { $0.texelDensity(textureSize: textureSize) }
+                .filter { $0 > 0 }
+                .sorted()
+            guard !values.isEmpty else { return 0 }
+            return values[values.count / 2]
+        }
+    }
+
+    /// What a heatmap shades by.
+    enum HeatmapMode: String, CaseIterable, Equatable {
+        case angle = "Angle"
+        case texelDensity = "Density"
     }
 
     /// What the 2D view should show. Four distinct states, because collapsing any two of
@@ -70,6 +95,9 @@ enum UVLayoutGeometry {
             )
         }
 
+        // nil when there is no layout, which cannot happen here (UVs were just read), but
+        // empty is also tolerated: the panel degrades to strokes rather than refusing.
+        let measured = mesh.uvDistortion() ?? []
         var rings: [[SIMD2<Float>]] = []
         rings.reserveCapacity(faces.count)
         var overflow = 0
@@ -91,7 +119,13 @@ enum UVLayoutGeometry {
         guard !rings.isEmpty else {
             return .unreadable(reason: "no drawable faces")
         }
-        return .laidOut(Layout(rings: rings, overflowCorners: overflow))
+        // Only pair distortion with rings when the counts agree. A silent mismatch would
+        // colour face N with face M's measurement — visually plausible and completely wrong,
+        // which is the same failure mode the corner-stream check above guards against.
+        let paired = measured.count == rings.count ? measured : []
+        return .laidOut(
+            Layout(rings: rings, overflowCorners: overflow, distortion: paired)
+        )
     }
 
     /// The layout state of a document's EDIT MESH, or `.noEditMesh`.

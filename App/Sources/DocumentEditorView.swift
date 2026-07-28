@@ -27,6 +27,9 @@ struct DocumentEditorView: View {
     @State private var versionName = ""
     @State private var importRequest = FileImportRequest()
     @State private var statusMessage: String?
+    /// What the UV heatmap shades by (task 6.4). View state: it changes what you are
+    /// looking at, not what the document contains.
+    @State private var uvHeatmapMode: UVLayoutGeometry.HeatmapMode = .angle
 
     /// Persisted camera sensitivity (spec: viewport-rendering / "Robust
     /// camera system" — orbit/zoom speed SHALL be user-adjustable).
@@ -138,7 +141,9 @@ struct DocumentEditorView: View {
                             state: uvLayoutState,
                             report: meshEditorReport,
                             notice: uvNotice,
-                            onUnwrap: runUnwrap
+                            onUnwrap: runUnwrap,
+                            mode: $uvHeatmapMode,
+                            textureSize: Mesh.AtlasParameters().textureSize
                         )
                         .frame(maxWidth: 340)
                     }
