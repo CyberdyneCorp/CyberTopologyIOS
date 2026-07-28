@@ -971,6 +971,95 @@ struct MeshEditControllerTests {
     // StrokeInterpreterTests.scribbleOverGeometryResolvesDelete, and the
     // end-to-end delete path by xOverAFaceDeletesItAndUndoRestores below.
 
+    /// 6.2b: the SAME X, in the UV stage, must not delete anything.
+    ///
+    /// Written before the fix, and it fails against unfixed code — the mapping from `.cross`
+    /// to `.deleteFaces` is unconditional today, and the viewport stays interactive in the UV
+    /// stage by design, so this gesture destroys the cage the artist is unwrapping. The spec
+    /// says an X there re-unwraps the island; the first thing to guarantee is that it does not
+    /// DELETE, because an unimplemented gesture must be inert rather than destructive.
+    @Test func xInTheUVStageDoesNotDeleteFaces() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        try addStripsEditMesh(to: harness)
+        let object = try #require(harness.editObject)
+        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
+        let facesBefore = try harness.editMesh().faceCount
+        let verticesBefore = try harness.editMesh().vertexCount
+
+        harness.bundle.manifest.stage = .uv
+        harness.sync()
+
+        // Byte-identical stroke to `xOverAFaceDeletesItAndUndoRestores`, so the only
+        // difference between deleting and not deleting is the stage.
+        harness.stroke(verb: .pencil, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(0.15, 0.15, 0)),
+            harness.screenPoint(of: SIMD3(0.85, 0.85, 0)),
+            harness.screenPoint(of: SIMD3(0.85, 0.15, 0)),
+            harness.screenPoint(of: SIMD3(0.15, 0.85, 0)),
+        ], samplesPerSegment: 16))
+
+        // GEOMETRY is preserved — that is the destructive behaviour being ruled out.
+        let after = try harness.editMesh()
+        #expect(after.faceCount == facesBefore, "no face may be deleted")
+        #expect(after.vertexCount == verticesBefore, "no vertex may be lost")
+        #expect(
+            !harness.committed.contains { command in
+                guard case .meshEdit(let edit) = command else { return false }
+                return edit.verb == "pencil.deleteFaces"
+            },
+            "no delete may be journaled in the UV stage"
+        )
+
+        // The payload DOES change, and that is correct: this fixture had never been
+        // unwrapped, so the X runs the whole-mesh unwrap. Asserting the payload was untouched
+        // would be asserting the gesture did nothing, which is not what the spec asks for.
+        #expect(harness.bundle.payloads[object.payloadFile] != payloadBefore)
+        #expect(after.hasUVLayout, "the X must have unwrapped, not merely declined to delete")
+    }
+
+    /// The same X on an ALREADY-unwrapped cage re-unwraps one island rather than the mesh.
+    @Test func xInTheUVStageReunwrapsOneIsland() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        try addStripsEditMesh(to: harness)
+        harness.bundle.manifest.stage = .uv
+        harness.sync()
+
+        // First X: nothing was unwrapped, so this lays out the whole mesh.
+        func drawX() {
+            harness.stroke(verb: .pencil, through: harness.densified(through: [
+                harness.screenPoint(of: SIMD3(0.15, 0.15, 0)),
+                harness.screenPoint(of: SIMD3(0.85, 0.85, 0)),
+                harness.screenPoint(of: SIMD3(0.85, 0.15, 0)),
+                harness.screenPoint(of: SIMD3(0.15, 0.85, 0)),
+            ], samplesPerSegment: 16))
+        }
+        drawX()
+        let laidOut = try harness.editMesh()
+        try #require(laidOut.hasUVLayout)
+        let uvsAfterFullUnwrap = try #require(laidOut.uvCoordinates())
+        let facesAfterFullUnwrap = laidOut.faceCount
+        let depthAfterFullUnwrap = harness.bundle.journal.depth
+
+        // Second X on the same spot: now a single-island re-unwrap.
+        drawX()
+        let reunwrapped = try harness.editMesh()
+        #expect(reunwrapped.faceCount == facesAfterFullUnwrap, "still no deletion")
+        let uvsAfterReunwrap = try #require(reunwrapped.uvCoordinates())
+        #expect(uvsAfterReunwrap.count == uvsAfterFullUnwrap.count)
+
+        // Whatever it did, it is at most ONE more journal entry — a re-unwrap that produced
+        // byte-identical UVs correctly journals nothing, which is a no-op and not a failure.
+        #expect(harness.bundle.journal.depth <= depthAfterFullUnwrap + 1)
+        #expect(
+            !harness.committed.contains { command in
+                guard case .meshEdit(let edit) = command else { return false }
+                return edit.verb == "pencil.deleteFaces"
+            }
+        )
+    }
+
     @Test func xOverAFaceDeletesItAndUndoRestores() throws {
         let harness = try Harness()
         try addPlaneTarget(to: harness)

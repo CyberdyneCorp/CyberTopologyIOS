@@ -41,12 +41,17 @@ struct InterpretationChipState: Equatable {
     /// resolved. `appliedIndex` is the candidate that actually applied and
     /// journaled (nil = the stroke changed nothing); `alternatives` are the
     /// candidate indices offered as one-tap swaps.
+    ///
+    /// `stage` is needed because one grammar action means different things per stage: an X is
+    /// reported as `.deleteFaces` and re-unwraps an island in the UV stage, so a chip that
+    /// named the ACTION would tell the artist their faces were deleted when they were not.
     mutating func strokeResolved(
-        interpretation: StrokeInterpretation?, appliedIndex: Int?, alternatives: [Int]
+        interpretation: StrokeInterpretation?, appliedIndex: Int?, alternatives: [Int],
+        stage: DocumentManifest.Stage? = nil
     ) {
         generation += 1
         chip = Chip(
-            title: Self.title(for: interpretation, appliedIndex: appliedIndex),
+            title: Self.title(for: interpretation, appliedIndex: appliedIndex, stage: stage),
             detail: Self.detail(for: interpretation, appliedIndex: appliedIndex),
             alternatives: alternatives.compactMap { index in
                 guard let candidate = interpretation?.candidates[safe: index] else {
@@ -54,7 +59,7 @@ struct InterpretationChipState: Equatable {
                 }
                 return Alternative(
                     id: index, action: candidate.action,
-                    label: Self.label(for: candidate.action)
+                    label: Self.label(for: candidate.action, stage: stage)
                 )
             },
             generation: generation
@@ -85,7 +90,8 @@ struct InterpretationChipState: Equatable {
 
     /// Human title for what the recognizer did with the stroke.
     static func title(
-        for interpretation: StrokeInterpretation?, appliedIndex: Int?
+        for interpretation: StrokeInterpretation?, appliedIndex: Int?,
+        stage: DocumentManifest.Stage? = nil
     ) -> String {
         guard let interpretation, let best = interpretation.best,
             best.action != .none
@@ -95,9 +101,9 @@ struct InterpretationChipState: Equatable {
         else {
             // Recognized but nothing changed (e.g. a visibility line that
             // was not decisively vertical, a tap awaiting its double-tap).
-            return "\(label(for: best.action)) — no change"
+            return "\(label(for: best.action, stage: stage)) — no change"
         }
-        return label(for: applied.action)
+        return label(for: applied.action, stage: stage)
     }
 
     static func detail(
@@ -111,7 +117,19 @@ struct InterpretationChipState: Equatable {
 
     /// User-facing label per grammar action (chip title + alternative
     /// buttons).
-    static func label(for action: StrokeInterpretation.Action) -> String {
+    static func label(
+        for action: StrokeInterpretation.Action, stage: DocumentManifest.Stage? = nil
+    ) -> String {
+        // The X gesture's meaning is the document's, not the recognizer's (6.2b). Routed
+        // through the SAME `crossMeaning` the apply path uses, so the chip can never claim an
+        // outcome the dispatch did not produce.
+        if action == .deleteFaces {
+            switch MeshEditController.crossMeaning(in: stage) {
+            case .deleteFaces: return "Delete faces"
+            case .reunwrapIsland: return "Unwrap island"
+            case .inert: return "No action in this stage"
+            }
+        }
         switch action {
         case .none: return "No match"
         case .createQuad: return "Quad"

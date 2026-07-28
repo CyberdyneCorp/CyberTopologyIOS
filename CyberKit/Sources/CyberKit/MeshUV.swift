@@ -145,6 +145,51 @@ extension Mesh {
         return AtlasReport(result)
     }
 
+    /// What a single-island re-unwrap did.
+    public struct ReunwrapOutcome: Equatable, Sendable {
+        /// Faces in the island that was re-unwrapped; 0 when nothing was.
+        public let faces: Int
+        /// The mesh carries no UVs at all, so there was no island layout to redo. NOT a
+        /// failure: the caller is expected to run a whole-mesh unwrap instead. Kept separate
+        /// from a thrown error because "you have not unwrapped yet" and "that face is not
+        /// valid" need different answers, and one boolean for both would make them
+        /// indistinguishable.
+        public let needsWholeMeshUnwrap: Bool
+
+        public var didUnwrap: Bool { faces > 0 && !needsWholeMeshUnwrap }
+    }
+
+    /// Re-unwraps only the island containing `face`, in place.
+    ///
+    /// The localized counterpart to `unwrapInPlace`, which re-charts and REPACKS the whole
+    /// mesh — using that to service a gesture aimed at one region would re-lay-out the entire
+    /// model. The island keeps the UV footprint it already occupied (uniformly fitted and
+    /// centred, so the conformal solve is not sheared to fill the box) and every other
+    /// island's UVs are left untouched.
+    ///
+    /// `seams` and `parameters` MUST match what the mesh was unwrapped with: the island
+    /// partition is derived from the same seam source, and a different partition means the
+    /// island re-unwrapped is not the one the caller pointed at.
+    ///
+    /// Throws for a dead face or a face in no island. Any failure leaves every UV as it was.
+    @discardableResult
+    public func reunwrapIsland(
+        containing face: UInt32,
+        parameters: AtlasParameters = AtlasParameters(),
+        seams: [UInt32] = []
+    ) throws -> ReunwrapOutcome {
+        // Set unconditionally, including to empty, for the same reason `unwrapInPlace` does:
+        // otherwise the partition could inherit a seam set left behind by a previous call and
+        // silently re-unwrap a different island than the caller asked for.
+        try setSeamEdges(seams)
+        var raw = parameters.raw
+        var result = CyberReunwrapResult()
+        try check(cyber_uv_reunwrap_island(handle, face, &raw, &result))
+        return ReunwrapOutcome(
+            faces: result.faces, needsWholeMeshUnwrap: result.needsWholeMeshUnwrap != 0
+        )
+    }
+
     /// Hand-drawn UV seam edges for the next unwrap. Empty clears.
     ///
     /// The atlas cuts along exactly these instead of generating its own. Authored seams

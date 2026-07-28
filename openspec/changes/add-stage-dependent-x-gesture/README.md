@@ -1,0 +1,3 @@
+# add-stage-dependent-x-gesture
+
+Phase 6's 6.2b: the X gesture becomes stage-dependent — delete faces in RT, re-unwrap the island in UV. Today it deletes faces in EVERY stage, so drawing an X in the UV stage destroys geometry where the spec says it should re-unwrap; that is a live defect, not just a missing feature. Re-unwrapping changes an island's internal parameterization and keeps its PLACE in the atlas, so it cannot disturb a layout the artist already arranged. Also corrects the scope of 6.2b: artist-specified corner pins were never a spec requirement — the spec asks for corner AUTO-pinning during relax, which the engine already does, and which belongs to 6.3.

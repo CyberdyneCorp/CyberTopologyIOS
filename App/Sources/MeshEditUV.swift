@@ -91,6 +91,61 @@ extension MeshEditController {
         onSeamProposalChanged?([])
     }
 
+    /// Re-unwraps the island containing any of `faces`, as ONE journaled step (6.2b).
+    ///
+    /// POLICY, deliberately here and not in the engine: a mesh with no UVs has no island
+    /// layout to redo, and the engine refuses rather than creating a UV column that would
+    /// leave every other island collapsed at the origin. So the first X on a never-unwrapped
+    /// cage runs the WHOLE-mesh unwrap — the useful thing, and the only one that leaves every
+    /// island with a real footprint.
+    @discardableResult
+    func reunwrapIsland(
+        containingAnyOf faces: [UInt32], context: MeshEditController.Context
+    ) -> Bool {
+        unwrapRefusalStorage = nil
+        guard let face = faces.min() else { return false }
+        guard let object = context.editObject, let mesh = context.editMesh,
+            let payload = context.editPayload
+        else {
+            unwrapRefusalStorage = "No EditMesh to unwrap"
+            return false
+        }
+        let seams = object.annotations?.seamEdges ?? []
+
+        // Asked BEFORE opening a transaction: the whole-mesh fallback is a different command
+        // with a different verb, and discovering that mid-transaction would mean journaling a
+        // re-unwrap that actually did a full unwrap.
+        if !mesh.hasUVLayout {
+            return runUnwrapUVs()
+        }
+
+        let verb = "pencil.reunwrapIsland"
+        let transaction = MeshEditTransaction(
+            object: object, mesh: mesh, currentPayload: payload
+        )
+        var outcome: Mesh.ReunwrapOutcome?
+        lastCommit = nil
+        journalOrDiscard(verb: verb) {
+            outcome = try mesh.reunwrapIsland(containing: face, seams: seams)
+            onLiveEdit?()
+            return try transaction.command(verb: verb) { $0 }
+        }
+        guard lastCommit != nil else {
+            // Same three-way distinction `runUnwrapUVs` draws, and for the same reason: the
+            // atlas is deterministic, so an island whose parameterization is already what the
+            // solve produces yields byte-identical output and the transaction correctly
+            // journals nothing. That is a no-op, not a failure.
+            if outcome?.didUnwrap == true {
+                unwrapRefusalStorage = "Already unwrapped — this island is unchanged"
+            } else {
+                unwrapRefusalStorage = "Could not unwrap this island"
+                Self.uvLog.error("pencil.reunwrapIsland produced no journal entry")
+            }
+            return false
+        }
+        return true
+    }
+
     private static let uvLog = Logger(
         subsystem: "com.cyberdynecorp.cybertopology", category: "uv"
     )

@@ -178,6 +178,10 @@ struct MetalViewport: UIViewRepresentable {
         /// and handed to authoring contexts. Optional so "never set"
         /// (pre-4.4 documents) survives round-trips through the journal.
         private(set) var documentSymmetry: SymmetrySettings?
+        /// The document's current stage (6.2b), refreshed by `syncMesh` like every other
+        /// document-derived field, so a stage switch reaches the grammar without the caller
+        /// pushing it separately.
+        private(set) var documentStage: DocumentManifest.Stage?
         /// Identity + payload of the EditMesh currently rendered as the
         /// DEBUG ghost preview; nil while the preview is off (task 2.4 demo
         /// path). Payload changes (mesh edits, undo/redo) reload the ghost
@@ -567,6 +571,7 @@ struct MetalViewport: UIViewRepresentable {
                 editPayload: overlayPayload,
                 documentHasEditMesh: documentHasEditMesh,
                 annotations: editObject?.annotations,
+                stage: documentStage,
                 symmetry: documentSymmetry,
                 snapper: targetSnapper,
                 sceneRadius: renderer.bounds.radius,
@@ -721,6 +726,7 @@ struct MetalViewport: UIViewRepresentable {
             syncTargetSnapper(from: bundle)
             syncOverlay(from: bundle, renderer: renderer)
             syncSymmetry(from: bundle, renderer: renderer)
+            documentStage = bundle.manifest.stage
             inputModel.setSceneBounds(
                 center: renderer.bounds.center, radius: renderer.bounds.radius
             )

@@ -1,0 +1,592 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index 005e47f..6e3bf89 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -159,6 +159,41 @@ void cyber_default_atlas_params(CyberAtlasParams* params);
+ CyberStatus cyber_uv_atlas(CyberMesh* mesh, const CyberAtlasParams* params,
+                            CyberAtlasResult* out);
+ 
++/* Outcome of a single-island re-unwrap. */
++typedef struct CyberReunwrapResult {
++    size_t faces;                /* faces in the island that was re-unwrapped */
++    int needsWholeMeshUnwrap;    /* refused: the mesh carries no UVs at all (see below) */
++    int iterations;              /* conformal solve iterations */
++} CyberReunwrapResult;
++
++/* Re-unwraps ONE island in place (add-stage-dependent-x-gesture): the island containing
++ * `face_id`, keeping it inside the UV footprint it already occupied and leaving every other
++ * island's UVs untouched. This is the localized counterpart to cyber_uv_atlas, which
++ * re-charts and REPACKS the whole mesh -- using that to service a gesture aimed at one
++ * region would re-lay-out the entire model.
++ *
++ * The island is fitted back UNIFORMLY and centred. Stretching it to exactly fill its old box
++ * would scale u and v by different factors whenever the aspect changed, and that shear
++ * destroys the conformality the solve just computed.
++ *
++ * `params` MUST match what the mesh was unwrapped with: the island partition is derived from
++ * the same seam source cyber_uv_atlas uses (authored seams when set, else autoSeams with
++ * these params), and a different partition means the "island" re-unwrapped is not the one the
++ * caller pointed at. NULL selects the same defaults cyber_uv_atlas would.
++ *
++ * Sets needsWholeMeshUnwrap and REFUSES when the mesh has no UVs yet, rather than creating
++ * the column: UVs are a single per-corner attribute, so writing one island into a fresh
++ * column leaves every OTHER island's corners at (0,0) -- a full, non-NULL UV stream in which
++ * untouched islands read as a real layout collapsed at the origin. The caller runs a
++ * whole-mesh unwrap instead; that policy is the caller's, and refusing here makes this
++ * impossible to misuse into it.
++ *
++ * Returns CYBER_ERR_INVALID_ARG for a dead face or a face in no island. Any failure leaves
++ * every UV in the mesh exactly as it was. `out` may be NULL. */
++CyberStatus cyber_uv_reunwrap_island(CyberMesh* mesh, uint32_t face_id,
++                                     const CyberAtlasParams* params,
++                                     CyberReunwrapResult* out);
++
+ /* --- Accessors used by the language bindings (Python, Swift) ------------- */
+ 
+ /* Creates an empty mesh handle (release with cyber_mesh_destroy/free). */
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index 0b34c90..9f76db8 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -53,6 +53,7 @@
+ #include "cyber/retopo/tweak.hpp"
+ #ifdef CYBER_CAPI_WITH_UV
+ #include "cyber/uv/atlas.hpp"
++#include "cyber/uv/reunwrap.hpp"
+ #endif
+ 
+ // Version numbers are injected from the CMake project() version so this file
+@@ -167,6 +168,35 @@ std::string& errorSlot() {
+ // after writing UVs, and the definition lives with the other mutating-op helpers.
+ void invalidateRenderCache(CyberMesh* mesh);
+ 
++#ifdef CYBER_CAPI_WITH_UV
++// The handle's authored seams as a SeamSet.
++//
++// Shared by the atlas and the single-island re-unwrap deliberately: the re-unwrap's island
++// partition MUST be the one the atlas produced, and two copies of "authored seams if any,
++// else automatic" would be free to drift into disagreeing about which faces form an island.
++[[nodiscard]] cyber::uv::SeamSet authoredSeamSet(const CyberMesh* mesh) {
++    cyber::uv::SeamSet seams;
++    for (const std::uint32_t id : mesh->seamEdges) {
++        seams.mark(cyber::EdgeId{id});
++    }
++    return seams;
++}
++
++// Atlas options from C params, or the engine defaults when params is NULL.
++[[nodiscard]] cyber::uv::AtlasOptions atlasOptions(const CyberAtlasParams* params) {
++    cyber::uv::AtlasOptions opts;
++    if (params != nullptr) {
++        opts.maxChartAngleDeg = params->maxChartAngleDegrees;
++        opts.pack.margin = params->packMargin;
++        opts.pack.textureSize = params->textureSize;
++        opts.reorientCharts = params->reorientCharts != 0;
++        opts.mergeCharts = params->mergeCharts != 0;
++        opts.maxChartDistortion = params->maxChartDistortion;
++    }
++    return opts;
++}
++#endif
++
+ void setError(std::string message) { errorSlot() = std::move(message); }
+ void clearError() { errorSlot().clear(); }
+ 
+@@ -557,21 +587,10 @@ CyberStatus cyber_uv_atlas([[maybe_unused]] CyberMesh* mesh,
+         return CYBER_ERR_INVALID_ARG;
+     }
+     try {
+-        cyber::uv::AtlasOptions opts;
+-        if (params != nullptr) {
+-            opts.maxChartAngleDeg = params->maxChartAngleDegrees;
+-            opts.pack.margin = params->packMargin;
+-            opts.pack.textureSize = params->textureSize;
+-            opts.reorientCharts = params->reorientCharts != 0;
+-            opts.mergeCharts = params->mergeCharts != 0;
+-            opts.maxChartDistortion = params->maxChartDistortion;
+-        }
++        cyber::uv::AtlasOptions opts = atlasOptions(params);
+         // Hand-drawn seams, when the caller supplied any. Built here rather than stored as
+         // a SeamSet on the handle so the C surface stays plain ids.
+-        cyber::uv::SeamSet authored;
+-        for (const std::uint32_t id : mesh->seamEdges) {
+-            authored.mark(cyber::EdgeId{id});
+-        }
++        const cyber::uv::SeamSet authored = authoredSeamSet(mesh);
+         if (!authored.empty()) {
+             opts.seams = &authored;
+         }
+@@ -606,6 +625,63 @@ CyberStatus cyber_uv_atlas([[maybe_unused]] CyberMesh* mesh,
+ #endif
+ }
+ 
++CyberStatus cyber_uv_reunwrap_island([[maybe_unused]] CyberMesh* mesh,
++                                    [[maybe_unused]] uint32_t face_id,
++                                    [[maybe_unused]] const CyberAtlasParams* params,
++                                    [[maybe_unused]] CyberReunwrapResult* out) {
++#ifdef CYBER_CAPI_WITH_UV
++    if (mesh == nullptr) {
++        setError("cyber_uv_reunwrap_island: null mesh");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    if (out != nullptr) {
++        *out = CyberReunwrapResult{};
++    }
++    try {
++        const cyber::uv::AtlasOptions opts = atlasOptions(params);
++        // The SAME seam source the atlas used, via the shared helper: authored seams when the
++        // caller set any, else the automatic partition. `autoSeams` is deterministic, so
++        // recomputing it here reproduces the partition the on-screen UVs came from.
++        const cyber::uv::SeamSet authored = authoredSeamSet(mesh);
++        const cyber::uv::SeamSet partition =
++            authored.empty() ? cyber::uv::autoSeams(mesh->mesh, opts) : authored;
++
++        const cyber::uv::ReunwrapResult r =
++            cyber::uv::reunwrapIsland(mesh->mesh, cyber::FaceId{face_id}, partition);
++        if (out != nullptr) {
++            out->faces = r.faces;
++            out->needsWholeMeshUnwrap = r.needsWholeMeshUnwrap ? 1 : 0;
++            out->iterations = r.iterations;
++        }
++        if (!r.ok) {
++            // A refusal for want of UVs is not an argument error — the caller is expected to
++            // fall back to a whole-mesh unwrap — so it reports OK with the flag set and lets
++            // the caller decide, rather than looking like a bad face id.
++            if (r.needsWholeMeshUnwrap) {
++                clearError();
++                return CYBER_OK;
++            }
++            setError("cyber_uv_reunwrap_island: face is dead, in no island, or degenerate");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        // Same reason cyber_uv_atlas must invalidate: UVs were rewritten, so any cache built
++        // before this call would hand back the pre-unwrap layout as if it were current.
++        invalidateRenderCache(mesh);
++        clearError();
++        return CYBER_OK;
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_reunwrap_island: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    } catch (...) {
++        setError("cyber_uv_reunwrap_island: unknown error");
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_reunwrap_island: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
+ CyberMesh* cyber_mesh_create(void) {
+     try {
+         return new CyberMesh();
+diff --git a/src/uv/CMakeLists.txt b/src/uv/CMakeLists.txt
+index 95d2c93..fe5d1c7 100644
+--- a/src/uv/CMakeLists.txt
++++ b/src/uv/CMakeLists.txt
+@@ -2,6 +2,7 @@ add_library(cyber_uv STATIC
+     src/unwrap.cpp
+     src/packing.cpp
+     src/atlas.cpp
++    src/reunwrap.cpp
+ )
+ add_library(cyber::uv ALIAS cyber_uv)
+ 
+diff --git a/src/uv/include/cyber/uv/reunwrap.hpp b/src/uv/include/cyber/uv/reunwrap.hpp
+new file mode 100644
+index 0000000..aea1fdf
+--- /dev/null
++++ b/src/uv/include/cyber/uv/reunwrap.hpp
+@@ -0,0 +1,59 @@
++#pragma once
++
++#include <span>
++
++#include "cyber/core/mesh.hpp"
++#include "cyber/uv/atlas.hpp"
++#include "cyber/uv/common.hpp"
++#include "cyber/uv/seams.hpp"
++
++// Re-unwrap of a SINGLE island in place (uv-workflow spec, "An X gesture re-unwraps one
++// island"): the localized counterpart to `unwrapAtlas`.
++//
++// The distinction that shapes this whole header: `unwrapAtlas` re-charts and REPACKS the
++// entire mesh, so using it to service a gesture aimed at one region would re-lay-out the
++// whole model. Re-unwrapping changes one island's internal parameterization and leaves its
++// place in the atlas — and every other island's UVs — alone.
++namespace cyber::uv {
++
++struct ReunwrapResult {
++    bool ok = false;
++    // Faces in the island that was re-unwrapped.
++    std::size_t faces = 0;
++    // Set when the call was refused because the mesh carries no UVs at all, so the caller can
++    // tell "nothing to re-unwrap yet" from a genuine solve failure and route to a whole-mesh
++    // unwrap instead. See the refusal rationale on `reunwrapIsland`.
++    bool needsWholeMeshUnwrap = false;
++    // Iterations the conformal solve took, for the same diagnostic reasons as UnwrapResult.
++    int iterations = 0;
++};
++
++// Re-unwraps the island containing `face`, keeping the island inside the UV footprint it
++// already occupied.
++//
++// `seams` selects the island partition and MUST match whatever partition produced the UVs on
++// screen, or the "island" re-unwrapped is not the one the artist pointed at. Callers that
++// unwrapped with authored seams pass those; callers that used the automatic path pass the
++// result of `autoSeams` with the same options, which is deterministic and therefore
++// reproduces the original partition exactly.
++//
++// The island is fitted back into the footprint it already occupied: scaled by ONE factor to
++// fit inside its previous bounding box and centred on that box's centre. The scale is uniform
++// deliberately — stretching to exactly FILL the box would scale u and v by different factors
++// whenever the new parameterization's aspect differs, and that shear destroys the conformality
++// the solve just computed. An island whose aspect changed therefore occupies less than the
++// full box, which is correct rather than a shortfall.
++//
++// REFUSES a mesh with no UV column (ok=false, needsWholeMeshUnwrap=true) instead of creating
++// one. UVs are a single per-corner column, so creating it to write one island would
++// zero-initialize every OTHER island's corners — a full, non-null UV stream in which every
++// untouched island sits collapsed at the origin. That reads to every consumer as a real
++// layout, so the caller must run a whole-mesh unwrap first; the policy of doing so belongs to
++// the caller, and the refusal here makes the primitive impossible to misuse into it.
++//
++// Returns ok=false when `face` is dead or in no island, or when the conformal solve reports a
++// degenerate island. A failure leaves every UV in the mesh untouched.
++[[nodiscard]] ReunwrapResult reunwrapIsland(Mesh& mesh, FaceId face, const SeamSet& seams,
++                                            const UnwrapOptions& options = {});
++
++}  // namespace cyber::uv
+diff --git a/src/uv/src/reunwrap.cpp b/src/uv/src/reunwrap.cpp
+new file mode 100644
+index 0000000..416d272
+--- /dev/null
++++ b/src/uv/src/reunwrap.cpp
+@@ -0,0 +1,95 @@
++#include "cyber/uv/reunwrap.hpp"
++
++#include <algorithm>
++#include <cmath>
++#include <vector>
++
++#include "cyber/uv/transforms.hpp"
++#include "cyber/uv/unwrap.hpp"
++
++namespace cyber::uv {
++namespace {
++
++// The island containing `face`, or an empty vector when `face` is in none.
++[[nodiscard]] std::vector<FaceId> islandContaining(const Mesh& mesh, FaceId face,
++                                                   const SeamSet& seams) {
++    for (std::vector<FaceId>& island : computeIslands(mesh, seams)) {
++        if (std::find(island.begin(), island.end(), face) != island.end()) {
++            return std::move(island);
++        }
++    }
++    return {};
++}
++
++// Fits `island`'s current UVs inside `target`, uniformly and centred.
++//
++// One scale factor for both axes: see the header for why filling the box exactly would be a
++// shear that undoes the conformal solve.
++void fitIslandInto(Mesh& mesh, std::span<const FaceId> island, const Bounds2& target) {
++    const Bounds2 now = islandUvBounds(mesh, island);
++    if (!now.valid() || !target.valid()) {
++        return;
++    }
++    const Vec2 have = now.size();
++    const Vec2 want = target.size();
++    // A degenerate axis (a straight-line island) has nothing to scale along, so it is only
++    // translated. Scaling by the other axis' factor would be arbitrary.
++    float scale = 1.0f;
++    if (have.x > 0.0f && have.y > 0.0f) {
++        scale = std::fmin(want.x / have.x, want.y / have.y);
++    } else if (have.x > 0.0f) {
++        scale = want.x / have.x;
++    } else if (have.y > 0.0f) {
++        scale = want.y / have.y;
++    }
++    if (scale > 0.0f && scale != 1.0f) {
++        scaleIslandUv(mesh, island, {scale, scale}, now.center());
++    }
++    // Re-read rather than predicting the post-scale box: the scale pivots on the pre-scale
++    // centre, and deriving the new centre arithmetically would drift from what was written.
++    const Bounds2 scaled = islandUvBounds(mesh, island);
++    if (scaled.valid()) {
++        translateIslandUv(mesh, island, target.center() - scaled.center());
++    }
++}
++
++}  // namespace
++
++ReunwrapResult reunwrapIsland(Mesh& mesh, FaceId face, const SeamSet& seams,
++                              const UnwrapOptions& options) {
++    ReunwrapResult out;
++    if (!mesh.isAlive(face)) {
++        return out;
++    }
++    // Refused rather than created: writing one island into a fresh column would leave every
++    // other island's corners zero-initialized, which reads downstream as a real layout with
++    // those islands collapsed at the origin.
++    if (uvColumn(mesh) == nullptr) {
++        out.needsWholeMeshUnwrap = true;
++        return out;
++    }
++
++    const std::vector<FaceId> island = islandContaining(mesh, face, seams);
++    if (island.empty()) {
++        return out;
++    }
++    out.faces = island.size();
++
++    // The footprint to land back in, captured BEFORE the solve overwrites the UVs it is
++    // measured from.
++    const Bounds2 previous = islandUvBounds(mesh, island);
++
++    const UnwrapResult solved = lscmUnwrap(mesh, island, options);
++    out.iterations = solved.iterations;
++    if (!solved.ok) {
++        // Nothing has been written yet — `writeIslandUv` is the only mutation and it has not
++        // run — so a failed solve leaves every UV in the mesh exactly as it was.
++        return out;
++    }
++    writeIslandUv(mesh, island, solved);
++    fitIslandInto(mesh, island, previous);
++    out.ok = true;
++    return out;
++}
++
++}  // namespace cyber::uv
+diff --git a/tests/capi/test_capi.cpp b/tests/capi/test_capi.cpp
+index bec37f3..8b43fd9 100644
+--- a/tests/capi/test_capi.cpp
++++ b/tests/capi/test_capi.cpp
+@@ -522,6 +522,92 @@ TEST_CASE("capi hand-drawn seams replace auto-seams rather than supplementing th
+     std::filesystem::remove(objPath, ec);
+ }
+ 
++// Single-island re-unwrap (openspec add-stage-dependent-x-gesture, task 1).
++TEST_CASE("capi single-island re-unwrap refuses a mesh with no UVs") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++
++    CyberReunwrapResult r{};
++    // OK with a FLAG, not an error: "you have not unwrapped yet" is a routing signal for the
++    // caller, not a bad argument, and conflating the two would make the app unable to tell
++    // them apart.
++    REQUIRE(cyber_uv_reunwrap_island(mesh, 0, nullptr, &r) == CYBER_OK);
++    CHECK(r.needsWholeMeshUnwrap == 1);
++
++    // And it must not have created the UV column: a column holding one island leaves every
++    // other island's corners at (0,0), which reads downstream as a real layout.
++    size_t uvFloats = 0;
++    CHECK(cyber_mesh_uvs_ptr(mesh, &uvFloats) == nullptr);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
++TEST_CASE("capi single-island re-unwrap changes one island and invalidates the cache") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++    REQUIRE(cyber_uv_atlas(mesh, &params, nullptr) == CYBER_OK);
++
++    size_t uvFloats = 0;
++    const float* uvs = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    REQUIRE(uvs != nullptr);
++    const std::vector<float> before(uvs, uvs + uvFloats);
++
++    CyberReunwrapResult r{};
++    REQUIRE(cyber_uv_reunwrap_island(mesh, 0, &params, &r) == CYBER_OK);
++    CHECK(r.needsWholeMeshUnwrap == 0);
++    CHECK(r.faces >= 1);
++
++    // Re-read through the SAME accessor: if the re-unwrap failed to invalidate the render
++    // cache this would hand back `before` byte for byte and the call would look like a no-op.
++    // That is exactly the bug cyber_uv_atlas shipped with until 6.1.
++    uvs = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    REQUIRE(uvs != nullptr);
++    REQUIRE(uvFloats == before.size());
++    const std::vector<float> after(uvs, uvs + uvFloats);
++
++    // Some corners moved (the island was re-solved) and some did not (the other islands were
++    // left alone). Both halves matter: all-changed would mean the whole layout was redone.
++    bool changed = false, kept = false;
++    for (size_t i = 0; i < before.size(); ++i) {
++        if (before[i] != after[i]) {
++            changed = true;
++        } else {
++            kept = true;
++        }
++    }
++    CHECK(changed);
++    CHECK(kept);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
++TEST_CASE("capi single-island re-unwrap rejects a dead face") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++    REQUIRE(cyber_uv_atlas(mesh, &params, nullptr) == CYBER_OK);
++
++    CyberReunwrapResult r{};
++    // A bad face id IS an argument error, unlike the no-UVs refusal above.
++    CHECK(cyber_uv_reunwrap_island(mesh, 9999, &params, &r) == CYBER_ERR_INVALID_ARG);
++    CHECK(r.needsWholeMeshUnwrap == 0);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
+ // Auto-seam proposals (openspec add-auto-seam-proposals, task 1).
+ //
+ // The property that matters: a proposal can only ever ADD. If accepting one could delete a
+diff --git a/tests/uv/test_uv.cpp b/tests/uv/test_uv.cpp
+index ba0f6b1..2f19c82 100644
+--- a/tests/uv/test_uv.cpp
++++ b/tests/uv/test_uv.cpp
+@@ -9,6 +9,7 @@
+ #include "cyber/uv/common.hpp"
+ #include "cyber/uv/distortion.hpp"
+ #include "cyber/uv/packing.hpp"
++#include "cyber/uv/reunwrap.hpp"
+ #include "cyber/uv/seams.hpp"
+ #include "cyber/uv/transforms.hpp"
+ #include "cyber/uv/unwrap.hpp"
+@@ -365,3 +366,122 @@ TEST_CASE("mirrored UVs are detected as a flipped island") {
+     uv::scaleIslandUv(mesh, island, {-1.0f, 1.0f}, {0.0f, 0.0f});
+     REQUIRE(uv::measureDistortion(mesh, island).flipped);
+ }
++
++// ---- single-island re-unwrap (add-stage-dependent-x-gesture, 6.2b) ---------
++
++TEST_CASE("reunwrapIsland refuses a mesh with no UVs instead of half-filling a column") {
++    Mesh mesh = makeCube();
++    uv::AtlasOptions opts;
++    opts.mergeCharts = false;
++    const uv::SeamSet seams = uv::autoSeams(mesh, opts);
++
++    // UVs live in ONE per-corner column, so writing a single island into a fresh column would
++    // leave every OTHER island's corners at (0,0) -- a full, non-null UV stream in which
++    // untouched islands read as a real layout collapsed at the origin.
++    const uv::ReunwrapResult r = uv::reunwrapIsland(mesh, FaceId{0}, seams);
++    REQUIRE(!r.ok);
++    REQUIRE(r.needsWholeMeshUnwrap);
++    REQUIRE(uv::uvColumn(mesh) == nullptr);
++}
++
++TEST_CASE("reunwrapIsland leaves every other island's UVs bitwise unchanged") {
++    Mesh mesh = makeCube();
++    uv::AtlasOptions opts;
++    opts.mergeCharts = false;
++    opts.maxChartDistortion = 0.0f;
++    REQUIRE(uv::unwrapAtlas(mesh, opts).ok);
++    const uv::SeamSet seams = uv::autoSeams(mesh, opts);
++    const auto islands = uv::computeIslands(mesh, seams);
++    REQUIRE(islands.size() == 6);
++
++    const std::vector<Vec2> before = *uv::uvColumn(mesh);
++    const FaceId target = islands[0][0];
++    const uv::ReunwrapResult r = uv::reunwrapIsland(mesh, target, seams);
++    REQUIRE(r.ok);
++    REQUIRE(r.faces == 1);
++
++    // Every corner NOT in the target island must be bitwise identical: a localized gesture
++    // must not rearrange a layout the artist already arranged.
++    const std::vector<Vec2>& after = *uv::uvColumn(mesh);
++    REQUIRE(after.size() == before.size());
++    for (std::size_t i = 1; i < islands.size(); ++i) {
++        for (const FaceId f : islands[i]) {
++            for (const cyber::LoopId loop : mesh.faceLoops(f)) {
++                const auto k = static_cast<std::size_t>(loop.value);
++                REQUIRE(after[k].x == before[k].x);
++                REQUIRE(after[k].y == before[k].y);
++            }
++        }
++    }
++}
++
++TEST_CASE("a re-unwrapped island stays inside its previous footprint") {
++    Mesh mesh = makeCube();
++    uv::AtlasOptions opts;
++    opts.mergeCharts = false;
++    opts.maxChartDistortion = 0.0f;
++    REQUIRE(uv::unwrapAtlas(mesh, opts).ok);
++    const uv::SeamSet seams = uv::autoSeams(mesh, opts);
++    const auto islands = uv::computeIslands(mesh, seams);
++
++    const uv::Bounds2 before = uv::islandUvBounds(mesh, islands[0]);
++    REQUIRE(uv::reunwrapIsland(mesh, islands[0][0], seams).ok);
++    const uv::Bounds2 after = uv::islandUvBounds(mesh, islands[0]);
++
++    // Inside, not equal to: the fit is UNIFORM, so an island whose aspect changed occupies
++    // less than the full box. Filling it exactly would need a per-axis scale, and that shear
++    // would destroy the conformality the solve just computed.
++    const float slack = 1e-4f;
++    REQUIRE(after.mn.x >= before.mn.x - slack);
++    REQUIRE(after.mn.y >= before.mn.y - slack);
++    REQUIRE(after.mx.x <= before.mx.x + slack);
++    REQUIRE(after.mx.y <= before.mx.y + slack);
++    // Centred on the same point, so the island does not drift within its box.
++    REQUIRE(std::fabs(after.center().x - before.center().x) < slack);
++    REQUIRE(std::fabs(after.center().y - before.center().y) < slack);
++    // And it is not collapsed: a "fit" that shrank the island to nothing would satisfy the
++    // containment checks above while destroying the layout.
++    REQUIRE(after.size().x > slack);
++    REQUIRE(after.size().y > slack);
++}
++
++TEST_CASE("re-unwrapping the same island twice does not move it") {
++    Mesh mesh = makeCube();
++    uv::AtlasOptions opts;
++    opts.mergeCharts = false;
++    opts.maxChartDistortion = 0.0f;
++    REQUIRE(uv::unwrapAtlas(mesh, opts).ok);
++    const uv::SeamSet seams = uv::autoSeams(mesh, opts);
++    const auto islands = uv::computeIslands(mesh, seams);
++
++    REQUIRE(uv::reunwrapIsland(mesh, islands[0][0], seams).ok);
++    const uv::Bounds2 once = uv::islandUvBounds(mesh, islands[0]);
++    REQUIRE(uv::reunwrapIsland(mesh, islands[0][0], seams).ok);
++    const uv::Bounds2 twice = uv::islandUvBounds(mesh, islands[0]);
++
++    // Stability matters because the gesture is repeatable by nature: an artist who X's the
++    // same island twice must not watch it walk across the square.
++    const float slack = 1e-4f;
++    REQUIRE(std::fabs(twice.mn.x - once.mn.x) < slack);
++    REQUIRE(std::fabs(twice.mn.y - once.mn.y) < slack);
++    REQUIRE(std::fabs(twice.mx.x - once.mx.x) < slack);
++    REQUIRE(std::fabs(twice.mx.y - once.mx.y) < slack);
++}
++
++TEST_CASE("reunwrapIsland rejects a dead face and touches nothing") {
++    Mesh mesh = makeCube();
++    uv::AtlasOptions opts;
++    opts.mergeCharts = false;
++    REQUIRE(uv::unwrapAtlas(mesh, opts).ok);
++    const uv::SeamSet seams = uv::autoSeams(mesh, opts);
++    const std::vector<Vec2> before = *uv::uvColumn(mesh);
++
++    const uv::ReunwrapResult r = uv::reunwrapIsland(mesh, FaceId{9999}, seams);
++    REQUIRE(!r.ok);
++    REQUIRE(!r.needsWholeMeshUnwrap);  // it has UVs; the FACE is the problem
++    const std::vector<Vec2>& after = *uv::uvColumn(mesh);
++    for (std::size_t i = 0; i < before.size(); ++i) {
++        REQUIRE(after[i].x == before[i].x);
++        REQUIRE(after[i].y == before[i].y);
++    }
++}

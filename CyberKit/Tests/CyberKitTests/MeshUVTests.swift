@@ -295,4 +295,50 @@ struct MeshUVTests {
         #expect(coarseReport.packedArea == fineReport.packedArea)
         #expect(fineReport.texelDensity > coarseReport.texelDensity)
     }
+
+    // MARK: - Single-island re-unwrap (add-stage-dependent-x-gesture, 6.2b)
+
+    @Test("Re-unwrapping refuses a never-unwrapped mesh and says WHY, without throwing")
+    func reunwrapRefusesWithoutUVs() throws {
+        let mesh = try cube()
+        let outcome = try mesh.reunwrapIsland(containing: 0)
+        // Not a throw: "you have not unwrapped yet" is a routing signal, and the caller runs
+        // a whole-mesh unwrap instead. Throwing would make it indistinguishable from an
+        // invalid face id, which needs the opposite response.
+        #expect(outcome.needsWholeMeshUnwrap)
+        #expect(!outcome.didUnwrap)
+        // And it must NOT have created the column: one island in a fresh column leaves every
+        // other island's corners at (0, 0), which reads to every consumer as a real layout.
+        #expect(mesh.uvCoordinates() == nil)
+        #expect(!mesh.hasUVLayout)
+    }
+
+    @Test("Re-unwrapping one island changes it and leaves the rest of the layout alone")
+    func reunwrapIsLocal() throws {
+        let (mesh, _) = try cube().unwrapped()
+        let before = try #require(mesh.uvCoordinates())
+
+        let outcome = try mesh.reunwrapIsland(containing: 0)
+        #expect(outcome.didUnwrap)
+        #expect(!outcome.needsWholeMeshUnwrap)
+        #expect(outcome.faces >= 1)
+
+        let after = try #require(mesh.uvCoordinates())
+        #expect(after.count == before.count)
+        // Some corners moved and some did not. All-changed would mean the whole layout was
+        // redone, which is the failure this method exists to avoid; none-changed would mean
+        // the call silently did nothing.
+        #expect(zip(before, after).contains { $0 != $1 })
+        #expect(zip(before, after).contains { $0 == $1 })
+    }
+
+    @Test("Re-unwrapping a dead face throws and leaves every UV untouched")
+    func reunwrapRejectsDeadFace() throws {
+        let (mesh, _) = try cube().unwrapped()
+        let before = try #require(mesh.uvCoordinates())
+        #expect(throws: (any Error).self) {
+            try mesh.reunwrapIsland(containing: 9999)
+        }
+        #expect(mesh.uvCoordinates() == before)
+    }
 }

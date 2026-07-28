@@ -204,6 +204,7 @@ extension MeshEditController {
         context.editMesh = fresh.editMesh
         context.editPayload = fresh.editPayload
         context.annotations = fresh.annotations
+        context.stage = fresh.stage
         context.documentHasEditMesh = fresh.documentHasEditMesh
         return context
     }

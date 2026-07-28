@@ -124,7 +124,7 @@ landing, where rivals are undefined rather than slower — which needs no compet
 
 ### v0.3 — Public beta (target: Jun 2027) — "The pipeline's second stage"
 
-#### Phase 6 status — 3 of 8 (6.1, 6.4, 6.5 done; 6.2 all but its 2D half)
+#### Phase 6 status — 4 of 8 (6.1, 6.4, 6.5, 6.2b done; 6.2 all but its 2D half)
 
 The entry point landed as `add-uv-stage-foundation`: engine UV READBACK (the real gate — the
 atlas could write per-corner UVs that nothing could read, so a 2D view was impossible), the
@@ -148,10 +148,19 @@ barrier but a merge can still cross one — so preservation is guaranteed by UNI
 barrier into the result rather than by the algorithm. Making the merges barrier-aware is the
 real fix and is not done.
 
-What the remaining tasks still need from the engine: **6.2b** needs corner pinning, which is
-genuinely new solver work (`choosePins` picks two vertices with no caller input); **6.7** needs
-a document-model change, since the atlas writes ONE UV set into the unit square. The seam
-half of 6.2's original scoping claim was wrong and is recorded as such.
+**6.2b landed, and it corrected a scoping claim in the OTHER direction** — the first time in
+Phase 6. I had it down as needing corner pinning, "genuinely new solver work". It is not
+required at all: the spec's only pinning is corner AUTO-pinning inside the relax scrub (6.3),
+which `choosePins` already does. Artist-specified pins were scope I invented. What 6.2b really
+contained was a destructive defect: the X gesture deleted faces in EVERY stage, including UV,
+where the spec says it re-unwraps an island. An unset stage is now inert rather than
+retopology, so a context that forgets a stage can no longer be silently destructive.
+
+What the remaining tasks still need from the engine: **6.7** needs a document-model change,
+since the atlas writes ONE UV set into the unit square. **6.3** is the largest remaining piece
+and mostly has its engine primitives already (`layout.hpp` carries grid straightening, overlap
+distribution and island stitching; `transforms.hpp` the move/rotate/scale). The seam half of
+6.2's original scoping claim was wrong and is recorded as such.
 
 Open TestFlight. This is the release that starts the clock against CozyBlanket Pro.
 

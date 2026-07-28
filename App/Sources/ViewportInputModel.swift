@@ -571,7 +571,8 @@ final class ViewportInputModel {
         chipMachine.strokeResolved(
             interpretation: outcome.interpretation,
             appliedIndex: outcome.appliedIndex,
-            alternatives: outcome.alternatives
+            alternatives: outcome.alternatives,
+            stage: meshEditor?.contextProvider?()?.stage
         )
         interpretationChip = chipMachine.chip
         scheduleChipAutoDismiss(generation: chipMachine.generation)

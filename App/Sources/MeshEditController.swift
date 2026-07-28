@@ -59,6 +59,13 @@ final class MeshEditController {
         /// "Pins immune to smoothing"); the annotation edits journal
         /// against it.
         var annotations: MeshAnnotations?
+        /// The document's current stage (6.2b). Read by the grammar, because the SAME stroke
+        /// shape means different things per stage: an X deletes faces in retopology and
+        /// re-unwraps an island in UV. Optional so a headless context that never set one is
+        /// distinguishable from one that chose a stage — and an unset stage must behave as
+        /// "not retopology", since defaulting to `.retopology` would make every context that
+        /// forgot to set it silently destructive.
+        var stage: DocumentManifest.Stage?
         /// Document symmetry state (task 4.4): which mirror axes and how
         /// many radial sectors authoring replicates under, and where the
         /// symmetry origin sits. Read fresh at stroke begin like
@@ -839,6 +846,23 @@ final class MeshEditController {
         case .deleteFaces:
             let faces = elementIDs(of: best, kind: .face)
             guard !faces.isEmpty else { return }
+            // 6.2b: the X gesture is STAGE-DEPENDENT — "X over faces/region/component ->
+            // delete (RT) / unwrap (UV) / bake (BK)". Dispatched here rather than by
+            // remapping the recognizer's action, because the recognizer reports the SHAPE it
+            // saw and what a shape MEANS is a document-state question it has no business
+            // knowing.
+            switch Self.crossMeaning(in: context.stage) {
+            case .deleteFaces:
+                break  // fall through to the delete below
+            case .reunwrapIsland:
+                reunwrapIsland(containingAnyOf: faces, context: context)
+                return
+            case .inert:
+                // An unimplemented stage does NOTHING. Falling back to deletion is how this
+                // gesture silently destroyed geometry in the UV stage before 6.2b, so the
+                // default must be inert rather than destructive.
+                return
+            }
             // Auto Relax (task 4.5a) evens the topology around the hole. The
             // neighbourhood is the deleted faces' rings, resolved BEFORE the
             // delete runs (the argument is evaluated first, while the faces
@@ -965,13 +989,50 @@ final class MeshEditController {
         }
     }
 
+    /// What an X (`.cross`, reported as `.deleteFaces`) means in a given stage.
+    ///
+    /// ONE switch, consulted by both the apply path and the alternative-swap path, so the two
+    /// cannot drift into disagreeing about whether an X deletes. A second copy is how the
+    /// chip would end up offering "Delete faces" as an alternative in a stage where the
+    /// gesture does not delete.
+    enum CrossMeaning: Equatable, Sendable {
+        case deleteFaces
+        case reunwrapIsland
+        case inert
+    }
+
+    // `nonisolated`: a pure function of the stage, touching no instance state. The chip
+    // builder is not main-actor isolated and must consult the SAME rule as the apply path.
+    nonisolated static func crossMeaning(in stage: DocumentManifest.Stage?) -> CrossMeaning {
+        switch stage {
+        case .retopology:
+            return .deleteFaces
+        case .uv:
+            return .reunwrapIsland
+        case .baking:
+            // Bake-on-X is Phase 7. Inert until then, which is the safe direction.
+            return .inert
+        case nil:
+            // An unset stage is NOT retopology. Treating it as retopology would make every
+            // context that forgot to set a stage silently destructive, which is precisely the
+            // failure mode this whole dispatch exists to remove.
+            return .inert
+        }
+    }
+
     private func canBuildReplacement(
         _ candidate: StrokeInterpretation.Candidate, stroke: AppliedPencilStroke
     ) -> Bool {
         switch candidate.action {
         case .insertLoop, .tagLoop, .dissolveEdge, .rotateEdge:
             return !elementIDs(of: candidate, kind: .edge).isEmpty
-        case .deleteFaces, .hideRegion:
+        case .deleteFaces:
+            // Never offer a delete as an alternative in a stage where an X does not delete.
+            guard Self.crossMeaning(in: contextProvider?()?.stage) == .deleteFaces else {
+                return false
+            }
+            return !elementIDs(of: candidate, kind: .face).isEmpty
+        case .hideRegion:
             return !elementIDs(of: candidate, kind: .face).isEmpty
         case .mergeVertices:
             return elementIDs(of: candidate, kind: .vertex).count == 2

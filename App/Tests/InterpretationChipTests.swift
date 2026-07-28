@@ -211,4 +211,55 @@ struct InterpretationChipModelTests {
         model.chooseAlternative(1)
         #expect(model.interpretationChip == nil)
     }
+
+    // MARK: - Stage-dependent X gesture (add-stage-dependent-x-gesture, 6.2b)
+
+    @Test("An X is labelled by what the STAGE does with it, not by the recognizer's action")
+    func crossLabelFollowsTheStage() {
+        // `.deleteFaces` is the action the recognizer reports for an X. Naming it directly
+        // would tell an artist in the UV stage that their faces were deleted when the gesture
+        // actually re-unwrapped an island.
+        #expect(
+            InterpretationChipState.label(for: .deleteFaces, stage: .retopology)
+                == "Delete faces"
+        )
+        #expect(
+            InterpretationChipState.label(for: .deleteFaces, stage: .uv) == "Unwrap island"
+        )
+        // Baking is Phase 7: inert, and the chip says so rather than naming a delete that
+        // will not happen.
+        let baking = InterpretationChipState.label(for: .deleteFaces, stage: .baking)
+        #expect(!baking.contains("Delete"))
+        // An unset stage must not read as retopology, for the same reason it must not BEHAVE
+        // as retopology.
+        #expect(!InterpretationChipState.label(for: .deleteFaces, stage: nil).contains("Delete"))
+    }
+
+    @Test("Only the retopology stage lets an X mean delete")
+    func onlyRetopologyDeletes() {
+        // The single rule the apply path and the chip both consult, so they cannot drift into
+        // the chip promising an outcome the dispatch does not produce.
+        #expect(MeshEditController.crossMeaning(in: .retopology) == .deleteFaces)
+        #expect(MeshEditController.crossMeaning(in: .uv) == .reunwrapIsland)
+        #expect(MeshEditController.crossMeaning(in: .baking) == .inert)
+        #expect(MeshEditController.crossMeaning(in: nil) == .inert)
+        // Exhaustive over the enum, so a NEW stage cannot be added and silently inherit
+        // deletion by omission.
+        for stage in DocumentManifest.Stage.allCases where stage != .retopology {
+            #expect(MeshEditController.crossMeaning(in: stage) != .deleteFaces)
+        }
+    }
+
+    @Test("Labels for every other action are unaffected by the stage")
+    func otherLabelsIgnoreTheStage() {
+        // The stage parameter must not have leaked into the rest of the grammar.
+        for action in StrokeInterpretation.Action.allCases where action != .deleteFaces {
+            for stage in DocumentManifest.Stage.allCases {
+                #expect(
+                    InterpretationChipState.label(for: action, stage: stage)
+                        == InterpretationChipState.label(for: action)
+                )
+            }
+        }
+    }
 }
