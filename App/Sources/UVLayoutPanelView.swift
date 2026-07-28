@@ -41,11 +41,34 @@ struct UVLayoutPanelView: View {
     var udimTiles: [Int32] = []
     var straddlingIslandCount: Int = 0
     var onStackMirrored: () -> Void = {}
+    /// 6.3: a completed 2D island gesture — the representative face plus the transform.
+    var onTransformIsland: (UInt32, UVIslandGesture.Transform) -> Void = { _, _ in }
+    var onGridStraighten: (UInt32) -> Void = { _ in }
+    /// Live drag state, held by the caller so it survives a body pass. nil when no drag is active.
+    @Binding var activeDrag: UVLayoutPanelView.DragState?
     /// What the fill shades by. Held by the caller so the choice survives a body pass.
     @Binding var mode: UVLayoutGeometry.HeatmapMode
     /// The texture size texel density is expressed against. A density figure is meaningless
     /// without it, so it is shown alongside rather than assumed.
     let textureSize: Int
+
+    /// An in-progress 2D island drag.
+    ///
+    /// The MODE is captured at the drag's START and never recomputed: reclassifying mid-drag
+    /// would let a rotation turn into a scale as the finger crosses a zone boundary, which is
+    /// exactly the kind of surprise a direct-manipulation gesture must not produce.
+    struct DragState: Equatable {
+        var ringIndex: Int
+        var face: UInt32
+        var mode: UVIslandGesture.Mode
+        var start: SIMD2<Float>
+        var current: SIMD2<Float>
+        var centre: SIMD2<Float>
+
+        var transform: UVIslandGesture.Transform {
+            UVIslandGesture.transform(mode: mode, from: start, to: current, about: centre)
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -255,11 +278,70 @@ struct UVLayoutPanelView: View {
             )
         }
         .aspectRatio(1, contentMode: .fit)
+        // The gesture goes on a transparent overlay rather than the Canvas itself so it can be
+        // given the canvas's real size: the drag has to convert view points into UV space, and
+        // the Canvas's own `size` is only available inside its draw closure.
+        .overlay {
+            GeometryReader { geometry in
+                Color.clear
+                    .contentShape(Rectangle())
+                    .gesture(islandDrag(layout, in: geometry.size))
+            }
+        }
         .accessibilityIdentifier("uv-canvas")
         .accessibilityLabel(
             "UV layout, \(layout.ringCount) faces"
                 + (layout.overflowCorners > 0
                     ? ", \(layout.overflowCorners) corners outside the square" : "")
+        )
+    }
+
+    /// The 2D island grammar: where a drag STARTS decides what it does (6.3).
+    ///
+    /// A drag rather than a tap-then-mode: the spec's grammar is positional, so the artist aims
+    /// instead of selecting a tool first. The transform is applied on RELEASE as one journaled
+    /// step; nothing is committed while the finger is down, so a drag can be abandoned by
+    /// dragging back.
+    private func islandDrag(
+        _ layout: UVLayoutGeometry.Layout, in size: CGSize
+    ) -> some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .local)
+            .onChanged { value in
+                let rect = Self.squareRect(in: size)
+                guard rect.width > 0 else { return }
+                let start = Self.uv(at: value.startLocation, in: rect)
+                let current = Self.uv(at: value.location, in: rect)
+                if var drag = activeDrag {
+                    drag.current = current
+                    activeDrag = drag
+                    return
+                }
+                guard let index = layout.ringIndex(at: start),
+                    index < layout.faceIDs.count
+                else { return }
+                let box = UVLayoutGeometry.Layout.bounds(layout.rings[index])
+                activeDrag = DragState(
+                    ringIndex: index,
+                    face: layout.faceIDs[index],
+                    mode: UVIslandGesture.mode(forStartingAt: start, in: box),
+                    start: start,
+                    current: current,
+                    centre: (box.min + box.max) * 0.5
+                )
+            }
+            .onEnded { _ in
+                guard let drag = activeDrag else { return }
+                activeDrag = nil
+                onTransformIsland(drag.face, drag.transform)
+            }
+    }
+
+    /// UV coordinates for a point in the canvas, undoing the v flip `path` applies.
+    static func uv(at point: CGPoint, in rect: CGRect) -> SIMD2<Float> {
+        guard rect.width > 0, rect.height > 0 else { return .zero }
+        return SIMD2(
+            Float((point.x - rect.minX) / rect.width),
+            Float(1 - (point.y - rect.minY) / rect.height)
         )
     }
 

@@ -25,6 +25,12 @@ enum UVLayoutGeometry {
         /// Corners falling outside the unit square. Reported rather than clamped, because
         /// an overflowing layout is a real defect the artist needs to see.
         var overflowCorners: Int
+        /// A representative FACE id per ring, parallel to `rings`.
+        ///
+        /// Carried so a 2D gesture can name the island it hit without the panel reproducing the
+        /// engine's island partition — the same reason the flip and retile readbacks return face
+        /// ids rather than island indices.
+        var faceIDs: [UInt32] = []
         /// Per-face distortion, parallel to `rings`, or empty when the engine reported none.
         /// Parallel rather than a dictionary because both come from the same live-face walk,
         /// and an index is impossible to desynchronise where a key lookup could silently miss.
@@ -40,6 +46,58 @@ enum UVLayoutGeometry {
         /// The MEDIAN texel density, used as the reference a density heatmap shades against.
         /// Median rather than mean because one collapsed face at density 0, or one enormous
         /// chart, would drag a mean far enough to wash out every other face.
+        /// The ring whose polygon contains `uv`, or the nearest by centre when none does.
+        ///
+        /// Nearest-by-centre fallback rather than nil: a drag that starts a hair outside a thin
+        /// island should grab it, not silently do nothing. Returns nil only when there are no
+        /// rings at all.
+        func ringIndex(at uv: SIMD2<Float>) -> Int? {
+            guard !rings.isEmpty else { return nil }
+            for (index, ring) in rings.enumerated() where Self.contains(ring, uv) {
+                return index
+            }
+            var best = 0
+            var bestDistance = Float.greatestFiniteMagnitude
+            for (index, ring) in rings.enumerated() {
+                let centre = Self.bounds(ring)
+                let mid = (centre.min + centre.max) * 0.5
+                let distance = simd_distance(mid, uv)
+                if distance < bestDistance {
+                    bestDistance = distance
+                    best = index
+                }
+            }
+            return best
+        }
+
+        /// Axis-aligned bounds of one ring, in UV space.
+        static func bounds(_ ring: [SIMD2<Float>]) -> (min: SIMD2<Float>, max: SIMD2<Float>) {
+            var lo = SIMD2<Float>(repeating: .greatestFiniteMagnitude)
+            var hi = SIMD2<Float>(repeating: -.greatestFiniteMagnitude)
+            for uv in ring {
+                lo = simd_min(lo, uv)
+                hi = simd_max(hi, uv)
+            }
+            return (lo, hi)
+        }
+
+        /// Even-odd point-in-polygon.
+        static func contains(_ ring: [SIMD2<Float>], _ point: SIMD2<Float>) -> Bool {
+            guard ring.count >= 3 else { return false }
+            var inside = false
+            var j = ring.count - 1
+            for i in 0..<ring.count {
+                let a = ring[i]
+                let b = ring[j]
+                if (a.y > point.y) != (b.y > point.y) {
+                    let t = (point.y - a.y) / (b.y - a.y)
+                    if point.x < a.x + t * (b.x - a.x) { inside.toggle() }
+                }
+                j = i
+            }
+            return inside
+        }
+
         func referenceDensity(textureSize: Int) -> Float {
             let values = distortion.map { $0.texelDensity(textureSize: textureSize) }
                 .filter { $0 > 0 }
@@ -99,7 +157,9 @@ enum UVLayoutGeometry {
         // empty is also tolerated: the panel degrades to strokes rather than refusing.
         let measured = mesh.uvDistortion() ?? []
         var rings: [[SIMD2<Float>]] = []
+        var faces_: [UInt32] = []
         rings.reserveCapacity(faces.count)
+        faces_.reserveCapacity(faces.count)
         var overflow = 0
         var cursor = 0
         for face in faces {
@@ -115,6 +175,7 @@ enum UVLayoutGeometry {
                 overflow += 1
             }
             rings.append(ring)
+            faces_.append(face)
         }
         guard !rings.isEmpty else {
             return .unreadable(reason: "no drawable faces")
@@ -124,7 +185,9 @@ enum UVLayoutGeometry {
         // which is the same failure mode the corner-stream check above guards against.
         let paired = measured.count == rings.count ? measured : []
         return .laidOut(
-            Layout(rings: rings, overflowCorners: overflow, distortion: paired)
+            Layout(
+                rings: rings, overflowCorners: overflow, faceIDs: faces_, distortion: paired
+            )
         )
     }
 

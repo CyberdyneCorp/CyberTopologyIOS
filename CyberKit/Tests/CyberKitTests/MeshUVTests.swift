@@ -515,4 +515,101 @@ struct MeshUVTests {
             #expect(mesh.uvCoordinates() == before)
         }
     }
+
+    // MARK: - Island editing (6.3)
+
+    @Test("An island transform moves only that island, by exactly the requested delta")
+    func islandTransformIsLocal() throws {
+        let (mesh, _) = try cube().unwrapped()
+        let before = try #require(mesh.uvCoordinates())
+
+        try mesh.transformIsland(containing: 0, translate: SIMD2(0.2, -0.05))
+        let after = try #require(mesh.uvCoordinates())
+
+        var moved = 0, kept = 0
+        for (old, new) in zip(before, after) {
+            if old == new {
+                kept += 1
+            } else {
+                #expect(abs((new.x - old.x) - 0.2) < 1e-5)
+                #expect(abs((new.y - old.y) + 0.05) < 1e-5)
+                moved += 1
+            }
+        }
+        // Both halves matter: all-moved would mean the whole layout was transformed.
+        #expect(moved > 0)
+        #expect(kept > 0)
+    }
+
+    @Test("A negative or zero scale is REFUSED rather than silently mirroring the island")
+    func transformRejectsNonPositiveScale() throws {
+        let (mesh, _) = try cube().unwrapped()
+        // Mirroring has its own entry point where the winding change is the intent. Allowing it
+        // through a negative scale would let a transform quietly produce a defect that only shows
+        // up as inverted detail after baking.
+        #expect(throws: (any Error).self) {
+            try mesh.transformIsland(containing: 0, scale: -1)
+        }
+        #expect(throws: (any Error).self) {
+            try mesh.transformIsland(containing: 0, scale: 0)
+        }
+    }
+
+    @Test("Four quarter turns restore the island exactly, so the pivot does not drift")
+    func rotationPivotIsStable() throws {
+        let (mesh, _) = try cube().unwrapped()
+        let before = try #require(mesh.uvCoordinates())
+        for _ in 0..<4 {
+            try mesh.transformIsland(containing: 0, radians: .pi / 2)
+        }
+        let after = try #require(mesh.uvCoordinates())
+        for (a, b) in zip(before, after) {
+            #expect(abs(a.x - b.x) < 1e-4)
+            #expect(abs(a.y - b.y) < 1e-4)
+        }
+    }
+
+    @Test("Cloning an island onto ITSELF is refused, not silently successful")
+    func cloneOntoSelfIsRefused() throws {
+        let (mesh, _) = try cube().unwrapped()
+        // A no-op reported as success would make a mis-aimed gesture look like it worked.
+        #expect(throws: (any Error).self) { try mesh.cloneIsland(from: 0, to: 0) }
+    }
+
+    @Test("Island editing refuses a mesh with no UV layout")
+    func islandEditingNeedsALayout() throws {
+        let bare = try cube()
+        #expect(throws: (any Error).self) { try bare.transformIsland(containing: 0) }
+        #expect(throws: (any Error).self) { try bare.gridStraightenIsland(containing: 0) }
+        #expect(throws: (any Error).self) {
+            try bare.symmetrizeIsland(
+                containing: 0, axisPoint: SIMD2(0.5, 0.5), axisDirection: SIMD2(1, 0)
+            )
+        }
+    }
+
+    @Test("Symmetrizing about a zero axis is refused")
+    func symmetrizeNeedsAnAxis() throws {
+        let (mesh, _) = try cube().unwrapped()
+        #expect(throws: (any Error).self) {
+            try mesh.symmetrizeIsland(
+                containing: 0, axisPoint: SIMD2(0.5, 0.5), axisDirection: .zero
+            )
+        }
+    }
+
+    @Test("Stitching sews the given edges and a dead id leaves the seam set untouched")
+    func stitchingIsAllOrNothing() throws {
+        let mesh = try cube()
+        try mesh.setSeamEdges([0, 1, 2])
+        _ = try mesh.unwrapInPlace(seams: [0, 1, 2])
+
+        // Validated as a whole: a bad id must not leave the mesh half-stitched.
+        #expect(throws: (any Error).self) { try mesh.stitchIslands(along: [0, 9999]) }
+        let stillThree = try mesh.unwrapInPlace(seams: [0, 1, 2])
+        #expect(stillThree.seamEdges == 3)
+
+        // An empty list is a no-op rather than an error — a gesture that selected nothing.
+        try mesh.stitchIslands(along: [])
+    }
 }

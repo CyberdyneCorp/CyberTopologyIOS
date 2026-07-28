@@ -508,4 +508,72 @@ struct UnwrapActionTests {
         #expect(harness.editor.udimTiles() == [1001])
         #expect(harness.editor.straddlingIslandFaces().isEmpty)
     }
+
+    // MARK: - Island editing commands (6.3)
+
+    @Test("An island transform is ONE journaled step and undo restores the layout")
+    func transformIslandIsOneStep() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.runUnwrapUVs())
+        let before = try #require(try harness.editMesh().uvCoordinates())
+        let committed = harness.committed.count
+
+        let move = UVIslandGesture.Transform(translate: SIMD2(0.1, 0.05))
+        #expect(harness.editor.runTransformIsland(containing: 0, transform: move))
+        #expect(harness.committed.count == committed + 1, "one gesture, one entry")
+
+        let after = try #require(try harness.editMesh().uvCoordinates())
+        #expect(zip(before, after).contains { $0 != $1 })
+        #expect(zip(before, after).contains { $0 == $1 }, "only one island moved")
+    }
+
+    @Test("An IDENTITY transform journals nothing, so an abandoned drag leaves no undo entry")
+    func identityTransformIsNotAnEdit() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.runUnwrapUVs())
+        let committed = harness.committed.count
+
+        // A drag returned to where it started resolves to the identity. Committing it would give
+        // the artist an undo entry that does nothing.
+        #expect(!harness.editor.runTransformIsland(
+            containing: 0, transform: UVIslandGesture.Transform()
+        ))
+        #expect(harness.committed.count == committed)
+    }
+
+    @Test("Island editing refuses before an unwrap and says to unwrap first")
+    func islandEditingNeedsALayout() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+
+        #expect(!harness.editor.runTransformIsland(
+            containing: 0, transform: UVIslandGesture.Transform(translate: SIMD2(0.1, 0))
+        ))
+        #expect(harness.editor.lastUnwrapRefusal?.contains("Unwrap first") == true)
+
+        #expect(!harness.editor.runGridStraightenIsland(containing: 0))
+        #expect(harness.editor.lastUnwrapRefusal?.contains("Unwrap first") == true)
+        #expect(harness.committed.isEmpty)
+    }
+
+    @Test("Grid straightening is ONE journaled step, and repeating it settles")
+    func gridStraightenSettles() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.runUnwrapUVs())
+        let committed = harness.committed.count
+
+        // The first straighten may or may not change an already-regular atlas layout; whichever
+        // it does, a SECOND one must be a byte-identical no-op rather than nudging the island
+        // every time it is pressed.
+        let first = harness.editor.runGridStraightenIsland(containing: 0)
+        let settled = try #require(try harness.editMesh().uvCoordinates())
+        #expect(harness.committed.count == committed + (first ? 1 : 0))
+
+        #expect(!harness.editor.runGridStraightenIsland(containing: 0))
+        #expect(try harness.editMesh().uvCoordinates() == settled)
+        #expect(harness.editor.lastUnwrapRefusal?.contains("Already arranged") == true)
+    }
 }

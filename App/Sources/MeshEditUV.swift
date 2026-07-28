@@ -208,6 +208,38 @@ extension MeshEditController {
         return committed
     }
 
+    /// Applies a 2D island gesture as ONE journaled step (6.3).
+    ///
+    /// One journal entry per completed GESTURE, not per drag sample: the panel accumulates the
+    /// drag and commits once on release, the same discipline the brush verbs follow so a stroke
+    /// is one undo.
+    @discardableResult
+    func runTransformIsland(
+        containing face: UInt32, transform: UVIslandGesture.Transform
+    ) -> Bool {
+        // An untouched transform is not an edit. Committing it would journal an identity step and
+        // give the artist an undo entry that does nothing.
+        guard transform != UVIslandGesture.Transform() else { return false }
+        return wholeMeshUVCommand(
+            verb: "uv.transformIsland", failure: "Could not transform this island"
+        ) { mesh, seams in
+            try mesh.transformIsland(
+                containing: face, translate: transform.translate, radians: transform.radians,
+                scale: transform.scale, seams: seams
+            )
+        }
+    }
+
+    /// Snaps the island containing `face` onto an axis-aligned UV grid, as ONE journaled step.
+    @discardableResult
+    func runGridStraightenIsland(containing face: UInt32) -> Bool {
+        wholeMeshUVCommand(
+            verb: "uv.gridStraightenIsland", failure: "Could not straighten this island"
+        ) { mesh, seams in
+            try mesh.gridStraightenIsland(containing: face, seams: seams)
+        }
+    }
+
     /// Occupied UDIM tiles, for the panel's readout. Empty when there is no layout.
     func udimTiles() -> [Int32] {
         guard let context = contextProvider?(), let mesh = context.editMesh else { return [] }

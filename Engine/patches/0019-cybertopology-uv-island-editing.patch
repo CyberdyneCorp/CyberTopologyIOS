@@ -1,0 +1,480 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index a402c7a..a8db641 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -260,6 +260,49 @@ CyberStatus cyber_uv_straddling_islands(const CyberMesh* mesh, const CyberAtlasP
+  * means the same thing on a fingertip and a torso. Writes the number of islands stacked to
+  * `out_stacked` (may be NULL); 0 means nothing matched, which is the correct answer for a
+  * non-symmetric mesh rather than a wrong pairing. */
++/* Island UV transform (add-uv-island-editing): moves, rotates and scales the island containing
++ * `face_id` in UV space, in ONE atomic call.
++ *
++ * Combined rather than three calls because a multitouch pinch produces translation, rotation and
++ * scale simultaneously — applying them as separate operations would journal three steps for one
++ * gesture and would compose about drifting pivots.
++ *
++ * Order is scale, then rotate, then translate, all about the island's UV centroid. Rotation and
++ * scale do NOT commute, so the order is fixed here rather than left to the caller. */
++CyberStatus cyber_uv_transform_island(CyberMesh* mesh, uint32_t face_id, float translate_u,
++                                      float translate_v, float radians, float scale,
++                                      const CyberAtlasParams* params);
++
++/* Snaps a grid-topology island onto an axis-aligned regular UV grid ("Build Quad on a grid
++ * island" / grid straightening). `tolerance` is relative to the island's coordinate range. */
++CyberStatus cyber_uv_grid_straighten_island(CyberMesh* mesh, uint32_t face_id, float tolerance,
++                                            const CyberAtlasParams* params);
++
++/* Partial symmetrization: pulls each of the island's UVs toward the midpoint of itself and its
++ * nearest mirrored counterpart, by `strength` in [0,1]. At 1 the island becomes symmetric about
++ * the axis through `axis_point` with direction `axis_dir`. */
++CyberStatus cyber_uv_symmetrize_island(CyberMesh* mesh, uint32_t face_id, float axis_point_u,
++                                       float axis_point_v, float axis_dir_u, float axis_dir_v,
++                                       float strength, const CyberAtlasParams* params);
++
++/* Copies per-corner UVs from the island containing `src_face_id` onto the island containing
++ * `dst_face_id`.
++ *
++ * Requires matching topology (same face count and per-face corner counts, in island order) and
++ * copies by that order — this is deliberately the ORDER-based clone, for islands that are
++ * genuine topological duplicates. It is NOT how mirrored pairs are stacked; see
++ * cyber_uv_stack_mirrored_islands, which corresponds by reflected position because index
++ * matching across a mirror scrambles the shell. Returns CYBER_ERR_INVALID_ARG when the islands
++ * do not match, leaving every UV untouched. */
++CyberStatus cyber_uv_clone_island(CyberMesh* mesh, uint32_t src_face_id, uint32_t dst_face_id,
++                                  const CyberAtlasParams* params);
++
++/* Stitches (merges) islands along `edge_ids`: each edge stops being a seam and the corners it
++ * separates are welded to their shared average, so the boundary fits together. The handle's
++ * authored seam set is updated, so a subsequent unwrap sees the sewn topology. */
++CyberStatus cyber_uv_stitch_islands(CyberMesh* mesh, const uint32_t* edge_ids, size_t count,
++                                    const CyberAtlasParams* params);
++
+ CyberStatus cyber_uv_stack_mirrored_islands(CyberMesh* mesh, float plane_point_x,
+                                             float plane_point_y, float plane_point_z,
+                                             float plane_normal_x, float plane_normal_y,
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index e05d55e..53c103c 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -57,6 +57,9 @@
+ #include "cyber/uv/pack_aids.hpp"
+ #include "cyber/uv/reunwrap.hpp"
+ #include "cyber/uv/udim.hpp"
++#include "cyber/uv/symmetrize.hpp"
++#include "cyber/uv/transforms.hpp"
++#include "cyber/uv/uv_clone.hpp"
+ #include "cyber/uv/uv_stack.hpp"
+ #endif
+ 
+@@ -876,6 +879,246 @@ void writeIds(const std::vector<T>& ids, T* out, size_t capacity, size_t* out_co
+ #endif
+ }  // namespace
+ 
++namespace {
++#ifdef CYBER_CAPI_WITH_UV
++// Runs `op` on the island containing `face`, with the usual preconditions.
++//
++// Every localized island operation needs the same four checks (UVs exist, face alive, face in an
++// island, cache invalidated afterwards). Writing them out per entry point would be five chances
++// to forget the invalidation — the exact bug cyber_uv_atlas shipped with until 6.1.
++template <typename Op>
++CyberStatus withIsland(CyberMesh* mesh, std::uint32_t face, const CyberAtlasParams* params,
++                       const char* what, Op&& op) {
++    if (mesh == nullptr) {
++        setError(std::string(what) + ": null mesh");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    if (cyber::uv::uvColumn(mesh->mesh) == nullptr) {
++        setError(std::string(what) + ": mesh has no UV layout");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    const cyber::FaceId target{face};
++    if (!mesh->mesh.isAlive(target)) {
++        setError(std::string(what) + ": dead face");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    for (const auto& island : islandPartition(mesh, atlasOptions(params))) {
++        if (std::find(island.begin(), island.end(), target) != island.end()) {
++            if (!op(island)) {
++                setError(std::string(what) + ": operation refused");
++                return CYBER_ERR_INVALID_ARG;
++            }
++            invalidateRenderCache(mesh);
++            clearError();
++            return CYBER_OK;
++        }
++    }
++    setError(std::string(what) + ": face is in no island");
++    return CYBER_ERR_INVALID_ARG;
++}
++#endif
++}  // namespace
++
++CyberStatus cyber_uv_transform_island([[maybe_unused]] CyberMesh* mesh,
++                                     [[maybe_unused]] uint32_t face_id,
++                                     [[maybe_unused]] float translate_u,
++                                     [[maybe_unused]] float translate_v,
++                                     [[maybe_unused]] float radians,
++                                     [[maybe_unused]] float scale,
++                                     [[maybe_unused]] const CyberAtlasParams* params) {
++#ifdef CYBER_CAPI_WITH_UV
++    if (!(scale > 0.0f)) {
++        // Zero or negative scale would collapse or mirror the island. Mirroring has its own
++        // entry point (cyber_uv_flip_island) where the winding change is the POINT; smuggling it
++        // in through a negative scale would make a transform silently produce a defect.
++        setError("cyber_uv_transform_island: scale must be positive");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        return withIsland(
++            mesh, face_id, params, "cyber_uv_transform_island",
++            [&](std::span<const cyber::FaceId> island) {
++                // Scale, then rotate, then translate — about the island's centroid, recomputed
++                // between steps so each acts on the shape the previous one produced. Rotation and
++                // scale do not commute, so the order is fixed here rather than per caller.
++                if (scale != 1.0f) {
++                    cyber::uv::scaleIslandUv(mesh->mesh, island, scale);
++                }
++                if (radians != 0.0f) {
++                    cyber::uv::rotateIslandUv(mesh->mesh, island, radians);
++                }
++                if (translate_u != 0.0f || translate_v != 0.0f) {
++                    cyber::uv::translateIslandUv(mesh->mesh, island, {translate_u, translate_v});
++                }
++                return true;
++            });
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_transform_island: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_transform_island: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
++CyberStatus cyber_uv_grid_straighten_island([[maybe_unused]] CyberMesh* mesh,
++                                           [[maybe_unused]] uint32_t face_id,
++                                           [[maybe_unused]] float tolerance,
++                                           [[maybe_unused]] const CyberAtlasParams* params) {
++#ifdef CYBER_CAPI_WITH_UV
++    try {
++        return withIsland(mesh, face_id, params, "cyber_uv_grid_straighten_island",
++                          [&](std::span<const cyber::FaceId> island) {
++                              cyber::uv::gridStraightenIslandUv(mesh->mesh, island, tolerance);
++                              return true;
++                          });
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_grid_straighten_island: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_grid_straighten_island: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
++CyberStatus cyber_uv_symmetrize_island([[maybe_unused]] CyberMesh* mesh,
++                                      [[maybe_unused]] uint32_t face_id,
++                                      [[maybe_unused]] float axis_point_u,
++                                      [[maybe_unused]] float axis_point_v,
++                                      [[maybe_unused]] float axis_dir_u,
++                                      [[maybe_unused]] float axis_dir_v,
++                                      [[maybe_unused]] float strength,
++                                      [[maybe_unused]] const CyberAtlasParams* params) {
++#ifdef CYBER_CAPI_WITH_UV
++    if (axis_dir_u == 0.0f && axis_dir_v == 0.0f) {
++        setError("cyber_uv_symmetrize_island: zero axis direction");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        return withIsland(mesh, face_id, params, "cyber_uv_symmetrize_island",
++                          [&](std::span<const cyber::FaceId> island) {
++                              cyber::uv::symmetrizeIslandUv(
++                                  mesh->mesh, island, {axis_point_u, axis_point_v},
++                                  {axis_dir_u, axis_dir_v}, strength);
++                              return true;
++                          });
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_symmetrize_island: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_symmetrize_island: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
++CyberStatus cyber_uv_clone_island([[maybe_unused]] CyberMesh* mesh,
++                                 [[maybe_unused]] uint32_t src_face_id,
++                                 [[maybe_unused]] uint32_t dst_face_id,
++                                 [[maybe_unused]] const CyberAtlasParams* params) {
++#ifdef CYBER_CAPI_WITH_UV
++    if (mesh == nullptr) {
++        setError("cyber_uv_clone_island: null mesh");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        if (cyber::uv::uvColumn(mesh->mesh) == nullptr) {
++            setError("cyber_uv_clone_island: mesh has no UV layout");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        const cyber::FaceId src{src_face_id};
++        const cyber::FaceId dst{dst_face_id};
++        if (!mesh->mesh.isAlive(src) || !mesh->mesh.isAlive(dst)) {
++            setError("cyber_uv_clone_island: dead face");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        const auto islands = islandPartition(mesh, atlasOptions(params));
++        const std::vector<cyber::FaceId>* source = nullptr;
++        const std::vector<cyber::FaceId>* target = nullptr;
++        for (const auto& island : islands) {
++            if (std::find(island.begin(), island.end(), src) != island.end()) {
++                source = &island;
++            }
++            if (std::find(island.begin(), island.end(), dst) != island.end()) {
++                target = &island;
++            }
++        }
++        if (source == nullptr || target == nullptr) {
++            setError("cyber_uv_clone_island: a face is in no island");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        if (source == target) {
++            // Cloning an island onto itself is a no-op that would report success; refused so a
++            // mis-aimed gesture is visible rather than silently doing nothing.
++            setError("cyber_uv_clone_island: source and destination are the same island");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        if (!cyber::uv::cloneIslandUv(mesh->mesh, *source, *target)) {
++            setError("cyber_uv_clone_island: islands do not have matching topology");
++            return CYBER_ERR_INVALID_ARG;
++        }
++        invalidateRenderCache(mesh);
++        clearError();
++        return CYBER_OK;
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_clone_island: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_clone_island: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
++CyberStatus cyber_uv_stitch_islands([[maybe_unused]] CyberMesh* mesh,
++                                   [[maybe_unused]] const uint32_t* edge_ids,
++                                   [[maybe_unused]] size_t count,
++                                   [[maybe_unused]] const CyberAtlasParams* params) {
++#ifdef CYBER_CAPI_WITH_UV
++    if (mesh == nullptr || (edge_ids == nullptr && count > 0)) {
++        setError("cyber_uv_stitch_islands: null argument");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        std::vector<cyber::EdgeId> edges;
++        edges.reserve(count);
++        for (size_t i = 0; i < count; ++i) {
++            const cyber::EdgeId edge{edge_ids[i]};
++            if (!mesh->mesh.isAlive(edge)) {
++                // Validated as a WHOLE before anything is sewn, so a rejected id leaves the mesh
++                // untouched rather than half-stitched.
++                setError("cyber_uv_stitch_islands: dead edge id");
++                return CYBER_ERR_INVALID_ARG;
++            }
++            edges.push_back(edge);
++        }
++        // Operates on the handle's authored seam set, so a later unwrap sees the sewn topology
++        // rather than re-cutting what was just merged.
++        cyber::uv::SeamSet seams = authoredSeamSet(mesh);
++        cyber::uv::stitchAlongSeams(mesh->mesh, seams, edges);
++        std::vector<std::uint32_t> remaining;
++        for (cyber::Index e = 0; e < mesh->mesh.edgeCapacity(); ++e) {
++            const cyber::EdgeId edge{e};
++            if (mesh->mesh.isAlive(edge) && seams.isSeam(edge)) {
++                remaining.push_back(e);
++            }
++        }
++        mesh->seamEdges = remaining;
++        invalidateRenderCache(mesh);
++        clearError();
++        return CYBER_OK;
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_stitch_islands: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_stitch_islands: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
+ CyberStatus cyber_uv_udim_tiles([[maybe_unused]] const CyberMesh* mesh,
+                                [[maybe_unused]] const CyberAtlasParams* params,
+                                [[maybe_unused]] int32_t* out_tiles,
+diff --git a/tests/capi/test_capi.cpp b/tests/capi/test_capi.cpp
+index 6364e22..e3d8fd8 100644
+--- a/tests/capi/test_capi.cpp
++++ b/tests/capi/test_capi.cpp
+@@ -703,6 +703,160 @@ TEST_CASE("capi flipped-island readback names a face and a flip is reversible")
+     std::filesystem::remove(objPath, ec);
+ }
+ 
++// Island UV editing (openspec add-uv-island-editing, 6.3).
++TEST_CASE("capi island transform moves, rotates and scales in one atomic call") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++
++    // No layout to transform.
++    CHECK(cyber_uv_transform_island(mesh, 0, 0.1f, 0, 0, 1, &params) == CYBER_ERR_INVALID_ARG);
++    REQUIRE(cyber_uv_atlas(mesh, &params, nullptr) == CYBER_OK);
++
++    size_t uvFloats = 0;
++    const float* p = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    REQUIRE(p != nullptr);
++    const std::vector<float> before(p, p + uvFloats);
++
++    // A non-positive scale would collapse or MIRROR the island. Mirroring has its own entry
++    // point where the winding change is the point; smuggling it through a negative scale would
++    // make a transform silently produce a defect.
++    CHECK(cyber_uv_transform_island(mesh, 0, 0, 0, 0, 0.0f, &params) == CYBER_ERR_INVALID_ARG);
++    CHECK(cyber_uv_transform_island(mesh, 0, 0, 0, 0, -1.0f, &params) == CYBER_ERR_INVALID_ARG);
++    CHECK(cyber_uv_transform_island(mesh, 9999, 0, 0, 0, 1.0f, &params) == CYBER_ERR_INVALID_ARG);
++
++    // A pure translation moves exactly one island and leaves the rest bitwise identical.
++    REQUIRE(cyber_uv_transform_island(mesh, 0, 0.25f, -0.1f, 0, 1.0f, &params) == CYBER_OK);
++    p = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    REQUIRE(p != nullptr);
++    size_t moved = 0, kept = 0;
++    for (size_t i = 0; i + 1 < uvFloats; i += 2) {
++        if (p[i] != before[i] || p[i + 1] != before[i + 1]) {
++            CHECK(std::fabs((p[i] - before[i]) - 0.25f) < 1e-5f);
++            CHECK(std::fabs((p[i + 1] - before[i + 1]) + 0.1f) < 1e-5f);
++            ++moved;
++        } else {
++            ++kept;
++        }
++    }
++    CHECK(moved > 0);
++    CHECK(kept > 0);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
++TEST_CASE("capi island rotation by a full turn returns the island to where it started") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++    REQUIRE(cyber_uv_atlas(mesh, &params, nullptr) == CYBER_OK);
++    size_t uvFloats = 0;
++    const float* p = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    const std::vector<float> before(p, p + uvFloats);
++
++    // Four quarter turns about the island centroid. Each rotation recomputes the centroid, so
++    // this also pins that the pivot does not drift between steps.
++    const float quarter = 1.57079632679f;
++    for (int i = 0; i < 4; ++i) {
++        REQUIRE(cyber_uv_transform_island(mesh, 0, 0, 0, quarter, 1.0f, &params) == CYBER_OK);
++    }
++    p = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    for (size_t i = 0; i < before.size(); ++i) {
++        CHECK(std::fabs(p[i] - before[i]) < 1e-4f);
++    }
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
++TEST_CASE("capi cloning refuses an island onto itself and mismatched topology") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++    params.mergeCharts = 0;
++    REQUIRE(cyber_uv_atlas(mesh, &params, nullptr) == CYBER_OK);
++    size_t uvFloats = 0;
++    const float* p = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    const std::vector<float> before(p, p + uvFloats);
++
++    // Onto ITSELF: a no-op that would report success, so a mis-aimed gesture would look like it
++    // worked. Refused instead.
++    CHECK(cyber_uv_clone_island(mesh, 0, 0, &params) == CYBER_ERR_INVALID_ARG);
++    p = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    for (size_t i = 0; i < before.size(); ++i) {
++        CHECK(p[i] == before[i]);
++    }
++
++    // Between two single-quad cube faces the topology DOES match, so this must succeed and make
++    // the destination carry the source's UVs.
++    REQUIRE(cyber_uv_clone_island(mesh, 0, 1, &params) == CYBER_OK);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
++TEST_CASE("capi grid straighten and symmetrize validate their arguments") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++
++    CHECK(cyber_uv_grid_straighten_island(mesh, 0, 0.25f, &params) == CYBER_ERR_INVALID_ARG);
++    REQUIRE(cyber_uv_atlas(mesh, &params, nullptr) == CYBER_OK);
++    REQUIRE(cyber_uv_grid_straighten_island(mesh, 0, 0.25f, &params) == CYBER_OK);
++
++    // A zero direction is not an axis; symmetrizing about it is meaningless.
++    CHECK(cyber_uv_symmetrize_island(mesh, 0, 0.5f, 0.5f, 0, 0, 1.0f, &params)
++          == CYBER_ERR_INVALID_ARG);
++    REQUIRE(cyber_uv_symmetrize_island(mesh, 0, 0.5f, 0.5f, 1, 0, 1.0f, &params) == CYBER_OK);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
++TEST_CASE("capi stitching removes edges from the seam set and rejects a dead edge whole") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++
++    const uint32_t authored[3] = {0, 1, 2};
++    REQUIRE(cyber_mesh_set_seam_edges(mesh, authored, 3) == CYBER_OK);
++    REQUIRE(cyber_uv_atlas(mesh, &params, nullptr) == CYBER_OK);
++
++    // Validated as a WHOLE first: a rejected id must leave the seam set untouched rather than
++    // half-stitched.
++    const uint32_t bad[2] = {0, 9999};
++    CHECK(cyber_uv_stitch_islands(mesh, bad, 2, &params) == CYBER_ERR_INVALID_ARG);
++    CyberAtlasResult still{};
++    REQUIRE(cyber_uv_atlas(mesh, &params, &still) == CYBER_OK);
++    CHECK(still.seamEdges == 3);
++
++    // Sewing one edge leaves two.
++    const uint32_t one[1] = {1};
++    REQUIRE(cyber_uv_stitch_islands(mesh, one, 1, &params) == CYBER_OK);
++    CyberAtlasResult after{};
++    REQUIRE(cyber_uv_atlas(mesh, &params, &after) == CYBER_OK);
++    CHECK(after.seamEdges == 2);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
+ // UDIM tiles and symmetry stacking (openspec add-uv-sets-and-stacking).
+ TEST_CASE("capi UDIM tiles start at 1001 and follow the island when it is retiled") {
+     const std::filesystem::path objPath = writeCubeObj();

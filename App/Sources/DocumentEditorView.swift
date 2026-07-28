@@ -30,6 +30,9 @@ struct DocumentEditorView: View {
     /// What the UV heatmap shades by (task 6.4). View state: it changes what you are
     /// looking at, not what the document contains.
     @State private var uvHeatmapMode: UVLayoutGeometry.HeatmapMode = .angle
+    /// In-progress 2D island drag (6.3). VIEW state: nothing is journaled until release, so an
+    /// abandoned drag leaves the undo stack untouched.
+    @State private var uvIslandDrag: UVLayoutPanelView.DragState?
 
     /// Persisted camera sensitivity (spec: viewport-rendering / "Robust
     /// camera system" — orbit/zoom speed SHALL be user-adjustable).
@@ -157,6 +160,9 @@ struct DocumentEditorView: View {
                             onStackMirrored: {
                                 runUVCommand(.stackMirroredUVs, success: "Mirrored islands stacked")
                             },
+                            onTransformIsland: transformIsland,
+                            onGridStraighten: gridStraightenIsland,
+                            activeDrag: $uvIslandDrag,
                             mode: $uvHeatmapMode,
                             textureSize: Mesh.AtlasParameters().textureSize
                         )
@@ -850,6 +856,28 @@ struct DocumentEditorView: View {
         if inputModel.runCommand(action) {
             journal.handle(.documentEdited)
             statusMessage = success
+        } else {
+            statusMessage = inputModel.meshEditor?.lastUnwrapRefusal
+        }
+    }
+
+    /// One completed 2D island gesture = ONE journaled step.
+    private func transformIsland(_ face: UInt32, _ transform: UVIslandGesture.Transform) {
+        if inputModel.meshEditor?.runTransformIsland(containing: face, transform: transform)
+            == true
+        {
+            journal.handle(.documentEdited)
+        } else if let refusal = inputModel.meshEditor?.lastUnwrapRefusal {
+            // A gesture that resolved to no transform at all is silent by design — it journals
+            // nothing and has nothing to report.
+            statusMessage = refusal
+        }
+    }
+
+    private func gridStraightenIsland(_ face: UInt32) {
+        if inputModel.meshEditor?.runGridStraightenIsland(containing: face) == true {
+            journal.handle(.documentEdited)
+            statusMessage = "Island straightened"
         } else {
             statusMessage = inputModel.meshEditor?.lastUnwrapRefusal
         }

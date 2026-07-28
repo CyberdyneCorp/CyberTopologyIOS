@@ -283,6 +283,94 @@ extension Mesh {
         try check(cyber_uv_flip_island(handle, face, &raw))
     }
 
+    // MARK: - Island editing (6.3)
+
+    /// Moves, rotates and scales the island containing `face` in UV space, as ONE transform.
+    ///
+    /// Combined rather than three calls because a multitouch pinch produces all three at once:
+    /// separate calls would journal three steps for one gesture and would compose about drifting
+    /// pivots. Applied as scale, then rotation, then translation, about the island's UV centroid —
+    /// rotation and scale do not commute, so the order is fixed rather than left to the caller.
+    ///
+    /// `scale` must be POSITIVE. A negative scale would mirror the island, and mirroring has its
+    /// own entry point (`flipIsland`) where the winding change is the intent; allowing it here
+    /// would let a transform silently produce a defect.
+    public func transformIsland(
+        containing face: UInt32, translate: SIMD2<Float> = .zero, radians: Float = 0,
+        scale: Float = 1, parameters: AtlasParameters = AtlasParameters(), seams: [UInt32] = []
+    ) throws {
+        try setSeamEdges(seams)
+        var raw = parameters.raw
+        try check(
+            cyber_uv_transform_island(
+                handle, face, translate.x, translate.y, radians, scale, &raw
+            )
+        )
+    }
+
+    /// Snaps a grid-topology island onto an axis-aligned regular UV grid.
+    public func gridStraightenIsland(
+        containing face: UInt32, tolerance: Float = 0.25,
+        parameters: AtlasParameters = AtlasParameters(), seams: [UInt32] = []
+    ) throws {
+        try setSeamEdges(seams)
+        var raw = parameters.raw
+        try check(cyber_uv_grid_straighten_island(handle, face, tolerance, &raw))
+    }
+
+    /// Partial symmetrization of one island about a UV-space axis.
+    ///
+    /// `strength` in 0...1; at 1 the island becomes symmetric about the axis. Partial because a
+    /// hard snap to symmetry discards whatever the artist shaped by hand — the useful control is
+    /// how far toward symmetric to pull.
+    public func symmetrizeIsland(
+        containing face: UInt32, axisPoint: SIMD2<Float>, axisDirection: SIMD2<Float>,
+        strength: Float = 1, parameters: AtlasParameters = AtlasParameters(),
+        seams: [UInt32] = []
+    ) throws {
+        try setSeamEdges(seams)
+        var raw = parameters.raw
+        try check(
+            cyber_uv_symmetrize_island(
+                handle, face, axisPoint.x, axisPoint.y, axisDirection.x, axisDirection.y,
+                strength, &raw
+            )
+        )
+    }
+
+    /// Copies per-corner UVs from one island onto another with matching topology.
+    ///
+    /// Order-based, for islands that are genuine topological duplicates. Deliberately NOT how
+    /// mirrored pairs are handled — see `stackMirroredIslands`, which corresponds by reflected
+    /// position, because index matching across a mirror scrambles the shell while leaving its
+    /// bounding box correct.
+    ///
+    /// Throws when the topologies differ or when source and destination are the same island;
+    /// a refusal leaves every UV untouched.
+    public func cloneIsland(
+        from sourceFace: UInt32, to destinationFace: UInt32,
+        parameters: AtlasParameters = AtlasParameters(), seams: [UInt32] = []
+    ) throws {
+        try setSeamEdges(seams)
+        var raw = parameters.raw
+        try check(cyber_uv_clone_island(handle, sourceFace, destinationFace, &raw))
+    }
+
+    /// Stitches islands along `edges`: each stops being a seam and its corners are welded.
+    ///
+    /// Updates the authored seam set too, so a later unwrap sees the sewn topology rather than
+    /// re-cutting what was just merged. Validated as a whole, so a rejected id leaves the mesh
+    /// unstitched rather than half-stitched.
+    public func stitchIslands(
+        along edges: [UInt32], parameters: AtlasParameters = AtlasParameters()
+    ) throws {
+        var raw = parameters.raw
+        guard !edges.isEmpty else { return }
+        try edges.withUnsafeBufferPointer { buffer in
+            try check(cyber_uv_stitch_islands(handle, buffer.baseAddress, edges.count, &raw))
+        }
+    }
+
     // MARK: - UDIM tiles (6.7)
 
     /// Occupied UDIM tiles in standard numbering (1001 + u + 10·v), ascending.
