@@ -5,16 +5,20 @@ no 2D view is possible, so nothing downstream is worth writing until it exists.
 
 ## 1. Engine + C API: get UVs out
 
-- [ ] 1.1 Per-corner UV readback as a pointer view, following
+- [x] 1.1 Per-corner UV readback as a pointer view, following
       `cyber_mesh_positions_ptr` so the 2D view binds a buffer rather than copying.
-- [ ] 1.2 **Absence must be distinguishable from zero.** A mesh that was never unwrapped is
+- [x] 1.2 **Absence must be distinguishable from zero.** A mesh that was never unwrapped is
       not a mesh unwrapped to the origin, and returning zeros for both would make an
       un-unwrapped mesh look like a catastrophically bad layout.
-- [ ] 1.3 Reading must not mutate. The UV data belongs in the render cache beside positions
-      and normals, so it is invalidated by the same hook every mutating op already calls.
-- [ ] 1.4 Fold into the patch stack as a numbered patch — `build_engine.sh` refuses a tree
+- [x] 1.3 Reading does not mutate; the UVs live in the render cache beside positions and
+      normals. **This surfaced a real pre-existing bug**: `cyber_uv_atlas` WRITES the corner
+      UV attribute but never invalidated the render cache. Harmless while nothing could read
+      UVs back, and a silent wrong answer the moment something could — the first readback
+      after an unwrap returned the pre-unwrap cache and reported "no UVs". Caught by the
+      test, not by review.
+- [x] 1.4 Fold into the patch stack as a numbered patch — `build_engine.sh` refuses a tree
       the stack does not fit, which is correct and not to be worked around.
-- [ ] 1.5 Engine tests: UVs readable after an atlas run; absent before one; a mutating op
+- [x] 1.5 Engine tests: UVs readable after an atlas run; absent before one; a mutating op
       invalidates them.
 
 ## 2. CyberKit

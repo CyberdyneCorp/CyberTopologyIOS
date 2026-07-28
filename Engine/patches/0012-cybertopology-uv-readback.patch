@@ -1,0 +1,184 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index 3327d93..b9bd818 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -288,6 +288,19 @@ typedef struct CyberMeshlet {
+ } CyberMeshlet;
+ 
+ /* The clusters themselves. *out_count receives the meshlet count. */
++/* Per-TRIANGLE-CORNER UV coordinates over the same triangulation
++ * cyber_mesh_triangle_indices_ptr describes: u,v per emitted corner, so 6 floats per
++ * triangle and exactly parallel to that index stream
++ * (add-uv-stage-foundation).
++ *
++ * Per CORNER, not per vertex: UVs are a corner attribute, and a seam gives one vertex
++ * several different UVs -- collapsing them to the vertex would weld every seam shut.
++ *
++ * Returns NULL with *out_count == 0 when the mesh has NEVER been unwrapped, which is
++ * deliberately distinguishable from a layout whose coordinates happen to be zero.
++ * Same lifetime rules as the other pointer views: valid until the next mutating call. */
++const float* cyber_mesh_uvs_ptr(const CyberMesh* mesh, size_t* out_count);
++
+ const CyberMeshlet* cyber_mesh_meshlets_ptr(const CyberMesh* mesh, size_t* out_count);
+ /* Global vertex indices, grouped per meshlet (index into the position and
+  * normal pointer views). */
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index 9ac3c41..54bf8ea 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -79,6 +79,16 @@ struct CyberRenderCache {
+     std::vector<float> normals;          // x,y,z per vertex, unit length
+     std::vector<float> colors;           // r,g,b per vertex; empty if none
+     bool hasColors = false;
++    // Per-TRIANGLE-CORNER UVs (add-uv-stage-foundation): u,v for each corner emitted
++    // by the fan triangulation, so 6 floats per triangle and exactly parallel to
++    // `indices`. Per corner rather than per vertex because UVs are a corner attribute
++    // and a seam gives one vertex several different UVs -- collapsing them to the
++    // vertex would silently weld every seam shut in the 2D view.
++    std::vector<float> uvs;
++    // Distinguishes "this mesh has never been unwrapped" from "its UVs are all zero".
++    // Returning zeros for both would make an un-unwrapped mesh look like a
++    // catastrophically collapsed layout.
++    bool hasUvs = false;
+     bool built = false;
+     // Meshlet clusters over `positions`/`indices` (add-meshlet-target-path).
+     // Built on FIRST REQUEST rather than with the rest of the cache: clustering
+@@ -145,6 +155,10 @@ std::string& errorSlot() {
+     return message;
+ }
+ 
++// Forward declaration: cyber_uv_atlas (above the definition) must invalidate the cache
++// after writing UVs, and the definition lives with the other mutating-op helpers.
++void invalidateRenderCache(CyberMesh* mesh);
++
+ void setError(std::string message) { errorSlot() = std::move(message); }
+ void clearError() { errorSlot().clear(); }
+ 
+@@ -545,6 +559,11 @@ CyberStatus cyber_uv_atlas([[maybe_unused]] CyberMesh* mesh,
+             opts.maxChartDistortion = params->maxChartDistortion;
+         }
+         const cyber::uv::AtlasResult r = cyber::uv::unwrapAtlas(mesh->mesh, opts);
++        // The atlas WRITES the per-corner UV attribute, so any cache built before it ran
++        // is stale. It previously did not invalidate -- harmless while nothing could read
++        // UVs back, and a silent wrong answer the moment something could: a readback taken
++        // after an unwrap returned the pre-unwrap cache and reported "no UVs".
++        invalidateRenderCache(mesh);
+         if (out != nullptr) {
+             out->chartCount = r.chartCount;
+             out->seamEdges = r.seamEdges;
+@@ -673,16 +692,35 @@ std::vector<cyber::Index> compactVertices(const CyberMesh& handle, CyberRenderCa
+ void fanTriangulate(const CyberMesh& handle, const std::vector<cyber::Index>& remap,
+                     CyberRenderCache& cache) {
+     const cyber::Mesh& m = handle.mesh;
++    // nullptr when the mesh has never been unwrapped, which is the signal the whole
++    // absent-versus-zero distinction rests on.
++    const auto* uvs = m.cornerAttributes().find<cyber::Vec2>(cyber::io::kUvAttribute);
++    cache.hasUvs = uvs != nullptr;
+     for (cyber::Index f = 0; f < m.faceCapacity(); ++f) {
+         const cyber::FaceId face{f};
+         if (!m.isAlive(face) || isHiddenFace(handle, face)) {
+             continue;
+         }
+         const std::vector<cyber::VertexId> verts = m.faceVertices(face);
++        // Corner ids run parallel to `verts`, which is what lets the fan carry the
++        // right UV to each emitted corner rather than guessing from the vertex.
++        const std::vector<cyber::LoopId> loops = uvs != nullptr ? m.faceLoops(face)
++                                                               : std::vector<cyber::LoopId>{};
++        const bool carryUvs = uvs != nullptr && loops.size() == verts.size();
++        const auto emitUv = [&](std::size_t corner) {
++            const cyber::Vec2 uv = (*uvs)[loops[corner].value];
++            cache.uvs.push_back(uv.x);
++            cache.uvs.push_back(uv.y);
++        };
+         for (std::size_t k = 2; k < verts.size(); ++k) {
+             cache.indices.push_back(remap[verts[0].value]);
+             cache.indices.push_back(remap[verts[k - 1].value]);
+             cache.indices.push_back(remap[verts[k].value]);
++            if (carryUvs) {
++                emitUv(0);
++                emitUv(k - 1);
++                emitUv(k);
++            }
+         }
+     }
+ }
+@@ -902,6 +940,20 @@ const CyberRenderCache* ensureMeshlets(const CyberMesh* mesh) {
+ 
+ }  // namespace
+ 
++const float* cyber_mesh_uvs_ptr(const CyberMesh* mesh, size_t* out_count) {
++    const CyberRenderCache* cache = ensureRenderCache(mesh);
++    // NULL for a mesh that was never unwrapped, and an EMPTY-but-non-null view is
++    // impossible here: `hasUvs` is false exactly when the corner attribute is absent.
++    // A caller therefore distinguishes "no layout" from "a layout at the origin".
++    if (cache == nullptr || !cache->hasUvs) {
++        if (out_count != nullptr) {
++            *out_count = 0;
++        }
++        return nullptr;
++    }
++    return bufferView(&cache->uvs, out_count);
++}
++
+ const CyberMeshlet* cyber_mesh_meshlets_ptr(const CyberMesh* mesh, size_t* out_count) {
+     const CyberRenderCache* cache = ensureMeshlets(mesh);
+     return bufferView(cache == nullptr ? nullptr : &cache->meshlets, out_count);
+diff --git a/tests/capi/test_capi.cpp b/tests/capi/test_capi.cpp
+index 9d977d2..9bb5b55 100644
+--- a/tests/capi/test_capi.cpp
++++ b/tests/capi/test_capi.cpp
+@@ -361,3 +361,54 @@ TEST_CASE("capi meshlets cluster the render streams and honour the cache lifetim
+ 
+     cyber_mesh_destroy(mesh);
+ }
++
++// UV readback (openspec add-uv-stage-foundation, task 1).
++//
++// The load-bearing property is that ABSENCE is distinguishable from ZERO: a mesh that
++// was never unwrapped must not look like a layout collapsed onto the origin, because a
++// 2D view cannot tell those apart from the numbers alone and would draw the second as
++// a catastrophic result rather than saying "nothing here yet".
++TEST_CASE("capi UV readback: absent before an unwrap, per-corner after one") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    REQUIRE(mesh != nullptr);
++
++    // A cube OBJ carries no vt lines, so it has never been unwrapped.
++    size_t uvFloats = 12345;  // poisoned, to catch a callee that forgets to write it
++    const float* uvs = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    CHECK(uvs == nullptr);
++    CHECK(uvFloats == 0);
++
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++    CyberAtlasResult atlas{};
++    REQUIRE(cyber_uv_atlas(mesh, &params, &atlas) == CYBER_OK);
++    CHECK(atlas.chartCount > 0);
++
++    // After the atlas there is one u,v pair per emitted triangle CORNER, so the UV
++    // stream is exactly parallel to the triangle index stream: 2 floats where that has
++    // 1 index. A mismatch here means the fan triangulation and the UV emission
++    // disagreed, which would shear the whole layout by one corner.
++    size_t indexCount = 0;
++    cyber_mesh_triangle_indices_ptr(mesh, &indexCount);
++    uvFloats = 0;
++    uvs = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    REQUIRE(uvs != nullptr);
++    CHECK(indexCount > 0);
++    CHECK(uvFloats == indexCount * 2);
++
++    // Packed into the unit square, so every coordinate is finite and in range. A NaN
++    // here would render as nothing rather than as an error.
++    bool inRange = true;
++    for (size_t i = 0; i < uvFloats; ++i) {
++        if (!(uvs[i] >= -0.001f && uvs[i] <= 1.001f)) {
++            inRange = false;
++        }
++    }
++    CHECK(inRange);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
