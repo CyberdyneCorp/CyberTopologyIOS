@@ -1,0 +1,80 @@
+diff --git a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+index 4855a40..8d12787 100644
+--- a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
++++ b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+@@ -1393,6 +1393,49 @@ inline bool tryOpenStrokeCreateFace(StrokeInterpretation& out, const ScreenProje
+         out.context = UnderStroke::EmptySurface;
+     }
+ 
++    // A closed stroke drawn ENTIRELY INSIDE one existing face, sharing none of its topology.
++    //
++    // Such a stroke would create a face nested inside another: geometrically contained,
++    // topologically disconnected from it. That is never a valid quad cage — a face may sit beside
++    // another (sharing an edge) or replace it, never float inside it — so the create actions are
++    // withheld rather than merely down-weighted. Down-weighting is what produced the sliver
++    // triangles and quads users were finding stranded inside their cage: a low-confidence create is
++    // still a create.
++    //
++    // Deliberately strict about what counts as "sharing topology": if ANY sample lies within pick
++    // range of an existing edge or vertex, the stroke is NOT interior, and the create proceeds. That
++    // preserves the legitimate case of drawing a quad against existing geometry — the grid
++    // continuation that shares a boundary — which is the whole reason this is a containment test
++    // rather than a blanket "no creating over faces" rule.
++    const auto strokeIsNestedInsideOneFace = [&]() -> bool {
++        if (proj == nullptr) {
++            return false;
++        }
++        // Must be over a face. Deliberately NOT also requiring `facesEnclosed` to be empty: a small
++        // loop near a big face's centre CONTAINS that face's centroid, so the enclosure test reports
++        // the very face the loop is nested inside — which made the first version of this check reject
++        // the exact case it exists to catch. A test caught it.
++        //
++        // The containment below is the real invariant and needs no enclosure test: a loop that
++        // genuinely encloses a face must extend beyond that face's boundary, so its samples leave the
++        // face or pass near an edge, and it is not nested.
++        if (!probeFace.has_value()) {
++            return false;
++        }
++        for (const Vec2 sample : stroke) {
++            if (proj->nearestVertex(sample, contextParams.vertexRadius).has_value() ||
++                proj->nearestEdge(sample, contextParams.edgeRadius).has_value()) {
++                return false;  // touches existing topology, so not nested
++            }
++            // Leaving the face means the stroke spans more than one, so it is not interior to one.
++            const std::optional<FaceId> here = proj->faceContaining(sample);
++            if (!here.has_value() || here->value != probeFace->value) {
++                return false;
++            }
++        }
++        return true;
++    };
++
+     // Context-aware open-stroke face creation (change add-context-aware-create-
+     // face): an open stroke between two vertices makes a welded quad/triangle.
+     // If it fires, its create candidate leads; the switch below still runs so a
+@@ -1441,16 +1484,21 @@ inline bool tryOpenStrokeCreateFace(StrokeInterpretation& out, const ScreenProje
+             // where the intent is marginally less certain.
+             const bool overEmpty =
+                 out.context == UnderStroke::EmptySurface && enclosed.empty();
+-            addCandidate(out, createAction, overEmpty ? shapeConf : 0.5f * shapeConf);
++            // Withheld entirely, not down-weighted: a face nested inside another is never valid.
++            if (!strokeIsNestedInsideOneFace()) {
++                addCandidate(out, createAction, overEmpty ? shapeConf : 0.5f * shapeConf);
++            }
+             break;
+         }
+         case StrokeShape::Circle: {
+             // A round closed stroke is a (round-ish) quad draw. rotateEdge and
+             // hideRegion are tools now, not stroke gestures — a circle only
+             // ever creates a quad.
+-            addCandidate(
+-                out, InterpretedAction::CreateQuad,
+-                (out.context == UnderStroke::EmptySurface ? 0.6f : 0.4f) * shapeConf);
++            if (!strokeIsNestedInsideOneFace()) {
++                addCandidate(
++                    out, InterpretedAction::CreateQuad,
++                    (out.context == UnderStroke::EmptySurface ? 0.6f : 0.4f) * shapeConf);
++            }
+             break;
+         }
+         case StrokeShape::Scribble: {

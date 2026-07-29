@@ -234,4 +234,88 @@ struct ContextAwareCreateFaceTests {
         }
         #expect(m.faceCount == 3, "the mesh is unchanged after a rejected build")
     }
+
+    // MARK: - A face may never be created INSIDE another face
+
+    @Test("A small closed loop drawn INSIDE one quad creates nothing")
+    func closedLoopNestedInsideAFaceCreatesNothing() throws {
+        let m = try singleQuad()
+        // A small square well inside the quad (0.25..0.75 in mesh space), touching no edge and no
+        // vertex. Creating here would leave a face geometrically nested inside another and
+        // topologically disconnected from it — never a valid cage, which is why the create is
+        // withheld rather than merely down-weighted. A low-confidence create is still a create, and
+        // that is what stranded sliver faces inside users' cages.
+        let result = try interpret(
+            [
+                screen(0.25, 0.25), screen(0.75, 0.25), screen(0.75, 0.75),
+                screen(0.25, 0.75), screen(0.25, 0.25),
+            ],
+            m
+        )
+        #expect(
+            result.best?.action != .createQuad && result.best?.action != .createTriangle,
+            "a face nested inside another must not be created"
+        )
+    }
+
+    @Test("A small TRIANGLE drawn inside one quad creates nothing either")
+    func nestedTriangleCreatesNothing() throws {
+        let m = try singleQuad()
+        let result = try interpret(
+            [screen(0.3, 0.3), screen(0.7, 0.3), screen(0.5, 0.7), screen(0.3, 0.3)],
+            m
+        )
+        #expect(result.best?.action != .createQuad && result.best?.action != .createTriangle)
+    }
+
+    @Test("A round scribble inside one quad creates nothing — the circle path too")
+    func nestedCircleCreatesNothing() throws {
+        let m = try singleQuad()
+        // Roughly circular, entirely interior. The circle path scored these at 0.4 x shapeConf and
+        // created anyway; it now withholds on the same containment test as the closed loop.
+        var points: [SIMD2<Double>] = []
+        for step in 0...16 {
+            let angle = Double(step) / 16 * 2 * Double.pi
+            points.append(
+                screen(Float(0.5 + 0.22 * cos(angle)), Float(0.5 + 0.22 * sin(angle)))
+            )
+        }
+        let result = try interpret(points, m)
+        #expect(result.best?.action != .createQuad && result.best?.action != .createTriangle)
+    }
+
+    @Test("A loop over the EMPTY cell still creates — the fix must not block real work")
+    func loopOverEmptyCellStillCreates() throws {
+        let m = try gridEmptyTopRight()
+        // The top-right cell (v4,v5,v8,v7) is empty, so a loop there is over empty surface and must
+        // still create. This is the regression guard: a containment test that also blocked genuine
+        // creates would be worse than the bug it fixes.
+        let result = try interpret(
+            [screen(1.1, 1.1), screen(1.9, 1.1), screen(1.9, 1.9), screen(1.1, 1.9),
+             screen(1.1, 1.1)],
+            m
+        )
+        #expect(
+            result.best?.action == .createQuad || result.best?.action == .createTriangle,
+            "a loop over empty surface must still create"
+        )
+    }
+
+    @Test("A loop that reaches an existing EDGE still creates: it shares topology")
+    func loopTouchingAnEdgeStillCreates() throws {
+        let m = try singleQuad()
+        // Spans from inside the quad out past its right edge, so it crosses existing topology. That
+        // is the legitimate draw-against-existing-geometry case (the grid continuation that shares a
+        // boundary), and it is exactly why this is a CONTAINMENT test rather than a blanket
+        // "no creating over faces" rule.
+        let result = try interpret(
+            [screen(0.5, 0.2), screen(1.6, 0.2), screen(1.6, 0.8), screen(0.5, 0.8),
+             screen(0.5, 0.2)],
+            m
+        )
+        #expect(
+            result.best?.action == .createQuad || result.best?.action == .createTriangle,
+            "a loop sharing topology must still create"
+        )
+    }
 }
