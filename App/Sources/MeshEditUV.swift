@@ -230,6 +230,36 @@ extension MeshEditController {
         }
     }
 
+    /// Moves a single UV vertex as ONE journaled step (6.3d, UV2D per-vertex mode).
+    ///
+    /// Returns false when the drag matched no vertex, WITHOUT reporting a refusal: a near-miss is
+    /// not a failure the artist needs told about, and filling the status line with one on every
+    /// stray tap would bury the messages that matter.
+    @discardableResult
+    func runMoveUVVertex(
+        inIslandContaining face: UInt32, at: SIMD2<Float>, by delta: SIMD2<Float>
+    ) -> Bool {
+        guard delta != .zero else { return false }
+        var moved = 0
+        // Tracks whether the body RAN, which is not the same as `moved == 0`. A pre-flight refusal
+        // ("Unwrap first", no EditMesh, mid-stroke) also leaves moved at 0, and the first version
+        // cleared the refusal in that case too — swallowing a message the artist needed. Only a
+        // command that ran and matched nothing is silent.
+        var ran = false
+        let committed = wholeMeshUVCommand(
+            verb: "uv.moveVertex", failure: "Could not move that UV vertex"
+        ) { mesh, seams in
+            ran = true
+            moved = try mesh.moveUVVertex(
+                inIslandContaining: face, at: at, by: delta, seams: seams
+            )
+        }
+        if !committed, ran, moved == 0 {
+            unwrapRefusalStorage = nil
+        }
+        return committed
+    }
+
     /// Snaps the island containing `face` onto an axis-aligned UV grid, as ONE journaled step.
     @discardableResult
     func runGridStraightenIsland(containing face: UInt32) -> Bool {

@@ -131,6 +131,13 @@ final class ViewportInputModel {
     /// probes (the simulator has no Pencil hover hardware).
     @ObservationIgnored weak var hoverPreview: HoverPreviewController?
 
+    /// The renderer, for VIEW-only settings the editor UI drives directly — the UV preview image and
+    /// checker appearance (6.3c/6.3d). Weak: the coordinator owns it.
+    ///
+    /// Deliberately narrow in intent: document edits go through `meshEditor` so they are journaled,
+    /// and only settings that are NOT document state belong here.
+    @ObservationIgnored weak var viewportRenderer: ViewportRenderer?
+
     /// Mesh-edit controller for the verb layer (tasks 3.3/3.4), installed
     /// by the viewport coordinator (it owns the renderer/camera the
     /// controller needs). Stroke events are forwarded below; nil = strokes

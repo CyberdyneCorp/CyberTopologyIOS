@@ -1,4 +1,6 @@
+import CoreGraphics
 import CyberKit
+import ImageIO
 import Metal
 import Testing
 import simd
@@ -207,5 +209,113 @@ struct UVCheckerRenderPathTests {
             differingPixels(coarse, fine) > 100,
             "the pattern does not depend on UV: density changed but the image did not"
         )
+    }
+
+    // MARK: - Imported image preview (6.3d)
+
+    /// Writes a 2x2 PNG with one saturated RED pixel, so a sampled texture is unmistakable against
+    /// the checker's two greys.
+    private func writePreviewImage() throws -> URL {
+        let width = 2, height = 2
+        var pixels: [UInt8] = [
+            255, 0, 0, 255, /**/ 255, 0, 0, 255,
+            255, 0, 0, 255, /**/ 255, 0, 0, 255,
+        ]
+        let provider = try #require(
+            CGDataProvider(data: Data(pixels) as CFData)
+        )
+        let image = try #require(
+            CGImage(
+                width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: false,
+                intent: .defaultIntent
+            )
+        )
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("uvpreview-\(UUID().uuidString).png")
+        let destination = try #require(
+            CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil)
+        )
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        pixels.removeAll()
+        return url
+    }
+
+    @Test("An imported image loads, and a bad file clears rather than keeping a stale one")
+    func imageLoadingAndFailure() throws {
+        let renderer = try makeRenderer()
+        #expect(!renderer.hasUVPreviewImage)
+
+        let url = try writePreviewImage()
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(renderer.loadUVPreviewImage(from: url))
+        #expect(renderer.hasUVPreviewImage)
+
+        // A failure must CLEAR: leaving the previous image would show one file while the UI names
+        // another.
+        let bogus = FileManager.default.temporaryDirectory
+            .appendingPathComponent("not-an-image-\(UUID().uuidString).png")
+        try Data([0x00, 0x01, 0x02]).write(to: bogus)
+        defer { try? FileManager.default.removeItem(at: bogus) }
+        #expect(!renderer.loadUVPreviewImage(from: bogus))
+        #expect(!renderer.hasUVPreviewImage)
+    }
+
+    @Test("Asking for a texture with none loaded falls back to the CHECKER, not a blank surface")
+    func textureModeWithoutAnImageFallsBack() throws {
+        let renderer = try makeRenderer()
+        let (unwrapped, _) = try cube().unwrapped()
+        renderer.load(mesh: unwrapped)
+        renderer.uvCheckerSettings.shading = 0
+        #expect(renderer.loadUVChecker(from: unwrapped))
+
+        func render() throws -> [UInt8] {
+            try #require(renderer.renderOffscreen(width: 96, height: 96), "offscreen failed")
+        }
+        renderer.uvCheckerSettings.density = 8
+        let checker = try render()
+
+        // No image loaded, but texture mode ON. Sampling the 1x1 placeholder would paint the model
+        // one flat colour; the fallback must render the checker identically instead.
+        #expect(!renderer.hasUVPreviewImage)
+        renderer.uvCheckerSettings.usesImportedTexture = true
+        let fallback = try render()
+        #expect(fallback == checker, "texture mode with no image must render as the checker")
+    }
+
+    @Test("An imported image REPLACES the checker, visibly")
+    func importedImageReplacesTheChecker() throws {
+        let renderer = try makeRenderer()
+        let (unwrapped, _) = try cube().unwrapped()
+        renderer.load(mesh: unwrapped)
+        renderer.uvCheckerSettings.shading = 0
+        #expect(renderer.loadUVChecker(from: unwrapped))
+
+        func render() throws -> [UInt8] {
+            try #require(renderer.renderOffscreen(width: 96, height: 96), "offscreen failed")
+        }
+        let checker = try render()
+
+        let url = try writePreviewImage()
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(renderer.loadUVPreviewImage(from: url))
+        renderer.uvCheckerSettings.usesImportedTexture = true
+        let textured = try render()
+
+        // The image is pure RED and the checker is two greys, so a sampled texture must produce
+        // pixels where red substantially exceeds green — something the grey checker cannot do.
+        #expect(textured != checker, "enabling the image did not change the render")
+        var redDominant = 0
+        for index in stride(from: 0, to: textured.count - 3, by: 4) {
+            // BGRA8: blue, green, red, alpha.
+            let green = Int(textured[index + 1])
+            let red = Int(textured[index + 2])
+            if red > green + 60 { redDominant += 1 }
+        }
+        #expect(redDominant > 100, "expected the red image to be sampled, got \(redDominant) px")
     }
 }

@@ -1,0 +1,331 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+index e8d13ce..e7bc86a 100644
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -324,6 +324,23 @@ CyberStatus cyber_uv_transform_island(CyberMesh* mesh, uint32_t face_id, float t
+                                       float translate_v, float radians, float scale,
+                                       const CyberAtlasParams* params);
+ 
++/* Moves the UV VERTEX nearest `at_u,at_v` within the island containing `face_id` by
++ * `delta_u,delta_v` (add-uv-imported-preview: UV2D per-vertex mode).
++ *
++ * A "UV vertex" is a CLUSTER of coincident corners, not a mesh vertex. UVs are per-corner, so
++ * several corners usually share one UV position; moving only one would tear the island at a point
++ * the artist never cut. Every corner within `tolerance` of the position moves together.
++ *
++ * This preserves SEAMS without knowing anything about them: corners across a seam sit at different
++ * UVs by definition, so they fall outside each other's tolerance and move independently.
++ *
++ * `out_moved` (may be NULL) receives the number of corners moved. ZERO is not an error — a drag that
++ * matched no vertex simply is not an edit — so the caller checks the count rather than the status. */
++CyberStatus cyber_uv_move_island_uv_vertex(CyberMesh* mesh, uint32_t face_id, float at_u,
++                                          float at_v, float delta_u, float delta_v,
++                                          float tolerance, const CyberAtlasParams* params,
++                                          size_t* out_moved);
++
+ /* Snaps a grid-topology island onto an axis-aligned regular UV grid ("Build Quad on a grid
+  * island" / grid straightening). `tolerance` is relative to the island's coordinate range. */
+ CyberStatus cyber_uv_grid_straighten_island(CyberMesh* mesh, uint32_t face_id, float tolerance,
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+index b884773..f014c65 100644
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -974,6 +974,48 @@ CyberStatus cyber_uv_transform_island([[maybe_unused]] CyberMesh* mesh,
+ #endif
+ }
+ 
++CyberStatus cyber_uv_move_island_uv_vertex([[maybe_unused]] CyberMesh* mesh,
++                                          [[maybe_unused]] uint32_t face_id,
++                                          [[maybe_unused]] float at_u, [[maybe_unused]] float at_v,
++                                          [[maybe_unused]] float delta_u,
++                                          [[maybe_unused]] float delta_v,
++                                          [[maybe_unused]] float tolerance,
++                                          [[maybe_unused]] const CyberAtlasParams* params,
++                                          [[maybe_unused]] size_t* out_moved) {
++#ifdef CYBER_CAPI_WITH_UV
++    if (out_moved != nullptr) {
++        *out_moved = 0;
++    }
++    if (tolerance < 0.0f) {
++        setError("cyber_uv_move_island_uv_vertex: negative tolerance");
++        return CYBER_ERR_INVALID_ARG;
++    }
++    try {
++        std::size_t moved = 0;
++        const CyberStatus status = withIsland(
++            mesh, face_id, params, "cyber_uv_move_island_uv_vertex",
++            [&](std::span<const cyber::FaceId> island) {
++                moved = cyber::uv::moveIslandUvVertex(
++                    mesh->mesh, island, {at_u, at_v}, {delta_u, delta_v}, tolerance
++                );
++                // TRUE even when nothing matched: a drag that hit no vertex is not an error, and
++                // reporting one would make a near-miss indistinguishable from an invalid face.
++                return true;
++            });
++        if (out_moved != nullptr) {
++            *out_moved = moved;
++        }
++        return status;
++    } catch (const std::exception& e) {
++        setError(std::string("cyber_uv_move_island_uv_vertex: ") + e.what());
++        return CYBER_ERR_RUNTIME;
++    }
++#else
++    setError("cyber_uv_move_island_uv_vertex: engine built without the UV module");
++    return CYBER_ERR_RUNTIME;
++#endif
++}
++
+ CyberStatus cyber_uv_grid_straighten_island([[maybe_unused]] CyberMesh* mesh,
+                                            [[maybe_unused]] uint32_t face_id,
+                                            [[maybe_unused]] float tolerance,
+diff --git a/src/uv/include/cyber/uv/transforms.hpp b/src/uv/include/cyber/uv/transforms.hpp
+index 71bd626..b66e3ec 100644
+--- a/src/uv/include/cyber/uv/transforms.hpp
++++ b/src/uv/include/cyber/uv/transforms.hpp
+@@ -2,6 +2,7 @@
+ 
+ #include <cmath>
+ #include <span>
++#include <vector>
+ 
+ #include "cyber/core/math.hpp"
+ #include "cyber/core/mesh.hpp"
+@@ -39,6 +40,44 @@ inline void scaleIslandUv(Mesh& mesh, std::span<const FaceId> island, float fact
+     scaleIslandUv(mesh, island, {factor, factor}, islandUvCentroid(mesh, island));
+ }
+ 
++// Moves the UV VERTEX at `at` by `delta`, within one island (uv-workflow spec, "per-vertex mode").
++//
++// A "UV vertex" is a CLUSTER of coincident corners, not a mesh vertex — and that distinction is the
++// whole design. UVs are per-corner, so several corners of an island usually share one UV position;
++// moving only one of them would tear the island apart at a point the artist never cut. Moving every
++// corner within `tolerance` of `at` keeps the island welded where it is welded.
++//
++// It also preserves SEAMS for free, without knowing anything about them: corners on opposite sides
++// of a seam sit at DIFFERENT UVs by definition, so they fall outside each other's tolerance and move
++// independently. That is exactly what a seam is.
++//
++// Returns the number of corners moved, so a caller can tell a hit from a miss — a drag that matched
++// nothing must not be reported as an edit.
++[[nodiscard]] inline std::size_t moveIslandUvVertex(Mesh& mesh, std::span<const FaceId> island,
++                                                    Vec2 at, Vec2 delta, float tolerance) {
++    std::vector<Vec2>* uv = uvColumn(mesh);
++    if (uv == nullptr || tolerance < 0.0f) {
++        return 0;
++    }
++    // Collected first, then written: `at` is compared against the ORIGINAL positions, so a corner
++    // already moved cannot drag a neighbour along with it by drifting into range mid-loop.
++    std::vector<std::size_t> matched;
++    const float limit = tolerance * tolerance;
++    for (const FaceId face : island) {
++        for (const LoopId loop : mesh.faceLoops(face)) {
++            const auto index = static_cast<std::size_t>(loop.value);
++            const Vec2 d = (*uv)[index] - at;
++            if (d.x * d.x + d.y * d.y <= limit) {
++                matched.push_back(index);
++            }
++        }
++    }
++    for (const std::size_t index : matched) {
++        (*uv)[index] = (*uv)[index] + delta;
++    }
++    return matched.size();
++}
++
+ inline void rotateIslandUv(Mesh& mesh, std::span<const FaceId> island, float radians) {
+     rotateIslandUv(mesh, island, radians, islandUvCentroid(mesh, island));
+ }
+diff --git a/tests/capi/test_capi.cpp b/tests/capi/test_capi.cpp
+index bf6c2d4..1e8bb0c 100644
+--- a/tests/capi/test_capi.cpp
++++ b/tests/capi/test_capi.cpp
+@@ -703,6 +703,58 @@ TEST_CASE("capi flipped-island readback names a face and a flip is reversible")
+     std::filesystem::remove(objPath, ec);
+ }
+ 
++// Per-vertex UV editing (openspec add-uv-imported-preview, 6.3d).
++TEST_CASE("capi UV vertex move reports a miss as zero rather than an error") {
++    const std::filesystem::path objPath = writeCubeObj();
++    CyberMesh* mesh = nullptr;
++    REQUIRE(cyber_mesh_load_obj(objPath.string().c_str(), &mesh) == CYBER_OK);
++    CyberAtlasParams params{};
++    cyber_default_atlas_params(&params);
++
++    // No layout at all is an argument error: there is nothing to edit.
++    size_t moved = 99;
++    CHECK(cyber_uv_move_island_uv_vertex(mesh, 0, 0, 0, 0.1f, 0, 1e-4f, &params, &moved)
++          == CYBER_ERR_INVALID_ARG);
++    REQUIRE(cyber_uv_atlas(mesh, &params, nullptr) == CYBER_OK);
++
++    size_t uvFloats = 0;
++    const float* uvs = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    REQUIRE(uvs != nullptr);
++    const std::vector<float> before(uvs, uvs + uvFloats);
++
++    // A MISS is OK-with-zero, not an error: a drag that hit no vertex simply is not an edit, and
++    // conflating it with an invalid face would leave the caller unable to tell them apart.
++    REQUIRE(cyber_uv_move_island_uv_vertex(mesh, 0, 9.0f, 9.0f, 0.1f, 0.1f, 1e-4f, &params, &moved)
++            == CYBER_OK);
++    CHECK(moved == 0);
++    uvs = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    for (size_t i = 0; i < before.size(); ++i) {
++        CHECK(uvs[i] == before[i]);
++    }
++
++    // A hit moves at least one corner and changes the layout.
++    REQUIRE(cyber_uv_move_island_uv_vertex(mesh, 0, before[0], before[1], 0.02f, -0.01f, 1e-3f,
++                                           &params, &moved)
++            == CYBER_OK);
++    CHECK(moved >= 1);
++    uvs = cyber_mesh_uvs_ptr(mesh, &uvFloats);
++    bool changed = false;
++    for (size_t i = 0; i < before.size(); ++i) {
++        if (uvs[i] != before[i]) { changed = true; }
++    }
++    CHECK(changed);
++
++    // A negative tolerance is meaningless.
++    CHECK(cyber_uv_move_island_uv_vertex(mesh, 0, 0, 0, 0.1f, 0, -1.0f, &params, &moved)
++          == CYBER_ERR_INVALID_ARG);
++    CHECK(cyber_uv_move_island_uv_vertex(mesh, 9999, 0, 0, 0.1f, 0, 1e-4f, &params, &moved)
++          == CYBER_ERR_INVALID_ARG);
++
++    cyber_mesh_free(mesh);
++    std::error_code ec;
++    std::filesystem::remove(objPath, ec);
++}
++
+ // Multiple UV sets (openspec add-uv-sets, 6.7a).
+ namespace {
+ std::string uvSetName(const CyberMesh* mesh, size_t index) {
+diff --git a/tests/uv/test_uv.cpp b/tests/uv/test_uv.cpp
+index 5303c8a..b11a2a8 100644
+--- a/tests/uv/test_uv.cpp
++++ b/tests/uv/test_uv.cpp
+@@ -1071,3 +1071,125 @@ TEST_CASE("restoring REPLACES stored sets rather than merging with them") {
+     REQUIRE(std::find(names.begin(), names.end(), "leftover") == names.end());
+     REQUIRE(std::find(names.begin(), names.end(), "lightmap") != names.end());
+ }
++
++// ---- per-vertex UV editing (add-uv-imported-preview, 6.3d) ----------------
++
++namespace {
++// Core's `length` is Vec3-only; UV work needs the 2D form.
++float uvDistance(Vec2 a, Vec2 b) {
++    const Vec2 d = a - b;
++    return std::sqrt(d.x * d.x + d.y * d.y);
++}
++}  // namespace
++
++TEST_CASE("moving a UV vertex moves every coincident corner, keeping the island welded") {
++    CubeAtlas atlas = unwrappedCube();
++    const auto& island = atlas.islands[0];
++    const std::vector<Vec2>* uvs = uv::uvColumn(atlas.mesh);
++    REQUIRE(uvs != nullptr);
++
++    // Pick a corner and count how many corners of this island share its UV. On a single-quad cube
++    // face that is 1, but the mechanism is what matters: whatever shares the position moves.
++    const cyber::LoopId first = atlas.mesh.faceLoops(island[0])[0];
++    const Vec2 target = (*uvs)[static_cast<std::size_t>(first.value)];
++    std::size_t coincident = 0;
++    for (const FaceId face : island) {
++        for (const cyber::LoopId loop : atlas.mesh.faceLoops(face)) {
++            if (uvDistance((*uvs)[static_cast<std::size_t>(loop.value)], target) < 1e-5f) {
++                ++coincident;
++            }
++        }
++    }
++    REQUIRE(coincident >= 1);
++
++    const Vec2 delta{0.03f, -0.02f};
++    REQUIRE(uv::moveIslandUvVertex(atlas.mesh, island, target, delta, 1e-4f) == coincident);
++    // Every coincident corner moved by exactly the delta, so the island did not tear at a point the
++    // artist never cut.
++    std::size_t moved = 0;
++    for (const FaceId face : island) {
++        for (const cyber::LoopId loop : atlas.mesh.faceLoops(face)) {
++            const Vec2 now = (*uv::uvColumn(atlas.mesh))[static_cast<std::size_t>(loop.value)];
++            if (uvDistance(now, target + delta) < 1e-5f) {
++                ++moved;
++            }
++        }
++    }
++    REQUIRE(moved == coincident);
++}
++
++TEST_CASE("a UV vertex move never crosses a SEAM, because a seam means different UVs") {
++    CubeAtlas atlas = unwrappedCube();
++    // Corners on opposite sides of a seam sit at different UVs by definition, so they fall outside
++    // each other's tolerance and move independently. Two DIFFERENT islands is the strongest form of
++    // that: moving a vertex in one must not touch the other at all.
++    const std::vector<Vec2> otherBefore = [&] {
++        std::vector<Vec2> out;
++        for (const FaceId face : atlas.islands[1]) {
++            for (const cyber::LoopId loop : atlas.mesh.faceLoops(face)) {
++                out.push_back((*uv::uvColumn(atlas.mesh))[static_cast<std::size_t>(loop.value)]);
++            }
++        }
++        return out;
++    }();
++
++    const cyber::LoopId first = atlas.mesh.faceLoops(atlas.islands[0][0])[0];
++    const Vec2 target = (*uv::uvColumn(atlas.mesh))[static_cast<std::size_t>(first.value)];
++    REQUIRE(uv::moveIslandUvVertex(atlas.mesh, atlas.islands[0], target, Vec2{0.05f, 0.0f}, 1e-4f)
++            > 0);
++
++    std::size_t i = 0;
++    for (const FaceId face : atlas.islands[1]) {
++        for (const cyber::LoopId loop : atlas.mesh.faceLoops(face)) {
++            REQUIRE((*uv::uvColumn(atlas.mesh))[static_cast<std::size_t>(loop.value)]
++                    == otherBefore[i++]);
++        }
++    }
++}
++
++TEST_CASE("a UV vertex move that matches nothing reports zero and changes nothing") {
++    CubeAtlas atlas = unwrappedCube();
++    const std::vector<Vec2> before = *uv::uvColumn(atlas.mesh);
++    // Far outside the packed square: a drag that hit no vertex must not be reported as an edit.
++    REQUIRE(uv::moveIslandUvVertex(atlas.mesh, atlas.islands[0], Vec2{9.0f, 9.0f},
++                                   Vec2{0.1f, 0.1f}, 1e-4f)
++            == 0);
++    REQUIRE(*uv::uvColumn(atlas.mesh) == before);
++}
++
++TEST_CASE("a UV vertex move compares against ORIGINAL positions, so it cannot cascade") {
++    CubeAtlas atlas = unwrappedCube();
++    const auto& island = atlas.islands[0];
++    // A tolerance wide enough to cover the whole island: every corner matches ONCE and moves once.
++    // Comparing against positions already updated mid-loop could drag corners along a chain and
++    // move some of them twice.
++    const std::vector<Vec2> before = *uv::uvColumn(atlas.mesh);
++    const Vec2 anchor = before[static_cast<std::size_t>(atlas.mesh.faceLoops(island[0])[0].value)];
++    const Vec2 delta{0.01f, 0.01f};
++    const std::size_t moved =
++        uv::moveIslandUvVertex(atlas.mesh, island, anchor, delta, 10.0f);
++    REQUIRE(moved > 1);
++
++    for (const FaceId face : island) {
++        for (const cyber::LoopId loop : atlas.mesh.faceLoops(face)) {
++            const auto index = static_cast<std::size_t>(loop.value);
++            const Vec2 expected = before[index] + delta;
++            const Vec2 actual = (*uv::uvColumn(atlas.mesh))[index];
++            // Exactly ONE delta each, never two.
++            REQUIRE(uvDistance(actual, expected) < 1e-6f);
++        }
++    }
++}
++
++TEST_CASE("a UV vertex move is refused on a mesh with no layout and for a negative tolerance") {
++    Mesh bare = makeCube();
++    uv::AtlasOptions opts;
++    const auto islands = uv::computeIslands(bare, uv::autoSeams(bare, opts));
++    REQUIRE(uv::moveIslandUvVertex(bare, islands[0], Vec2{0, 0}, Vec2{0.1f, 0}, 1e-4f) == 0);
++    REQUIRE(uv::uvColumn(bare) == nullptr);
++
++    CubeAtlas atlas = unwrappedCube();
++    const Vec2 anchor = (*uv::uvColumn(atlas.mesh))[0];
++    REQUIRE(uv::moveIslandUvVertex(atlas.mesh, atlas.islands[0], anchor, Vec2{0.1f, 0}, -1.0f)
++            == 0);
++}

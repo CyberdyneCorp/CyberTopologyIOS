@@ -308,6 +308,34 @@ extension Mesh {
         )
     }
 
+    /// Moves the UV VERTEX nearest `at` within the island containing `face` (6.3d).
+    ///
+    /// A "UV vertex" is a CLUSTER of coincident corners, not a mesh vertex: UVs are per-corner, so
+    /// several corners usually share one UV position and moving only one would tear the island at a
+    /// point the artist never cut. Every corner within `tolerance` moves together.
+    ///
+    /// Seams are preserved without any seam-specific logic — corners across a seam sit at different
+    /// UVs by definition, so they fall outside each other's tolerance.
+    ///
+    /// Returns how many corners moved. ZERO is not an error: a drag that matched no vertex simply is
+    /// not an edit, and the caller checks the count rather than catching.
+    @discardableResult
+    public func moveUVVertex(
+        inIslandContaining face: UInt32, at: SIMD2<Float>, by delta: SIMD2<Float>,
+        tolerance: Float = 0.01, parameters: AtlasParameters = AtlasParameters(),
+        seams: [UInt32] = []
+    ) throws -> Int {
+        try setSeamEdges(seams)
+        var raw = parameters.raw
+        var moved = 0
+        try check(
+            cyber_uv_move_island_uv_vertex(
+                handle, face, at.x, at.y, delta.x, delta.y, tolerance, &raw, &moved
+            )
+        )
+        return moved
+    }
+
     /// Snaps a grid-topology island onto an axis-aligned regular UV grid.
     public func gridStraightenIsland(
         containing face: UInt32, tolerance: Float = 0.25,

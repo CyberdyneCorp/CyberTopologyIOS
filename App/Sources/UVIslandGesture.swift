@@ -13,6 +13,26 @@ import simd
 /// `Canvas` precisely so this stays ordinary arithmetic.
 enum UVIslandGesture {
 
+    /// What a 2D drag edits: a whole island, or one UV vertex.
+    ///
+    /// A MODE rather than a zone, unlike rotate/scale/move. Per-vertex editing needs the full
+    /// island area available for picking a vertex, so it cannot share the positional grammar — the
+    /// thirds would eat two-thirds of the pickable surface. Mode-switched, and the mode is shown,
+    /// because a hidden mode that changes what a drag does is worse than a visible one.
+    enum EditTarget: String, Equatable, CaseIterable {
+        case island
+        case vertex
+        /// Toggle a seam on the edge under the drag (6.2's 2D half).
+        case seam
+    }
+
+    /// How close, in UV units, a drag must pass to an edge to toggle its seam.
+    ///
+    /// Generous relative to the unit square, because an edge is a line with no area: requiring a
+    /// pixel-exact hit would make the gesture feel broken. Still small enough that adjacent edges of
+    /// a cage-scale island stay separately targetable.
+    static let seamPickDistance: Float = 0.02
+
     /// What a drag starting at a given point does.
     enum Mode: String, Equatable, CaseIterable {
         case rotate

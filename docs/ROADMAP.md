@@ -124,7 +124,7 @@ landing, where rivals are undefined rather than slower — which needs no compet
 
 ### v0.3 — Public beta (target: Jun 2027) — "The pipeline's second stage"
 
-#### Phase 6 status — 11 of 12 closed (6.1, 6.1a, 6.2b, 6.3, 6.3b, 6.3c, 6.4, 6.5, 6.6, 6.7, 6.7a done; 6.2 all but its 2D half; 6.3d open)
+#### Phase 6 status — COMPLETE, 13 of 13 (6.1, 6.1a, 6.2, 6.2b, 6.3, 6.3b, 6.3c, 6.3d, 6.4, 6.5, 6.6, 6.7, 6.7a)
 
 The entry point landed as `add-uv-stage-foundation`: engine UV READBACK (the real gate — the
 atlas could write per-corner UVs that nothing could read, so a 2D view was impossible), the
@@ -191,9 +191,30 @@ would weld every seam shut. Its offscreen test took three attempts — the first
 deliberately broken shader, and only mutation testing exposed them; the shipped version asserts the
 image DEPENDS on UV and on density.
 
-What remains is **6.3d**: an imported-image preview (asset loading plus a real texture, on top of the
-checker path that now exists) and UV2D per-vertex mode. Neither blocks the UV pipeline: import →
-retopo → seam → unwrap → judge → pack → export is complete and exercised end to end. The seam half of 6.2's original scoping claim was wrong
+**6.3d closed the phase**: an imported-image preview extending the checker path (one pipeline, a
+uniform flag, a 1x1 placeholder so Metal always has a binding) and UV2D per-vertex editing, where a
+"UV vertex" is a CLUSTER of coincident corners — which is what stops a drag tearing an island, and
+preserves seams with no seam-specific logic at all.
+
+**Phase 6 is complete.** The last gap — 6.2's 2D seam editing — is closed: a 2D pick resolves to a
+mesh edge via the edge id behind each ring segment, and routes to the same `togglingSeams` edit the 3D
+tool uses, so a seam authored in either place is indistinguishable. It needed no engine addition, since
+`edgeEndpoints` already reports endpoint vertex ids.
+
+I had briefly marked the phase complete one task early; the checkbox for 6.2 was still open and caught
+it. Recorded because the record being wrong is the failure mode all of this discipline exists to
+prevent.
+
+The full pipeline is exercised end to end: import → retopo → draw seams (3D) → propose seams → unwrap →
+judge distortion → transform islands (2D grammar, on-surface pinch, per-vertex) → pack → stack mirrors
+→ UDIM tiles → multiple UV sets → export.
+
+The recurring lesson, recorded because it changed the work six separate times: **the code contradicted
+my own task text more often than it confirmed it** — `SeamSet`, `measureDistortion`, `autoSeams`,
+`choosePins`, `cameraFeedsArmedTool` and the UV-only project type were all already present or already
+unnecessary. Twice that turned a "missing feature" into a destructive defect that would otherwise have
+shipped (the X gesture deleting faces in the UV stage; every mesh edit discarding stored UV sets). And
+mutation testing caught four tests of mine that passed for the wrong reason. The seam half of 6.2's original scoping claim was wrong
 and is recorded as such.
 
 Open TestFlight. This is the release that starts the clock against CozyBlanket Pro.

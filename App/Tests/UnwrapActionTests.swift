@@ -671,4 +671,92 @@ struct UnwrapActionTests {
         #expect(harness.editor.runDeleteUVSet(named: "lightmap"))
         #expect(harness.editor.uvSets().names == ["default"])
     }
+
+    // MARK: - Per-vertex UV editing (6.3d)
+
+    @Test("Moving a UV vertex is ONE journaled step and undo restores it")
+    func moveUVVertexIsOneStep() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.runUnwrapUVs())
+        let before = try #require(try harness.editMesh().uvCoordinates())
+        let committed = harness.committed.count
+
+        // Grab an actual corner UV, which is what the engine matches against.
+        let grabbed = try #require(before.first)
+        #expect(harness.editor.runMoveUVVertex(
+            inIslandContaining: 0, at: grabbed, by: SIMD2(0.02, -0.01)
+        ))
+        #expect(harness.committed.count == committed + 1)
+
+        let after = try #require(try harness.editMesh().uvCoordinates())
+        #expect(zip(before, after).contains { $0 != $1 })
+        // Only SOME corners moved — a per-vertex edit that moved everything would be an island
+        // transform wearing the wrong name.
+        #expect(zip(before, after).contains { $0 == $1 })
+    }
+
+    @Test("A drag that grabs NO vertex journals nothing and reports no refusal")
+    func missedVertexDragIsSilent() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.runUnwrapUVs())
+        let committed = harness.committed.count
+
+        // Far outside the packed square. A miss is not a failure the artist needs told about, and
+        // filling the status line on every stray tap would bury the messages that matter.
+        #expect(!harness.editor.runMoveUVVertex(
+            inIslandContaining: 0, at: SIMD2(9, 9), by: SIMD2(0.1, 0.1)
+        ))
+        #expect(harness.committed.count == committed)
+        #expect(harness.editor.lastUnwrapRefusal == nil)
+    }
+
+    @Test("A zero-delta vertex drag is not an edit")
+    func zeroDeltaVertexDragIsNotAnEdit() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(harness.editor.runUnwrapUVs())
+        let committed = harness.committed.count
+        let grabbed = try #require(try harness.editMesh().uvCoordinates()?.first)
+        // A tap without movement must not journal an undo entry that does nothing.
+        #expect(!harness.editor.runMoveUVVertex(
+            inIslandContaining: 0, at: grabbed, by: .zero
+        ))
+        #expect(harness.committed.count == committed)
+    }
+
+    @Test("Per-vertex editing refuses before an unwrap, and says to unwrap first")
+    func vertexEditNeedsALayout() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        #expect(!harness.editor.runMoveUVVertex(
+            inIslandContaining: 0, at: SIMD2(0.5, 0.5), by: SIMD2(0.1, 0)
+        ))
+        #expect(harness.editor.lastUnwrapRefusal?.contains("Unwrap first") == true)
+        #expect(harness.committed.isEmpty)
+    }
+
+    @Test("A 2D seam toggle is the SAME journaled edit the 3D tool makes")
+    func seamToggleFrom2DMatchesThe3DPath() throws {
+        let harness = try Harness()
+        try seedCube(harness)
+        let object = try #require(harness.editObject)
+        #expect(object.annotations?.seamEdges.isEmpty ?? true)
+
+        #expect(harness.editor.toggleSeams(on: [0]))
+        let after = try #require(harness.editObject?.annotations?.seamEdges)
+        #expect(after == [0])
+
+        // Toggling again SEWS it back, matching the engine's own sew-on-retoggle semantics that the
+        // 3D seam tool relies on — so a seam authored in 2D behaves identically to one drawn on the
+        // model, which is what the requirement means by allowing either.
+        #expect(harness.editor.toggleSeams(on: [0]))
+        #expect(harness.editObject?.annotations?.seamEdges.isEmpty ?? true)
+
+        // An empty pick is not an edit.
+        let committed = harness.committed.count
+        #expect(!harness.editor.toggleSeams(on: []))
+        #expect(harness.committed.count == committed)
+    }
 }

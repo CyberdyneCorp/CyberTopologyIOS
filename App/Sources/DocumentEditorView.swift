@@ -33,6 +33,8 @@ struct DocumentEditorView: View {
     /// In-progress 2D island drag (6.3). VIEW state: nothing is journaled until release, so an
     /// abandoned drag leaves the undo stack untouched.
     @State private var uvIslandDrag: UVLayoutPanelView.DragState?
+    /// Whether a 2D drag edits a whole island or one UV vertex (6.3d). VIEW state.
+    @State private var uvEditTarget: UVIslandGesture.EditTarget = .island
     /// Split-view layout (6.1a). VIEW state, not document state: which pane is maximized is not
     /// something an undo should restore.
     @State private var uvSplit: UVSplitLayout = .split
@@ -192,7 +194,10 @@ struct DocumentEditorView: View {
         }
         .fileImporter(
             isPresented: $importRequest.isPresented,
-            allowedContentTypes: [.wavefrontOBJ, .fbx]
+            // Images are offered ONLY when a preview image was asked for, so the mesh pickers do
+            // not list textures the import path cannot read.
+            allowedContentTypes: importRequest.intent == .uvPreviewImage
+                ? [.image] : [.wavefrontOBJ, .fbx]
         ) { result in
             // The role must be read from state that dismissal does NOT
             // clear — see FileImportRequest for the regression this fixes.
@@ -264,6 +269,9 @@ struct DocumentEditorView: View {
             // point rather than a mode, because it is a different STARTING POINT for a project
             // and an artist choosing it has already decided there is no Target.
             Button("Import for UV only…") { importRequest.begin(.uvOnlyProject) }
+            // 6.3d: a texture to judge the layout against. Not a document import — it journals
+            // nothing, because a preview image is view state.
+            Button("Load UV preview image…") { importRequest.begin(.uvPreviewImage) }
                     .accessibilityIdentifier("import-editmesh")
                 Button("Export EditMeshes") { exportNow() }
                     .accessibilityIdentifier("export-editmeshes")
@@ -846,6 +854,16 @@ struct DocumentEditorView: View {
                 },
                 onTransformIsland: transformIsland,
                 onGridStraighten: gridStraightenIsland,
+                onMoveUVVertex: moveUVVertex,
+                onToggleSeam: toggleSeamFrom2D,
+                editTarget: $uvEditTarget,
+                previewImageLoaded: inputModel.viewportRenderer?.hasUVPreviewImage ?? false,
+                showsImportedImage: Binding(
+                    get: {
+                        inputModel.viewportRenderer?.uvCheckerSettings.usesImportedTexture ?? false
+                    },
+                    set: { inputModel.viewportRenderer?.uvCheckerSettings.usesImportedTexture = $0 }
+                ),
                 activeDrag: $uvIslandDrag,
                 mode: $uvHeatmapMode,
                 textureSize: Mesh.AtlasParameters().textureSize
@@ -939,6 +957,46 @@ struct DocumentEditorView: View {
         }
     }
 
+    /// Loads a UV preview image. Journals NOTHING — a preview image is view state, not document
+    /// content, so it must not appear in the undo stack.
+    private func loadPreviewImage(_ result: Result<URL, Error>) {
+        do {
+            let url = try result.get()
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard inputModel.viewportRenderer?.loadUVPreviewImage(from: url) == true else {
+                statusMessage = "Could not read that image"
+                return
+            }
+            inputModel.viewportRenderer?.uvCheckerSettings.usesImportedTexture = true
+            statusMessage = "Preview image loaded"
+        } catch {
+            statusMessage = "Import failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Toggles a seam picked in the 2D view (6.2's 2D half), as ONE journaled step.
+    ///
+    /// Routed to the SAME `togglingSeams` annotation edit the 3D seam tool uses, so a seam authored
+    /// in 2D is indistinguishable from one drawn on the model — which is what the requirement means
+    /// by allowing either.
+    private func toggleSeamFrom2D(_ edge: UInt32) {
+        if inputModel.meshEditor?.toggleSeams(on: [edge]) == true {
+            journal.handle(.documentEdited)
+            statusMessage = "Seam toggled"
+        }
+    }
+
+    private func moveUVVertex(_ face: UInt32, _ at: SIMD2<Float>, _ delta: SIMD2<Float>) {
+        // Silent on a miss: a drag that grabbed no vertex is not something to report, and saying so
+        // on every stray tap would bury the messages that matter.
+        if inputModel.meshEditor?.runMoveUVVertex(
+            inIslandContaining: face, at: at, by: delta
+        ) == true {
+            journal.handle(.documentEdited)
+        }
+    }
+
     private func gridStraightenIsland(_ face: UInt32) {
         if inputModel.meshEditor?.runGridStraightenIsland(containing: face) == true {
             journal.handle(.documentEdited)
@@ -1008,6 +1066,10 @@ struct DocumentEditorView: View {
     /// Internal (not private) so unit tests can drive the import result
     /// path directly — the Files picker itself is system UI.
     func handleImport(_ result: Result<URL, Error>, intent: FileImportRequest.Intent) {
+        guard intent.isMeshImport else {
+            loadPreviewImage(result)
+            return
+        }
         guard intent == .uvOnlyProject else {
             handleImport(result, role: intent.role)
             return

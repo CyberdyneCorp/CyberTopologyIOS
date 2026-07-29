@@ -44,6 +44,14 @@ struct UVLayoutPanelView: View {
     /// 6.3: a completed 2D island gesture — the representative face plus the transform.
     var onTransformIsland: (UInt32, UVIslandGesture.Transform) -> Void = { _, _ in }
     var onGridStraighten: (UInt32) -> Void = { _ in }
+    /// 6.3d: a completed per-VERTEX drag — face, the UV grabbed, and the delta.
+    var onMoveUVVertex: (UInt32, SIMD2<Float>, SIMD2<Float>) -> Void = { _, _, _ in }
+    /// 6.2 (2D half): toggle the seam on a picked mesh edge.
+    var onToggleSeam: (UInt32) -> Void = { _ in }
+    @Binding var editTarget: UVIslandGesture.EditTarget
+    /// 6.3d: whether an imported preview image is available, and whether to show it.
+    var previewImageLoaded: Bool = false
+    @Binding var showsImportedImage: Bool
     /// Live drag state, held by the caller so it survives a body pass. nil when no drag is active.
     @Binding var activeDrag: UVLayoutPanelView.DragState?
     /// What the fill shades by. Held by the caller so the choice survives a body pass.
@@ -64,10 +72,17 @@ struct UVLayoutPanelView: View {
         var start: SIMD2<Float>
         var current: SIMD2<Float>
         var centre: SIMD2<Float>
+        /// Captured at drag start along with the mode, so switching the mode mid-drag cannot change
+        /// what the drag in flight is doing.
+        var target: UVIslandGesture.EditTarget = .island
 
         var transform: UVIslandGesture.Transform {
             UVIslandGesture.transform(mode: mode, from: start, to: current, about: centre)
         }
+
+        /// The per-vertex delta: a plain translation, because moving one vertex has no pivot to
+        /// rotate or scale about.
+        var vertexDelta: SIMD2<Float> { current - start }
     }
 
     var body: some View {
@@ -122,6 +137,20 @@ struct UVLayoutPanelView: View {
             }
 
             if case .laidOut = state {
+                Picker("Edit", selection: $editTarget) {
+                    Text("Island").tag(UVIslandGesture.EditTarget.island)
+                    Text("Vertex").tag(UVIslandGesture.EditTarget.vertex)
+                    Text("Seam").tag(UVIslandGesture.EditTarget.seam)
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("uv-edit-target")
+                // Offered only once an image is loaded: a toggle that cannot do anything reads as
+                // broken, and the checker is what shows without one.
+                if previewImageLoaded {
+                    Toggle("Show imported image", isOn: $showsImportedImage)
+                        .font(.caption)
+                        .accessibilityIdentifier("uv-show-imported-image")
+                }
                 packingAids
             }
 
@@ -316,6 +345,23 @@ struct UVLayoutPanelView: View {
                     activeDrag = drag
                     return
                 }
+                // Seam mode resolves on the FIRST sample and consumes the drag: a seam toggle has no
+                // continuous magnitude, so waiting for release would leave the artist watching
+                // nothing happen while their finger moved.
+                if editTarget == .seam {
+                    if let pick = layout.nearestSegment(
+                        to: start, maxDistance: UVIslandGesture.seamPickDistance
+                    ), let edge = layout.edgeID(ring: pick.ring, segment: pick.segment) {
+                        onToggleSeam(edge)
+                    }
+                    // Marked handled either way, so a missed pick does not fall through and start an
+                    // island transform the artist never asked for.
+                    activeDrag = DragState(
+                        ringIndex: 0, face: 0, mode: .move, start: start, current: start,
+                        centre: start, target: .seam
+                    )
+                    return
+                }
                 guard let index = layout.ringIndex(at: start),
                     index < layout.faceIDs.count
                 else { return }
@@ -326,13 +372,23 @@ struct UVLayoutPanelView: View {
                     mode: UVIslandGesture.mode(forStartingAt: start, in: box),
                     start: start,
                     current: current,
-                    centre: (box.min + box.max) * 0.5
+                    centre: (box.min + box.max) * 0.5,
+                    target: editTarget
                 )
             }
             .onEnded { _ in
                 guard let drag = activeDrag else { return }
                 activeDrag = nil
-                onTransformIsland(drag.face, drag.transform)
+                switch drag.target {
+                case .island:
+                    onTransformIsland(drag.face, drag.transform)
+                case .vertex:
+                    // `start` is where the artist grabbed, which is the UV the engine matches
+                    // against — not the island centre and not the current position.
+                    onMoveUVVertex(drag.face, drag.start, drag.vertexDelta)
+                case .seam:
+                    break  // already applied on the first sample
+                }
             }
     }
 

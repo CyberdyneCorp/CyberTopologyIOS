@@ -124,6 +124,41 @@ final class ViewportRenderer: NSObject {
         uvCheckerPath.clear()
         invalidate()
     }
+
+    /// Loads an imported preview image from a file, replacing any previous one (6.3d).
+    ///
+    /// `MTKTextureLoader` rather than hand-decoding: it handles every format the platform does and
+    /// generates mipmaps, which a tiled preview needs or minified texels alias into noise.
+    ///
+    /// Returns whether it loaded. A failure clears the previous image rather than leaving it, so the
+    /// preview never shows one file while the UI names another.
+    @discardableResult
+    func loadUVPreviewImage(from url: URL) -> Bool {
+        let loader = MTKTextureLoader(device: device)
+        let options: [MTKTextureLoader.Option: Any] = [
+            .textureUsage: MTLTextureUsage.shaderRead.rawValue,
+            .textureStorageMode: MTLStorageMode.private.rawValue,
+            .generateMipmaps: true,
+            // SRGB off: the preview is shaded and blended in linear space like every other pass, and
+            // letting the loader apply a second transfer function would darken the artwork.
+            .SRGB: false,
+        ]
+        guard let texture = try? loader.newTexture(URL: url, options: options) else {
+            uvCheckerPath.setImportedTexture(nil)
+            invalidate()
+            return false
+        }
+        uvCheckerPath.setImportedTexture(texture)
+        invalidate()
+        return true
+    }
+
+    func clearUVPreviewImage() {
+        uvCheckerPath.setImportedTexture(nil)
+        invalidate()
+    }
+
+    var hasUVPreviewImage: Bool { uvCheckerPath.hasImportedTexture }
     var hasHoverGhost: Bool { hoverGhostPath.hasGeometry }
     /// Whether a subdivision preview surface is currently loaded (task 4.6).
     var hasSubdivisionPreview: Bool { subdivisionPreviewPath.hasGeometry }
@@ -1083,7 +1118,8 @@ final class ViewportRenderer: NSObject {
                 mvp: mvp,
                 density: uvCheckerSettings.density,
                 opacity: uvCheckerSettings.opacity,
-                shading: uvCheckerSettings.shading
+                shading: uvCheckerSettings.shading,
+                usesTexture: uvCheckerSettings.usesImportedTexture
             )
         )
 

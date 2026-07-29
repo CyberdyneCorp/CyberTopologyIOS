@@ -4,7 +4,8 @@ import simd
 /// Per-draw checker uniforms. Layout must match the MSL `UVCheckerUniforms` struct.
 struct UVCheckerUniforms: Equatable {
     var mvp: simd_float4x4
-    /// x: checker squares across the unit UV square. y: opacity. z: shading strength. w: reserved.
+    /// x: checker squares across the unit UV square. y: opacity. z: shading strength.
+    /// w: 1 to sample the imported texture, 0 for the procedural checker.
     var params: SIMD4<Float>
 }
 
@@ -12,6 +13,9 @@ struct UVCheckerUniforms: Equatable {
 struct UVCheckerSettings: Equatable {
     var density: Float = UVCheckerUniformsFactory.defaultDensity
     var opacity: Float = 1
+    /// Sample an imported image instead of the procedural checker. Ignored when no image is loaded,
+    /// so turning it on without one shows the checker rather than a blank surface.
+    var usesImportedTexture = false
     /// 0 disables wrap shading, leaving the checker parity as the ONLY source of tone. Tests use
     /// that to assert the pattern itself rather than the lighting.
     var shading: Float = 0.35
@@ -28,13 +32,16 @@ enum UVCheckerUniformsFactory {
 
     static func uniforms(
         mvp: simd_float4x4, density: Float = defaultDensity, opacity: Float = 1,
-        shading: Float = 0.35
+        shading: Float = 0.35, usesTexture: Bool = false
     ) -> UVCheckerUniforms {
         UVCheckerUniforms(
             mvp: mvp,
             // Density is clamped positive: a zero or negative density would collapse the checker to
             // a single colour and read as "the preview is broken" rather than "the UVs are wrong".
-            params: SIMD4(max(density, 1), max(min(opacity, 1), 0), max(shading, 0), 0)
+            params: SIMD4(
+                max(density, 1), max(min(opacity, 1), 0), max(shading, 0),
+                usesTexture ? 1 : 0
+            )
         )
     }
 }
@@ -57,8 +64,18 @@ final class UVCheckerRenderPath {
     private let depthState: MTLDepthStencilState
 
     private(set) var vertexCount = 0
+    /// The imported preview image, when one is loaded.
+    private(set) var importedTexture: MTLTexture?
+    /// A 1×1 stand-in bound whenever no image is loaded.
+    ///
+    /// Metal requires a texture at every declared binding, so the shader cannot simply omit it when
+    /// unused. A dummy keeps ONE pipeline for both modes rather than a second pipeline and a second
+    /// shader that would drift from this one.
+    private let placeholderTexture: MTLTexture
+    private let samplerState: MTLSamplerState
 
     var hasGeometry: Bool { vertexCount > 0 }
+    var hasImportedTexture: Bool { importedTexture != nil }
 
     /// Fails only when the embedded shader does not compile or a pipeline / depth state cannot be
     /// built (programmer error, surfaced by tests).
@@ -88,6 +105,27 @@ final class UVCheckerRenderPath {
             let pipeline = try? device.makeRenderPipelineState(descriptor: descriptor),
             let depthState = device.makeDepthStencilState(descriptor: depth)
         else { return nil }
+
+        // Repeat addressing, so UVs outside 0-1 tile rather than clamp: a UDIM layout deliberately
+        // puts islands beyond the unit square, and clamping would smear the edge pixel across every
+        // one of them.
+        let sampler = MTLSamplerDescriptor()
+        sampler.minFilter = .linear
+        sampler.magFilter = .linear
+        sampler.mipFilter = .linear
+        sampler.sAddressMode = .repeat
+        sampler.tAddressMode = .repeat
+        let placeholder = MTLTextureDescriptor()
+        placeholder.pixelFormat = .rgba8Unorm
+        placeholder.width = 1
+        placeholder.height = 1
+        placeholder.usage = .shaderRead
+        guard
+            let samplerState = device.makeSamplerState(descriptor: sampler),
+            let dummy = device.makeTexture(descriptor: placeholder)
+        else { return nil }
+        self.samplerState = samplerState
+        self.placeholderTexture = dummy
 
         self.pipelineState = pipeline
         self.depthState = depthState
@@ -129,6 +167,11 @@ final class UVCheckerRenderPath {
         return true
     }
 
+    /// Sets (or clears) the imported preview image.
+    func setImportedTexture(_ texture: MTLTexture?) {
+        importedTexture = texture
+    }
+
     func clear() {
         vertexCount = 0
         bufferPool.clear()
@@ -142,8 +185,15 @@ final class UVCheckerRenderPath {
         else { return }
 
         var uniforms = uniforms
+        // Falls back to the checker when the caller asked for a texture but none is loaded, rather
+        // than sampling the 1×1 placeholder and painting the model one flat colour.
+        if uniforms.params.w > 0, importedTexture == nil {
+            uniforms.params.w = 0
+        }
         encoder.setRenderPipelineState(pipelineState)
         encoder.setDepthStencilState(depthState)
+        encoder.setFragmentTexture(importedTexture ?? placeholderTexture, index: 0)
+        encoder.setFragmentSamplerState(samplerState, index: 0)
         encoder.setVertexBuffer(vertices, offset: 0, index: 0)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<UVCheckerUniforms>.stride, index: 1)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<UVCheckerUniforms>.stride, index: 0)
@@ -189,7 +239,9 @@ final class UVCheckerRenderPath {
 
     fragment float4 uv_checker_fragment(
         CheckerVertexOut in [[stage_in]],
-        constant UVCheckerUniforms& u [[buffer(0)]])
+        constant UVCheckerUniforms& u [[buffer(0)]],
+        texture2d<float> imported     [[texture(0)]],
+        sampler s                     [[sampler(0)]])
     {
         // Checker straight from UV. `floor` on each axis and a parity test: the classic form, and
         // the one that makes a stretched square visibly stretched — which is the entire point of
@@ -200,6 +252,15 @@ final class UVCheckerRenderPath {
         // Two greys rather than saturated colours: the checker has to read as a texture the model is
         // WEARING, not as a highlight competing with the distortion heatmap.
         float3 base = parity < 0.5 ? float3(0.82) : float3(0.28);
+
+        // An imported image REPLACES the checker rather than tinting it: the two answer the same
+        // question, and multiplying them would make a dark region of the artwork indistinguishable
+        // from a dark checker square.
+        if (u.params.w > 0.5) {
+            // v flipped, because image space runs top-down while UV runs bottom-up. Sampling
+            // unflipped would show every imported texture upside down against every other tool.
+            base = imported.sample(s, float2(in.uv.x, 1.0 - in.uv.y)).rgb;
+        }
 
         // Wrap shading so the form is still readable through the pattern. Double-sided, like the
         // Target pass: a back face can be the visible surface of an open shell.

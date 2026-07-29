@@ -288,6 +288,10 @@ struct MetalViewport: UIViewRepresentable {
                 return fallback
             }
             self.renderer = renderer
+            // Published here, where the renderer is definitively established, rather than inside a
+            // later installer: the Metal-unavailable fallback path returns before this point, so a
+            // nil renderer stays nil and the editor's view-only settings simply do nothing.
+            inputModel.viewportRenderer = renderer
 
             let view = ViewportMetalView(frame: .zero, device: renderer.device)
             view.colorPixelFormat = ViewportRenderer.colorPixelFormat

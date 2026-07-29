@@ -95,4 +95,17 @@ struct FileImportRequestTests {
             #expect(request.consumeRole() == intent.role)
         }
     }
+
+    @Test("A preview-image intent is NOT a mesh import")
+    func previewImageIsNotAMeshImport() {
+        var request = FileImportRequest()
+        request.begin(FileImportRequest.Intent.uvPreviewImage)
+        // A caller treating every completed import as a mesh import would add a phantom object for
+        // a texture, so the distinction has to be explicit rather than inferred from the role.
+        #expect(request.intent == .uvPreviewImage)
+        #expect(FileImportRequest.Intent.uvPreviewImage.isMeshImport == false)
+        for intent in [FileImportRequest.Intent.target, .editMesh, .uvOnlyProject] {
+            #expect(intent.isMeshImport)
+        }
+    }
 }

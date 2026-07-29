@@ -316,6 +316,17 @@ extension MeshEditController {
         }
     }
 
+    /// Toggles seams on `edges` as ONE journaled entry, for callers that already resolved the edge
+    /// ids (the 2D UV editor). The stroke-driven 3D path above resolves them from a stroke first and
+    /// then lands here, so both authoring surfaces produce identical document edits.
+    @discardableResult
+    func toggleSeams(on edges: [UInt32]) -> Bool {
+        guard !edges.isEmpty else { return false }
+        return applyAnnotationEditNow(verb: "uv.toggleSeam") {
+            $0.togglingSeams(on: edges)
+        }
+    }
+
     /// Thaws every frozen face as ONE journaled entry (openspec
     /// add-weave-constraint-authoring), mirroring `clearAllPins`.
     @discardableResult

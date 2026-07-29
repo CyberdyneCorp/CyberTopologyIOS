@@ -29,13 +29,25 @@ struct FileImportRequest: Equatable {
         case editMesh
         /// Import as the EditMesh with no Target and open in the UV stage, as one undo step.
         case uvOnlyProject
+        /// An image for the UV preview (6.3d). NOT a mesh import: it loads a texture and journals
+        /// nothing, because a preview image is view state rather than document content.
+        case uvPreviewImage
 
         var role: DocumentManifest.Object.Role {
             switch self {
             case .target: return .target
             case .editMesh, .uvOnlyProject: return .editMesh
+            // A preview image imports no object at all. Reported as `.editMesh` only because the
+            // role is non-optional; `isMeshImport` is what callers must branch on.
+            case .uvPreviewImage: return .editMesh
             }
         }
+
+        /// Whether this intent adds an object to the document.
+        ///
+        /// The preview image does not, so a caller that treats every completed import as a mesh
+        /// import would add a phantom object for a texture.
+        var isMeshImport: Bool { self != .uvPreviewImage }
     }
 
     /// Intent the completed picker session should apply. Survives dismissal; cleared only by

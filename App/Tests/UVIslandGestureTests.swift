@@ -262,4 +262,97 @@ struct UVIslandGestureTests {
         #expect(RetopoTool.transformIslandUV.isCameraManipulator)
         #expect(EditorAction.transformIslandUV.tool == .transformIslandUV)
     }
+
+    // MARK: - 2D seam authoring (6.2's 2D half)
+
+    @Test("A layout carries the mesh EDGE behind every ring segment")
+    func layoutCarriesEdgeIDs() throws {
+        let mesh = try Mesh.loadOBJ(at: UITestSupport.writeSeedOBJ())
+        let (unwrapped, _) = try mesh.unwrapped()
+        guard case .laidOut(let layout) = UVLayoutGeometry.state(of: unwrapped) else {
+            Issue.record("expected .laidOut")
+            return
+        }
+        // One edge slot per ring segment, so a 2D pick can name a mesh edge — which a UV position
+        // alone cannot supply.
+        #expect(layout.edgeIDs.count == layout.rings.count)
+        for (ring, edges) in zip(layout.rings, layout.edgeIDs) {
+            #expect(edges.count == ring.count)
+        }
+        // And at least some are resolved, or 2D seam authoring could never pick anything.
+        #expect(layout.edgeIDs.flatMap { $0 }.contains { $0 != nil })
+    }
+
+    @Test("A pick resolves to the NEAREST segment, measured to the segment not the line")
+    func segmentPickIsClamped() {
+        let ring: [SIMD2<Float>] = [
+            SIMD2(0.2, 0.2), SIMD2(0.8, 0.2), SIMD2(0.8, 0.8), SIMD2(0.2, 0.8),
+        ]
+        let layout = UVLayoutGeometry.Layout(
+            rings: [ring], overflowCorners: 0, faceIDs: [3],
+            edgeIDs: [[10, 11, 12, 13]], distortion: []
+        )
+        // Just above the bottom edge: segment 0.
+        let bottom = try? #require(layout.nearestSegment(to: SIMD2(0.5, 0.21), maxDistance: 0.05))
+        #expect(bottom?.segment == 0)
+        #expect(layout.edgeID(ring: 0, segment: 0) == 10)
+
+        // Beyond the segment's END, level with the bottom edge's line but far to the right. Distance
+        // is measured to the segment, so this must NOT resolve to the bottom edge from far away.
+        #expect(layout.nearestSegment(to: SIMD2(2.0, 0.2), maxDistance: 0.05) == nil)
+    }
+
+    @Test("A pick outside the tolerance resolves to nothing")
+    func farPickResolvesToNothing() {
+        let ring: [SIMD2<Float>] = [
+            SIMD2(0.2, 0.2), SIMD2(0.8, 0.2), SIMD2(0.8, 0.8), SIMD2(0.2, 0.8),
+        ]
+        let layout = UVLayoutGeometry.Layout(
+            rings: [ring], overflowCorners: 0, faceIDs: [3],
+            edgeIDs: [[10, 11, 12, 13]], distortion: []
+        )
+        // Dead centre of the quad: far from every edge.
+        #expect(layout.nearestSegment(to: SIMD2(0.5, 0.5), maxDistance: 0.02) == nil)
+    }
+
+    @Test("Point-to-segment distance clamps to the endpoints")
+    func distanceClampsToSegment() {
+        let a = SIMD2<Float>(0, 0)
+        let b = SIMD2<Float>(1, 0)
+        // Perpendicular, inside the span.
+        #expect(
+            abs(UVLayoutGeometry.Layout.distance(from: SIMD2(0.5, 0.25), toSegment: (a, b)) - 0.25)
+                < 1e-6
+        )
+        // Beyond the end: distance to the ENDPOINT, not to the infinite line (which would be 0).
+        #expect(
+            abs(UVLayoutGeometry.Layout.distance(from: SIMD2(3, 0), toSegment: (a, b)) - 2) < 1e-6
+        )
+        // A degenerate segment is a point.
+        #expect(
+            abs(UVLayoutGeometry.Layout.distance(from: SIMD2(0, 1), toSegment: (a, a)) - 1) < 1e-6
+        )
+    }
+
+    @Test("An edge id is only reported for a valence-matched face")
+    func mismatchedValenceClaimsNoEdge() {
+        // Ring of 4 but only 2 edge slots recorded: out-of-range lookups must return nil rather
+        // than trapping or claiming an unrelated edge.
+        let layout = UVLayoutGeometry.Layout(
+            rings: [[SIMD2(0, 0), SIMD2(1, 0), SIMD2(1, 1), SIMD2(0, 1)]],
+            overflowCorners: 0, faceIDs: [0], edgeIDs: [[7, nil]], distortion: []
+        )
+        #expect(layout.edgeID(ring: 0, segment: 0) == 7)
+        #expect(layout.edgeID(ring: 0, segment: 1) == nil)
+        #expect(layout.edgeID(ring: 0, segment: 3) == nil)
+        #expect(layout.edgeID(ring: 5, segment: 0) == nil)
+    }
+
+    @Test("Seam is a THIRD edit target, distinct from island and vertex")
+    func seamIsItsOwnTarget() {
+        // A mode rather than a zone, like per-vertex: an edge pick needs the whole island area.
+        #expect(UVIslandGesture.EditTarget.allCases.count == 3)
+        #expect(UVIslandGesture.EditTarget.allCases.contains(.seam))
+        #expect(UVIslandGesture.seamPickDistance > 0)
+    }
 }
