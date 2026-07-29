@@ -15,7 +15,19 @@
 - [x] 2.4 REGRESSION GUARD: a loop over empty surface still creates.
 - [x] 2.5 REGRESSION GUARD: a loop reaching an existing edge still creates.
 
-## 3. Close out
-- [ ] 3.1 validate; engine, simulator, device. Device run BLOCKED: the iPad is locked
-      (`passcodeRequired: true`), which fakes bootstrap failures — needs unlocking with Auto-Lock off.
-- [x] 3.2 Engine 358/358, simulator 1536/0.
+## 3. On-device coverage — a gap found while trying to verify this
+- [x] 3.1 The first device attempt failed to BUILD, not to run: `CyberKitTests` is tool-hosted and
+      cannot be tested on a device destination at all.
+- [x] 3.2 `ContextAwareCreateFaceTests` was not in the mirrored set, so the stroke interpreter's
+      stage 2 — which runs in C++ ON DEVICE — had never been exercised there. Mirrored into the
+      app-hosted target: it qualifies exactly as the existing 15 do (public API, inline OBJ
+      fixtures, no `#filePath` goldens, no `Bundle.module`), which its own doc comment already
+      claimed.
+- [x] 3.3 Its siblings CANNOT be shared and are recorded as such: `StrokeInterpreterTests` and
+      `DeviceStrokeCorpusTests` both load `Bundle.module` corpora, which exist only for the SwiftPM
+      target.
+
+## 4. Close out
+- [x] 4.1 validate; engine, simulator, device.
+- [x] 4.2 Engine 358/358, simulator 1536/0, device 1073/0 (13/13 for this suite, on device for the
+      first time).

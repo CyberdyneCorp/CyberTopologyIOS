@@ -129,6 +129,13 @@ targets:
       - path: CyberKit/Tests/CyberKitTests/ConstraintBridgeTests.swift
       # Implicit sizing from a prescribed interface (5.5a): public-API + inline fixtures.
       - path: CyberKit/Tests/CyberKitTests/ImplicitInterfaceSizingTests.swift
+      # Stroke-interpreter grammar (stage 2 runs in C++ on device, so it had no on-device
+      # coverage at all until now — including the rule that a stroke never creates a face
+      # nested inside another). Public API + inline OBJ fixtures, no #filePath goldens and no
+      # Bundle.module, so it compiles in the app-hosted target unchanged. Its sibling
+      # StrokeInterpreterTests and DeviceStrokeCorpusTests cannot be shared: both load
+      # Bundle.module corpora, which only exists for the SwiftPM test target.
+      - path: CyberKit/Tests/CyberKitTests/ContextAwareCreateFaceTests.swift
       # Outliner document state (8.1): public-API only, so it runs on device too.
       - path: CyberKit/Tests/CyberKitTests/OutlinerStateTests.swift
       # UV unwrap + readback (6.1): public-API only, so it runs on device too.
