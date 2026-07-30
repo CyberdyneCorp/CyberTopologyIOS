@@ -21,6 +21,23 @@ xcodegen generate                 # produces CyberTopology.xcodeproj (not commit
 open CyberTopology.xcodeproj
 ```
 
+### CI compiles with a NEWER Xcode than you probably have
+
+The macOS CI jobs select the newest installed Xcode
+(`ls -d /Applications/Xcode*.app | sort -V | tail -1`, currently 26.6), so a
+local Xcode 26.0 build passing is **not** proof that CI compiles. Swift's strict
+concurrency diagnostics are the usual difference, and they are errors, not
+warnings.
+
+The trap that has cost the most time: `UIDocument`'s async `open()` / `close()` /
+`autosave()` are `nonisolated`, so awaiting one on a non-`Sendable`
+`TopoDocument` from the main actor *sends* the document across an isolation
+boundary — 26.0 accepts it, 26.6 rejects it. `nonisolated(unsafe)` on the local
+does not help: it silences the *capture*, while it is the *call* that sends. Use
+`TopoDocument`'s main-actor wrappers (`openForEditing`, `closeSavingChanges`,
+`autosaveChanges`), which bridge UIKit's synchronous completion-handler API so
+the document never leaves the main actor.
+
 ### Engine (CyberRemesherAndUV)
 
 The C++20 engine is a git submodule at `Engine/CyberRemesherAndUV`, built by
