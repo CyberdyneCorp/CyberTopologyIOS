@@ -100,11 +100,11 @@ struct RootView: View {
         nonisolated(unsafe) let outgoing = outgoing
         Task { @MainActor in
             if let outgoing {
-                _ = await outgoing.close()
+                _ = await outgoing.closeSavingChanges()
                 journal.handle(.documentClosed)
             }
             let document = TopoDocument(fileURL: url)
-            guard await document.open() else { return }
+            guard await document.openForEditing() else { return }
             journal.handle(.documentOpened(url))
             intendedDocumentURL = url
             presentedDocument = document
@@ -144,7 +144,7 @@ struct RootView: View {
         guard let document else { return }
         nonisolated(unsafe) let closing = document
         Task { @MainActor in
-            _ = await closing.close()
+            _ = await closing.closeSavingChanges()
             journal.handle(.documentClosed)
         }
     }
@@ -159,7 +159,7 @@ struct RootView: View {
         }
         Task { @MainActor in
             let document = TopoDocument(fileURL: url)
-            guard await document.open() else { return }
+            guard await document.openForEditing() else { return }
             let objects = document.bundle.manifest.objects
             if UITestSupport.seedTargetRequested,
                 !objects.contains(where: { $0.role == .target }),
@@ -210,7 +210,7 @@ struct RootView: View {
         nonisolated(unsafe) let closing = document
         Task { @MainActor in
             // UIDocument.close autosaves pending changes before closing.
-            _ = await closing.close()
+            _ = await closing.closeSavingChanges()
             journal.handle(.documentClosed)
             openDocument = nil
         }

@@ -1150,7 +1150,7 @@ struct DocumentEditorView: View {
         nonisolated(unsafe) let document = document
         nonisolated(unsafe) let journal = journal
         Task { @MainActor in
-            if await document.autosave() {
+            if await document.autosaveChanges() {
                 journal.handle(.documentSaved)
             }
         }

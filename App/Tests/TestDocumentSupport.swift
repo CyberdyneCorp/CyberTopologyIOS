@@ -1,27 +1,25 @@
 import Foundation
 @testable import CyberTopology
 
-// UIDocument's open/close/autosave are nonisolated async methods; awaiting
-// them on a non-Sendable TopoDocument from MainActor test code is flagged
-// as a send by Xcode 26.6+ compilers (local 26.0 accepts it — the failures
-// only reproduce in CI). These helpers carry the documented
-// nonisolated(unsafe) contract in one place: UIDocument manages its own
-// queues, and all bundle mutations happen on MainActor.
+// Test-side names for the document lifecycle. These now just forward to
+// TopoDocument's own main-actor wrappers (see "Main-actor lifecycle" there):
+// awaiting UIDocument's nonisolated async open/close/autosave from MainActor
+// test code sent the non-Sendable document across an isolation boundary, which
+// the Xcode 26.6 compiler rejects. The wrappers bridge UIKit's synchronous
+// completion-handler API instead, so no nonisolated(unsafe) contract is needed
+// here any more.
 
 @MainActor
 func openForTest(_ document: TopoDocument) async -> Bool {
-    nonisolated(unsafe) let opening = document
-    return await opening.open()
+    await document.openForEditing()
 }
 
 @MainActor
 func closeDocument(_ document: TopoDocument) async {
-    nonisolated(unsafe) let closing = document
-    _ = await closing.close()
+    _ = await document.closeSavingChanges()
 }
 
 @MainActor
 func autosaveForTest(_ document: TopoDocument) async -> Bool {
-    nonisolated(unsafe) let saving = document
-    return await saving.autosave()
+    await document.autosaveChanges()
 }

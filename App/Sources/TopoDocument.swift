@@ -234,4 +234,48 @@ final class TopoDocument: UIDocument, ObservableObject {
         try DocumentBundle().fileWrapper()
             .write(to: url, options: .atomic, originalContentsURL: nil)
     }
+
+    // MARK: - Main-actor lifecycle
+
+    // WHY THESE EXIST, rather than awaiting UIDocument's own async open/close/
+    // autosave: those are `nonisolated`, so awaiting one on a non-Sendable
+    // TopoDocument from the main actor *sends* the document across an isolation
+    // boundary — "sending value of non-Sendable type 'TopoDocument' risks
+    // causing data races". Swift 6.2 (Xcode 26.0) accepts it, the Xcode 26.6
+    // compiler rejects it, so the failure only ever showed up in CI, which
+    // selects the newest installed Xcode.
+    //
+    // `nonisolated(unsafe)` on the local does NOT fix this. It suppresses the
+    // *capture* diagnostic, but the value still belongs to the caller's region,
+    // and it is the *call* that does the sending — which is why the previous
+    // workaround left CI red.
+    //
+    // The completion-handler API is synchronous: it hands UIKit a callback and
+    // returns, so the document never leaves the main actor and only the `Bool`
+    // crosses back. No Sendable claim is made about TopoDocument, and nothing
+    // here is version-dependent.
+
+    /// Opens the document, awaiting UIKit's coordinated read.
+    @MainActor
+    func openForEditing() async -> Bool {
+        await withCheckedContinuation { continuation in
+            open { continuation.resume(returning: $0) }
+        }
+    }
+
+    /// Closes the document. UIKit autosaves pending changes first.
+    @MainActor
+    func closeSavingChanges() async -> Bool {
+        await withCheckedContinuation { continuation in
+            close { continuation.resume(returning: $0) }
+        }
+    }
+
+    /// Forces an autosave now instead of waiting for UIKit's next safe point.
+    @MainActor
+    func autosaveChanges() async -> Bool {
+        await withCheckedContinuation { continuation in
+            autosave { continuation.resume(returning: $0) }
+        }
+    }
 }
