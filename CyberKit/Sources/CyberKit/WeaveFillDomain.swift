@@ -119,7 +119,9 @@ public enum WeaveFillDomain {
         var found: [UInt32] = []
         var seen = 0
         var id: UInt32 = 0
-        let limit = live * 2 + 64
+        // Sparse ids: the scan runs to the id CAPACITY, never to a
+        // multiple of the live count (see `Mesh.edgeCapacity`).
+        let limit = mesh.edgeCapacity
         while seen < live, Int(id) < limit {
             let faces = mesh.edgeFaces(of: id)
             if !faces.isEmpty {

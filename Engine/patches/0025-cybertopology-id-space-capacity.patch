@@ -1,0 +1,39 @@
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -446,6 +446,17 @@
+  * NULL. */
+ size_t cyber_mesh_edge_count(const CyberMesh* mesh);
+ 
++/* ID-SPACE CAPACITY: one past the highest id an element may currently have.
++ *
++ * Stable ids are sparse — an edit that removes elements leaves holes, so the
++ * live COUNT is not a bound on the ids. A caller enumerating elements by
++ * probing ids must run to the capacity; bounding the probe by the live count
++ * (even generously) silently misses the high ids of an edited mesh, which is
++ * exactly how a dissolve-then-scan pass loses edges that are still there.
++ * Returns 0 on NULL. */
++size_t cyber_mesh_vertex_capacity(const CyberMesh* mesh);
++size_t cyber_mesh_edge_capacity(const CyberMesh* mesh);
++
+ /* Copies the unique-edge index buffer (2 uint32 per edge, indexing the
+  * compacted vertex order of cyber_mesh_copy_positions) into `out`, writing
+  * whole edges only, at most `max_indices` values; returns the number of
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -2000,6 +2000,14 @@
+ size_t cyber_mesh_edge_count(const CyberMesh* mesh) {
+     const CyberRenderCache* cache = ensureRenderCache(mesh);
+     return cache == nullptr ? 0 : cache->edges.size() / 2;
++}
++
++size_t cyber_mesh_vertex_capacity(const CyberMesh* mesh) {
++    return mesh == nullptr ? 0 : mesh->mesh.vertexCapacity();
++}
++
++size_t cyber_mesh_edge_capacity(const CyberMesh* mesh) {
++    return mesh == nullptr ? 0 : mesh->mesh.edgeCapacity();
+ }
+ 
+ size_t cyber_mesh_copy_edge_indices(const CyberMesh* mesh, uint32_t* out, size_t max_indices) {
