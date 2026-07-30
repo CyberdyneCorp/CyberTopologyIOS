@@ -32,6 +32,18 @@ extension Mesh {
     /// overlays draw the authored topology).
     public var edgeCount: Int { cyber_mesh_edge_count(handle) }
 
+    /// One past the highest id an element may currently have — the bound for
+    /// any scan that enumerates elements by probing ids.
+    ///
+    /// Stable ids are SPARSE: an edit that removes elements leaves holes, so the
+    /// live count is not a bound on the ids. Deriving a probe ceiling from the
+    /// live count (however generously) silently loses the high ids of an edited
+    /// mesh — measured: a halved cage with 40 live edges still had live ids up to
+    /// 143, and after the next dissolve dropped it to 32 live, a `live * 2 + 64`
+    /// ceiling of 128 hid every edge above it.
+    public var vertexCapacity: Int { cyber_mesh_vertex_capacity(handle) }
+    public var edgeCapacity: Int { cyber_mesh_edge_capacity(handle) }
+
     /// Unique-edge index buffer: 2 indices per edge into the compacted
     /// vertex order used by `positions()`, deterministic order (faces in id
     /// order, each edge kept on first sighting).
