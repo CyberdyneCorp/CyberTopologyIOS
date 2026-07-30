@@ -31,6 +31,8 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
     case relaxAll
     case subdivide
     case subdivideAndReproject
+    /// add-halve-density: the counterpart to Subdivide.
+    case halve
     case triangulate
     case clearLoopTags
     case clearPins
@@ -47,6 +49,7 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
         case .relaxAll: "Relax All"
         case .subdivide: "Subdivide"
         case .subdivideAndReproject: "Subdivide + Reproject"
+        case .halve: "Halve"
         case .triangulate: "Triangulate"
         case .clearLoopTags: "Clear Loop Tags"
         case .clearPins: "Clear Pins"
@@ -61,6 +64,7 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
         case .relaxAll: "wind"
         case .subdivide: "square.grid.2x2"
         case .subdivideAndReproject: "square.grid.3x3.square"
+        case .halve: "square.split.2x2"
         case .triangulate: "triangle"
         case .clearLoopTags: "tag.slash"
         case .clearPins: "pin.slash"
@@ -82,6 +86,10 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
         case .subdivideAndReproject:
             "Subdivides once and projects every vertex onto the Target. "
                 + "Clears pins and tags for the same reason."
+        case .halve:
+            "Halves the cage: every other edge loop is dissolved, so each 2x2 "
+                + "block becomes one quad. The silhouette does not move. Refuses on "
+                + "cages where 'every other loop' has no answer. Clears pins and tags."
         case .triangulate:
             "Splits every quad and n-gon into triangles. Pins survive; "
                 + "loop tags and hidden faces are cleared."
@@ -110,7 +118,7 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
     /// annotations are keyed on. Drives the compound journal entry.
     var annotationPolicy: AnnotationIDPolicy {
         switch self {
-        case .subdivide, .subdivideAndReproject: .rebuilt
+        case .subdivide, .subdivideAndReproject, .halve: .rebuilt
         case .triangulate: .pinsOnly
         default: .preserved
         }
@@ -248,10 +256,45 @@ extension MeshEditController {
             return runBatchMeshEdit(command) { mesh, context in
                 try mesh.subdivide(reprojectingOnto: context.snapper)
             }
+        case .halve:
+            return runBatchMeshEdit(command) { mesh, _ in
+                do {
+                    let report = try mesh.halveDensity()
+                    self.onCameraToolStatus?(
+                        "Halved: \(report.facesBefore) quads -> \(report.facesAfter)"
+                    )
+                } catch let failure as Mesh.HalveDensityFailure {
+                    // A refusal is an ANSWER, not a crash: say which rule declined
+                    // and rethrow so the transaction is discarded byte-clean.
+                    self.onCameraToolStatus?(Self.halveRefusal(failure))
+                    throw failure
+                }
+            }
         case .triangulate:
             return runBatchMeshEdit(command) { mesh, _ in
                 try mesh.triangulate()
             }
+        }
+    }
+
+    /// Why a halve declined, in the artist's terms — the panel shows this instead
+    /// of the command silently doing nothing.
+    static func halveRefusal(_ failure: Mesh.HalveDensityFailure) -> String {
+        switch failure {
+        case .noCage:
+            "Nothing to halve"
+        case .notQuadOnly:
+            "Halve needs an all-quad cage (a triangle or n-gon has no loops to halve)"
+        case .notGridRegular:
+            "Halve needs regular grid topology — a pole stops a loop partway across"
+        case .noBoundary:
+            "Halve needs an open cage: a closed one has no side to start from"
+        case .tooFewCells:
+            "Too few quads across to halve"
+        case .oddCellCount:
+            "Halve needs an even number of quads across, or 'every other loop' has no answer"
+        case .strandedMidVertex:
+            "Halve could not reduce this cage cleanly, so nothing changed"
         }
     }
 

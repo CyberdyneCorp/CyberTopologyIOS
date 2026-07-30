@@ -41,6 +41,11 @@ public struct StrokeInterpretation: Equatable, Sendable {
         case createQuad
         case createTriangle
         case insertLoop
+        /// A gap-crossing stroke: bridge the two open rims its endpoint
+        /// vertices connect (change add-stroke-rim-bridge). The candidate's
+        /// elements are those two rim VERTICES — one corresponding pair, not
+        /// the extent of the fill.
+        case bridgeRims
         case tagLoop
         case dissolveEdge
         case deleteFaces
@@ -296,6 +301,7 @@ public enum StrokeInterpreter {
         case CYBER_ACTION_CREATE_QUAD: return .createQuad
         case CYBER_ACTION_CREATE_TRIANGLE: return .createTriangle
         case CYBER_ACTION_INSERT_LOOP: return .insertLoop
+        case CYBER_ACTION_BRIDGE_RIMS: return .bridgeRims
         case CYBER_ACTION_TAG_LOOP: return .tagLoop
         case CYBER_ACTION_DISSOLVE_EDGE: return .dissolveEdge
         case CYBER_ACTION_DELETE_FACES: return .deleteFaces

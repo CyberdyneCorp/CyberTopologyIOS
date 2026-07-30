@@ -301,6 +301,173 @@ struct ContextAwareCreateFaceTests {
         )
     }
 
+    // MARK: - One ROUNDED bend is one corner (fix-quad-rim-sharing)
+
+    /// Device, 2026-07-29: an L traced along the cage's rim and then across it built a
+    /// face stretched over everything between its endpoints. The corner scan skips one
+    /// window after a corner, and a hand-drawn ROUNDED turn is still turning after that
+    /// skip, so it reported the same bend twice — 4 samples and 0.08 of the chord apart.
+    /// The two-corner branch trusted them as a U's two bends and built
+    /// `[A, bend, bend', B]`: two nearly coincident corners.
+    /// The RECORDED device stroke (`quad_adjacent_pencil.stroke 28`), decimated to 48
+    /// points and expressed in its own frame: `u` runs along the chord from start to
+    /// end, `v` across it. A synthesized L will NOT do here — the corner scan skips one
+    /// window after a corner, so only a turn as gradual as a real hand's re-triggers
+    /// inside the same bend, and that is the whole defect.
+    private static let deviceRoundedL: [SIMD2<Double>] = [
+        SIMD2(0.0000, 0.0000), SIMD2(0.0114, -0.0244), SIMD2(0.0264, -0.0533),
+        SIMD2(0.0442, -0.0809), SIMD2(0.0634, -0.1078), SIMD2(0.0837, -0.1336),
+        SIMD2(0.1058, -0.1579), SIMD2(0.1274, -0.1826), SIMD2(0.1494, -0.2070),
+        SIMD2(0.1711, -0.2317), SIMD2(0.1920, -0.2570), SIMD2(0.2118, -0.2833),
+        SIMD2(0.2306, -0.3104), SIMD2(0.2494, -0.3374), SIMD2(0.2679, -0.3647),
+        SIMD2(0.2870, -0.3915), SIMD2(0.3048, -0.4191), SIMD2(0.3216, -0.4470),
+        SIMD2(0.3371, -0.4752), SIMD2(0.3555, -0.5023), SIMD2(0.3752, -0.5286),
+        SIMD2(0.3948, -0.5547), SIMD2(0.4226, -0.5538), SIMD2(0.4504, -0.5371),
+        SIMD2(0.4729, -0.5132), SIMD2(0.4934, -0.4876), SIMD2(0.5118, -0.4603),
+        SIMD2(0.5319, -0.4344), SIMD2(0.5525, -0.4088), SIMD2(0.5751, -0.3853),
+        SIMD2(0.6008, -0.3648), SIMD2(0.6256, -0.3434), SIMD2(0.6498, -0.3213),
+        SIMD2(0.6742, -0.2993), SIMD2(0.6974, -0.2762), SIMD2(0.7201, -0.2522),
+        SIMD2(0.7433, -0.2289), SIMD2(0.7666, -0.2058), SIMD2(0.7885, -0.1811),
+        SIMD2(0.8112, -0.1574), SIMD2(0.8361, -0.1362), SIMD2(0.8623, -0.1164),
+        SIMD2(0.8892, -0.0972), SIMD2(0.9142, -0.0762), SIMD2(0.9378, -0.0540),
+        SIMD2(0.9576, -0.0292), SIMD2(0.9814, -0.0100), SIMD2(1.0000, 0.0000),
+    ]
+
+    /// Maps the recorded stroke onto the segment `from → to` in screen space,
+    /// preserving its shape (a similarity transform: the chord becomes `from → to`).
+    private func deviceStroke(from start: SIMD2<Double>, to end: SIMD2<Double>)
+        -> [SIMD2<Double>]
+    {
+        let along = SIMD2(end.x - start.x, end.y - start.y)
+        let across = SIMD2(-along.y, along.x)
+        return Self.deviceRoundedL.map { point in
+            SIMD2(
+                start.x + along.x * point.x + across.x * point.y,
+                start.y + along.y * point.x + across.y * point.y
+            )
+        }
+    }
+
+    @Test("the recorded device L yields a well-proportioned quad ring, no collapsed side")
+    func roundedBendIsOneCorner() throws {
+        let m = try gridEmptyTopRight()
+        // The recorded device L, laid from v7(1,2) to v5(2,1) — the empty top-right
+        // cell, so the create is not suppressed for being over a face.
+        let result = try interpret(deviceStroke(from: screen(1, 2), to: screen(2, 1)), m)
+        let corners = result.quadCorners
+        try #require(corners.count == 4)
+        // No two ring corners may be near-coincident: that is the signature of one
+        // bend counted twice (and of the stretched face it produces).
+        let shortest = (0..<4).map { simd_distance(corners[$0], corners[($0 + 1) % 4]) }.min() ?? 0
+        let longest = (0..<4).map { simd_distance(corners[$0], corners[($0 + 1) % 4]) }.max() ?? 1
+        #expect(
+            shortest > longest * 0.2,
+            """
+            a side collapsed to \(shortest) against \(longest): the bend was counted twice.
+            shape=\(result.shape) conf=\(result.shapeConfidence) ring=\(corners)
+            """
+        )
+    }
+
+    // MARK: - A stroke across a gap bridges the two rims (add-stroke-rim-bridge)
+
+    /// Two 4-quad strips facing each other across a 1-unit gap, cells of 0.5:
+    /// the upper strip's rim is y = 1.5 (verts 0...4), the lower strip's is
+    /// y = 0.5 (verts 10...14). The corridor between them is bare surface — the
+    /// device case where a straight stroke was inserting an edge loop.
+    private func facingStrips() throws -> Mesh {
+        var lines: [String] = []
+        for y in [1.5, 2.0, 0.5, 0.0] {
+            for step in 0...4 { lines.append("v \(Double(step) * 0.5) \(y) 0") }
+        }
+        for base in [1, 11] {
+            for column in 0..<4 {
+                let a = base + column
+                lines.append("f \(a) \(a + 1) \(a + 6) \(a + 5)")
+            }
+        }
+        return try mesh(fromOBJ: lines.joined(separator: "\n"))
+    }
+
+    @Test("A straight stroke across the gap between two rims resolves to a rim bridge")
+    func gapCrossingStrokeResolvesToBridge() throws {
+        let m = try facingStrips()
+        // Straight down the corridor, from the upper rim's middle vertex (1, 1.5)
+        // to the lower rim's (1, 0.5).
+        let result = try interpret([screen(1, 1.5), screen(1, 0.5)], m)
+        #expect(result.shape == .line)
+        #expect(
+            result.best?.action == .bridgeRims,
+            "a gap crossing should bridge, got \(String(describing: result.best?.action))"
+        )
+        // The elements are the two CORRESPONDING rim vertices (v2 and v12).
+        let vertices = result.best?.elements.filter { $0.kind == .vertex }.map(\.id)
+        #expect(vertices == [2, 12])
+    }
+
+    /// The regression this change exists for: the stroke clips the rim edges at
+    /// its endpoints, and that crossing alone used to read as a loop cut — putting
+    /// a loop into a ring the stroke never ran along.
+    @Test("A gap-crossing stroke offers NO insert-loop at all")
+    func gapCrossingStrokeOffersNoLoopInsert() throws {
+        let m = try facingStrips()
+        let result = try interpret([screen(1, 1.5), screen(1, 0.5)], m)
+        #expect(!result.candidates.map(\.action).contains(.insertLoop))
+    }
+
+    @Test("REGRESSION GUARD: a line across a group of faces still inserts a loop")
+    func lineOverFacesStillInsertsLoop() throws {
+        let m = try facingStrips()
+        // Across the LOWER strip's quads (y = 0.25, inside the faces), left to
+        // right: over faces the whole way, so this is still the loop-cut gesture.
+        let result = try interpret([screen(0.1, 0.25), screen(1.9, 0.25)], m)
+        #expect(result.shape == .line)
+        #expect(
+            result.best?.action == .insertLoop,
+            "a line over faces is a loop cut, got \(String(describing: result.best?.action))"
+        )
+        #expect(!result.candidates.map(\.action).contains(.bridgeRims))
+    }
+
+    @Test("A stroke that runs ALONG a rim is not a bridge")
+    func strokeAlongARimIsNotABridge() throws {
+        let m = try facingStrips()
+        // Along the upper strip's own rim (y = 1.5), from vertex 0 to vertex 4:
+        // no face under it either, but it is tracing a rim, not crossing a gap.
+        let result = try interpret([screen(0, 1.5), screen(2, 1.5)], m)
+        #expect(!result.candidates.map(\.action).contains(.bridgeRims))
+    }
+
+    @Test("A straight stroke with no rim under an endpoint still creates nothing")
+    func straightStrokeWithoutRimsCreatesNothing() throws {
+        let m = try grid2x2Filled()
+        // Interior lattice centre (1,1) to a corner: the centre carries no
+        // boundary edge, so there is no rim to bridge from — and the stroke runs
+        // over faces the whole way, so it is not a gap crossing either.
+        let result = try interpret([screen(1, 1), screen(2, 2)], m)
+        #expect(!result.candidates.map(\.action).contains(.bridgeRims))
+        #expect(result.best?.action != .createQuad && result.best?.action != .createTriangle)
+    }
+
+    /// 2x2 quads over a 3x3 lattice — vertex 4 is interior.
+    private func grid2x2Filled() throws -> Mesh {
+        try mesh(fromOBJ: """
+        v 0 0 0
+        v 1 0 0
+        v 2 0 0
+        v 0 1 0
+        v 1 1 0
+        v 2 1 0
+        v 0 2 0
+        v 1 2 0
+        v 2 2 0
+        f 1 2 5 4
+        f 2 3 6 5
+        f 4 5 8 7
+        f 5 6 9 8
+        """)
+    }
+
     @Test("A loop that reaches an existing EDGE still creates: it shares topology")
     func loopTouchingAnEdgeStillCreates() throws {
         let m = try singleQuad()
