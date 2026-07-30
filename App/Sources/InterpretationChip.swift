@@ -136,6 +136,7 @@ struct InterpretationChipState: Equatable {
         case .createTriangle: return "Triangle"
         case .createGrid: return "Quad grid"
         case .insertLoop: return "Insert loop"
+        case .bridgeRims: return "Bridge quads"
         case .tagLoop: return "Tag loop"
         case .dissolveEdge: return "Dissolve"
         case .deleteFaces: return "Delete faces"

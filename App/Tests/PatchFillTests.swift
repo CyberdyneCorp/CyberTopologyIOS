@@ -108,4 +108,20 @@ struct PatchFillTests {
         )
         #expect(m.faceCount == 5, "a triangle is never a continued patch")
     }
+
+    @Test("rimRun finds the boundary chain a drawn side follows")
+    func rimRunFindsTheChainASideFollows() throws {
+        let m = try columnGrid()
+        // The drawn quad's left side runs along the right edge (x = 1, y 0...4).
+        let run = MeshEditController.rimRun(
+            mesh: m, from: SIMD3<Float>(1, 4, 0), to: SIMD3<Float>(1, 0, 0), tolerance: 0.35
+        )
+        let positions = (run ?? []).compactMap { m.vertexPosition($0) }
+        #expect(run != nil, "rimRun returned nil for a side lying exactly on the rim")
+        #expect(run?.count == 5, "expected the 5-vertex chain, got \(positions)")
+        let chain = MeshEditController.nearestBoundaryChain(
+            mesh: m, to: SIMD3<Float>(1, 2, 0), within: 0.35
+        )
+        #expect(chain != nil, "no boundary chain within 0.35 of the side's midpoint")
+    }
 }

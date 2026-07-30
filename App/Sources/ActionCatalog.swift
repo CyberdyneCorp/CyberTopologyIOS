@@ -640,12 +640,14 @@ extension EditorAction {
                 symbol: "list.bullet.rectangle",
                 gesture: "Command — tap to open the panel",
                 notes: "Whole-mesh operations: snap all to Target, relax "
-                    + "all, subdivide, subdivide + reproject, triangulate, "
-                    + "clear loop tags and clear pins. Each runs as one "
-                    + "undoable step. Subdividing rebuilds every element "
-                    + "id, so it clears pins and tags in the SAME step — "
-                    + "one undo brings the cage and its annotations back "
-                    + "together.",
+                    + "all, subdivide, subdivide + reproject, HALVE, "
+                    + "triangulate, clear loop tags and clear pins. Each runs "
+                    + "as one undoable step. Subdividing and halving rebuild "
+                    + "every element id, so they clear pins and tags in the "
+                    + "SAME step — one undo brings the cage and its "
+                    + "annotations back together. Halve needs an all-quad "
+                    + "cage with an EVEN number of quads across each way; it "
+                    + "says why when it declines.",
                 demoFrames: [
                     "list.bullet.rectangle", "square.grid.2x2",
                     "square.grid.3x3", "list.bullet.rectangle.fill",

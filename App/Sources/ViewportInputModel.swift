@@ -76,6 +76,20 @@ final class ViewportInputModel {
     /// the editor overlay; nil = hidden. Auto-dismisses after
     /// `chipDismissDelay` and is dismissed the moment the NEXT stroke
     /// begins — the chip never blocks or outlives further input.
+    /// What a drag will do if released right now — "Merge" while a Tweak/Move
+    /// drag holds a vertex within merge range, nil otherwise.
+    ///
+    /// The target already highlights, but a highlight only says "this one", not
+    /// "and it will be absorbed". Naming the outcome BEFORE the release is what
+    /// makes the merge discoverable, and its absence explains a release that
+    /// did not merge.
+    private(set) var snapHint: String?
+
+    /// Called by the viewport when the merge-snap highlight changes.
+    func snapHighlightChanged(engaged: Bool) {
+        snapHint = engaged ? "Merge" : nil
+    }
+
     private(set) var interpretationChip: InterpretationChipState.Chip?
     /// The pure chip state machine (unit-tested transitions).
     @ObservationIgnored private var chipMachine = InterpretationChipState()

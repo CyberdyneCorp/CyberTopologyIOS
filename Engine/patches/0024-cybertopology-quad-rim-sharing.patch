@@ -1,0 +1,25 @@
+diff --git a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+--- a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
++++ b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+@@ -1260,7 +1260,20 @@
+     // a U: it picks the midpoint of the far side and folds the quad.)
+     const int window = std::max(2, shapeParams.resampleCount / 16);
+     const std::vector<int> corners = cornerIndices(stroke, window, shapeParams.cornerRadians);
+-    if (corners.size() >= 2) {
++    // ... but ONE ROUNDED BEND is not two corners (change fix-quad-rim-sharing).
++    // `cornerIndices` skips one window after a corner, and a hand-drawn rounded turn
++    // is still turning after that skip, so it reports the same bend twice — measured
++    // on device at 4 samples and 0.08 of the chord apart. Trusted as a U's two bends
++    // that builds a ring with two nearly coincident corners: a face stretched across
++    // everything between the endpoints. Two bends must therefore be separated BOTH
++    // along the stroke and in space; an L falls through to the single-bend read it
++    // should always have had.
++    const bool twoBends =
++        corners.size() >= 2 &&
++        corners.back() - corners.front() >= static_cast<int>(stroke.size()) / 5 &&
++        length2(stroke[static_cast<std::size_t>(corners.back())] -
++                stroke[static_cast<std::size_t>(corners.front())]) > 0.0625f * chordLen2;
++    if (twoBends) {
+         const Vec2 C1 = snapInferred(stroke[static_cast<std::size_t>(corners.front())]);
+         const Vec2 C2 = snapInferred(stroke[static_cast<std::size_t>(corners.back())]);
+         ring = {A, C1, C2, B};

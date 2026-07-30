@@ -1,0 +1,178 @@
+diff --git a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+--- a/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
++++ b/src/retopo/include/cyber/retopo/stroke_interpreter.hpp
+@@ -154,6 +154,11 @@
+     CreateQuad,
+     CreateTriangle,
+     InsertLoop,
++    // A near-straight stroke ACROSS A GAP, from a vertex on one open rim to a
++    // vertex on the rim facing it (change add-stroke-rim-bridge): the two
++    // endpoint vertices are ONE corresponding pair, and the tool layer bridges
++    // the corridor between the rims with quads.
++    BridgeRims,
+     TagLoop,
+     DissolveEdge,
+     DeleteFaces,
+@@ -1341,6 +1346,107 @@
+     return true;
+ }
+ 
++// Does the stroke actually RUN OVER existing faces (change add-stroke-rim-bridge)?
++//
++// This is the discriminator between the two near-straight gestures, which are
++// otherwise identical in shape: a LoopCut runs over faces, while a stroke across
++// a GAP between two rims touches faces only where it starts and ends. Edge
++// crossing cannot tell them apart — a stroke anchored on two rim vertices
++// necessarily crosses those vertices' rim edges, which is exactly how a
++// gap-crossing stroke came to insert a loop into a ring it merely clipped.
++//
++// The endpoint sixths are deliberately ignored: a stroke that starts ON a rim
++// vertex sits at the corner of that vertex's faces, and a point-in-polygon test
++// exactly at a polygon corner is a coin flip, so the endpoints must not decide
++// this.
++inline bool strokeCoversFace(const ScreenProjection* proj, const std::vector<Vec2>& stroke) {
++    if (proj == nullptr || stroke.empty()) {
++        return false;
++    }
++    const std::size_t skip = stroke.size() / 6;
++    for (std::size_t i = skip; i + skip < stroke.size(); ++i) {
++        if (proj->faceContaining(stroke[i]).has_value()) {
++            return true;
++        }
++    }
++    return false;
++}
++
++// True when `v` sits on an OPEN RIM — it carries at least one boundary edge. A
++// bridge quad is always built on such an edge, which is what makes "never create
++// over an existing face" a topological guarantee for the bridge rather than a
++// geometric test: a boundary edge has one incident face, and the bridge gives it
++// its second.
++inline bool onOpenRim(const Mesh& mesh, VertexId v) {
++    for (const EdgeId e : mesh.vertexEdges(v)) {
++        if (mesh.isAlive(e) && mesh.isBoundaryEdge(e)) {
++            return true;
++        }
++    }
++    return false;
++}
++
++// Rim bridge (change add-stroke-rim-bridge): a stroke drawn ACROSS AN UNFILLED
++// GAP — from a vertex on one open rim, over bare Target, to a vertex on the rim
++// facing it — fills the corridor between the two rims with quads.
++//
++// The recognizer only names the CORRESPONDING PAIR (the two endpoint vertices);
++// walking the rims outward from that pair and emitting the quads is the tool
++// layer's job, as with every other action here. Confidence sits just under the
++// create actions, so a bent stroke that also reads as a quad keeps the quad and
++// offers the bridge as its one-tap alternative.
++inline bool tryOpenStrokeBridgeRims(StrokeInterpretation& out, const ScreenProjection* proj,
++                                    const ContextParams& contextParams) {
++    if (proj == nullptr) {
++        return false;
++    }
++    const StrokeShape s = out.shape.shape;
++    if (s != StrokeShape::Line && s != StrokeShape::Unknown) {
++        return false;
++    }
++    const std::vector<Vec2>& stroke = out.shape.resampled;
++    if (stroke.size() < 3) {
++        return false;
++    }
++    // Over faces this is the kept LoopCut gesture, not a gap crossing.
++    if (strokeCoversFace(proj, stroke)) {
++        return false;
++    }
++    // The MIDDLE of a gap crossing sits in open space. A stroke tracing a RIM
++    // also passes the no-faces test — a rim lies on the boundary of its faces,
++    // not inside them — but its middle runs along an edge, and bridging two
++    // points of one rim stretch would throw a quad over the topology between
++    // them.
++    //
++    // Measured against the stroke's OWN LENGTH rather than the pick radius,
++    // which would make this depend on camera distance: at tablet zoom a real gap
++    // crossing spans only a few percent of the viewport, so a fixed radius
++    // covers most of it and would refuse the gesture this rule exists to accept.
++    const Vec2 mid = stroke[stroke.size() / 2];
++    const float span = len(stroke.back() - stroke.front());
++    if (proj->nearestEdge(mid, span * 0.15f).has_value()) {
++        return false;
++    }
++    const std::optional<VertexId> a =
++        proj->nearestVertex(stroke.front(), contextParams.vertexRadius);
++    const std::optional<VertexId> b =
++        proj->nearestVertex(stroke.back(), contextParams.vertexRadius);
++    if (!a || !b || *a == *b) {
++        return false;
++    }
++    const Mesh& mesh = proj->mesh();
++    // Already adjacent: there is no gap between them to bridge.
++    if (mesh.edgeBetween(*a, *b).valid()) {
++        return false;
++    }
++    if (!onOpenRim(mesh, *a) || !onOpenRim(mesh, *b)) {
++        return false;
++    }
++    addCandidate(out, InterpretedAction::BridgeRims, 0.8f * out.shape.confidence,
++                 {{ElementRef::Kind::Vertex, a->value}, {ElementRef::Kind::Vertex, b->value}});
++    return true;
++}
++
+ }  // namespace interp_detail
+ 
+ // Resolves the stroke against the EditMesh. `mesh`/`viewProj` may be null:
+@@ -1441,6 +1547,10 @@
+     // If it fires, its create candidate leads; the switch below still runs so a
+     // Line keeps its insert-loop alternative.
+     tryOpenStrokeCreateFace(out, proj, shapeParams, contextParams);
++    // Rim bridge (change add-stroke-rim-bridge): the same open stroke read as a
++    // gap crossing when it runs between two rim vertices over no face at all.
++    // Ranked below a create, so a stroke that traces a face keeps the face.
++    tryOpenStrokeBridgeRims(out, proj, contextParams);
+ 
+     const float shapeConf = out.shape.confidence;
+     switch (out.shape.shape) {
+@@ -1458,7 +1568,14 @@
+             // mergeVertices, tagLoop and toggleVisibility are tools now, not
+             // stroke gestures, so a line that merely runs along an edge or
+             // over empty space resolves to nothing.
+-            if (proj != nullptr) {
++            //
++            // The line must RUN OVER FACES (change add-stroke-rim-bridge).
++            // Crossed edges alone are not enough: a line anchored on two rim
++            // vertices crosses those vertices' rim edges without ever running
++            // along a ring, and on device that clipped crossing inserted a loop
++            // nowhere near where the user drew. Such a stroke is a gap crossing
++            // — the rim bridge above — not a loop cut.
++            if (proj != nullptr && strokeCoversFace(proj, stroke)) {
+                 const std::vector<EdgeId> crossed = proj->edgesCrossing(stroke);
+                 if (!crossed.empty()) {
+                     addCandidate(
+diff --git a/capi/include/cyber_capi.h b/capi/include/cyber_capi.h
+--- a/capi/include/cyber_capi.h
++++ b/capi/include/cyber_capi.h
+@@ -1349,7 +1349,11 @@
+     CYBER_ACTION_TOGGLE_VISIBILITY,
+     CYBER_ACTION_CREATE_GRID,
+     /* Appended (not inserted) so existing action values keep their numbers. */
+-    CYBER_ACTION_CREATE_TRIANGLE
++    CYBER_ACTION_CREATE_TRIANGLE,
++    /* Bridge the two open rims a gap-crossing stroke connects. The record's
++     * elements are the two corresponding rim VERTICES, not the extent of the
++     * fill: the caller walks both rims outward from that pair. */
++    CYBER_ACTION_BRIDGE_RIMS
+ } CyberStrokeAction;
+ 
+ /* Kind of a referenced mesh element. */
+diff --git a/capi/src/capi.cpp b/capi/src/capi.cpp
+--- a/capi/src/capi.cpp
++++ b/capi/src/capi.cpp
+@@ -3959,6 +3959,8 @@
+             return CYBER_ACTION_CREATE_TRIANGLE;
+         case InterpretedAction::InsertLoop:
+             return CYBER_ACTION_INSERT_LOOP;
++        case InterpretedAction::BridgeRims:
++            return CYBER_ACTION_BRIDGE_RIMS;
+         case InterpretedAction::TagLoop:
+             return CYBER_ACTION_TAG_LOOP;
+         case InterpretedAction::DissolveEdge:

@@ -262,6 +262,10 @@ final class MeshEditController {
         var grabbedVertex: UInt32?
         /// Last surface point of the drag (Move displacement anchor).
         var anchor: SIMD3<Float>?
+        /// Merge range for THIS drag, measured from the grabbed vertex's own
+        /// cell at grab time (see `mergeRange`). Held on the session because
+        /// it is a per-drag constant and the scan behind it is O(edges).
+        var mergeRange: Float = 0
         var mutated = false
     }
 
@@ -507,6 +511,9 @@ final class MeshEditController {
             else { return }
             newSession.grabbedVertex = pick.vertex
             newSession.anchor = hit
+            newSession.mergeRange = Self.mergeRange(
+                around: pick.vertex, in: mesh, sceneRadius: context.sceneRadius
+            )
         }
         session = newSession
         if verb == .relax || verb == .erase {
@@ -617,12 +624,66 @@ final class MeshEditController {
         }
     }
 
+    /// How much of the grabbed vertex's OWN CELL another vertex must come
+    /// within before the two count as the same point.
+    ///
+    /// Read it as how far the artist must drag: a merge engages only once the
+    /// vertex is at least 70% of the way to its target. Half a cell was tried
+    /// and is too eager — it merged a vertex nudged 60% toward a neighbour,
+    /// which is a tweak, not an intent to join (a test caught it).
+    static let mergeRangeCellFraction: Float = 0.3
+
+    /// Merge range for a drag, measured from the grabbed vertex's own cell —
+    /// the mean length of the edges meeting it — rather than from the scene.
+    ///
+    /// A scene-relative window is the wrong shape twice over: on a coarse cage
+    /// it is a fraction of a cell, so the artist has to land almost exactly on
+    /// the target, and on a fine one it spans several cells and can merge a
+    /// vertex the artist never aimed at. The cage's own spacing is what "close
+    /// enough to be the same vertex" means.
+    ///
+    /// The scene-derived window survives ONLY as the answer for a vertex with no
+    /// edges to measure. It must not be a floor under the cell-derived one: as a
+    /// floor it simply wins on any cage smaller than the scene, which is every
+    /// cage, and reinstates the bug (measured: 2.0 against a cell of 1).
+    static func mergeRange(around vertex: UInt32, in mesh: Mesh, sceneRadius: Float) -> Float {
+        let unmeasurable = sceneRadius * mergeSnapRadiusFraction
+        guard let origin = mesh.vertexPosition(vertex) else { return unmeasurable }
+        let live = mesh.edgeCount
+        guard live > 0 else { return unmeasurable }
+        var total: Float = 0
+        var count = 0
+        var seen = 0
+        var id: UInt32 = 0
+        // Sparse ids: the scan runs to the id CAPACITY, never to a
+        // multiple of the live count (see `Mesh.edgeCapacity`).
+        let limit = mesh.edgeCapacity
+        while seen < live, Int(id) < limit {
+            defer { id += 1 }
+            guard let ends = mesh.edgeEndpoints(of: id) else { continue }
+            seen += 1
+            let other: UInt32
+            if ends.0 == vertex {
+                other = ends.1
+            } else if ends.1 == vertex {
+                other = ends.0
+            } else {
+                continue
+            }
+            guard let point = mesh.vertexPosition(other) else { continue }
+            total += simd_distance(origin, point)
+            count += 1
+        }
+        guard count > 0, total > 0 else { return unmeasurable }
+        return total / Float(count) * mergeRangeCellFraction
+    }
+
     /// Merge-snap detection (task 3.7, spec scenario "Snap feedback"): when
     /// the DRAGGED vertex (Tweak target / Move seed) sits within merge
     /// range of another vertex, that target pre-highlights — before
-    /// anything commits — and `commit` finalizes the merge/snap at stroke
-    /// end. Engine-side query (design D1) excluding the dragged vertex
-    /// itself (which is always nearest to its own position).
+    /// anything commits — and `commit` finalizes the merge at stroke end.
+    /// Engine-side query (design D1) excluding the dragged vertex itself
+    /// (which is always nearest to its own position).
     private func updateSnapDetection(for current: Session, mesh: Mesh) {
         guard current.verb == .tweak || current.verb == .move,
             let grabbed = current.grabbedVertex
@@ -630,9 +691,7 @@ final class MeshEditController {
         var candidate: HoverPreviewState.SnapTarget?
         if let dragged = mesh.vertexPosition(grabbed),
             let pick = mesh.nearestVertex(
-                to: dragged,
-                maxDistance: current.context.sceneRadius * Self.mergeSnapRadiusFraction,
-                excluding: grabbed
+                to: dragged, maxDistance: current.mergeRange, excluding: grabbed
             ) {
             candidate = HoverPreviewState.SnapTarget(
                 vertex: pick.vertex, position: pick.position
@@ -646,30 +705,25 @@ final class MeshEditController {
             emitSnapEffects(snapFeedback.strokeEnded(committed: false))
             return
         }
-        // Merge-snap finalization (task 3.7): a snap candidate held at
-        // stroke end commits INSIDE the same journaled transaction —
-        // exactly one journal entry for grab + drag + merge. Tweak merges
-        // the dragged vertex into the target (topology change, the spec's
-        // "merge" event); Move welds the SEED's position exactly onto the
-        // target vertex without merging topology (the region kept its
-        // structure — collapsing it under a whole-falloff drag would be
-        // surprising; the spec's "vertex snap" event).
+        // Merge-snap finalization (task 3.7): a snap candidate held at stroke
+        // end commits INSIDE the same journaled transaction — exactly one
+        // journal entry for grab + drag + merge.
+        //
+        // BOTH verbs merge now. Move used to weld the seed's POSITION onto the
+        // target and leave the topology alone, on the reasoning that collapsing
+        // it under a whole-falloff drag would surprise; in practice it produced
+        // two coincident vertices where the artist plainly meant one. Only the
+        // SEED merges either way — the vertex under the finger, never anything
+        // the falloff carried along — so the region still keeps its structure.
         let candidate = snapFeedback.candidate
         var verb = finished.verb.rawValue
         lastCommit = nil
         journalOrDiscard(verb: verb) {
             if let candidate, let grabbed = finished.grabbedVertex,
-                let mesh = finished.context.editMesh {
-                switch finished.verb {
-                case .tweak:
-                    try mesh.mergeVertices(keep: candidate.vertex, remove: grabbed)
-                    verb += ".mergeSnap"
-                case .move:
-                    try mesh.tweakVertex(grabbed, to: candidate.position)
-                    verb += ".vertexSnap"
-                default:
-                    break
-                }
+                let mesh = finished.context.editMesh,
+                finished.verb == .tweak || finished.verb == .move {
+                try mesh.mergeVertices(keep: candidate.vertex, remove: grabbed)
+                verb += ".mergeSnap"
                 onLiveEdit?()
             }
             return try finished.transaction.command(verb: verb)
@@ -837,6 +891,21 @@ final class MeshEditController {
                 ) {
                     try? mesh.insertLoop(acrossEdge: edge)
                 }
+            }
+        case .bridgeRims:
+            // The recognizer names ONE corresponding pair of rim vertices; the
+            // walk that fills the corridor between their rims lives in the
+            // engine facade. NO auto-relax: the spec requires rim vertices not
+            // to move, and the relax pass moves whatever is near the edit.
+            let vertices = elementIDs(of: best, kind: .vertex)
+            guard vertices.count == 2 else { return }
+            applyElementEdit(verb: "pencil.bridgeRims", context: context) { mesh in
+                // A pair that cannot be bridged throws, and the journaled path
+                // discards the transaction — the stroke does nothing rather
+                // than leaving a half-built strip.
+                try mesh.bridgeRims(
+                    from: vertices[0], to: vertices[1], snapping: context.snapper
+                )
             }
         case .dissolveEdge:
             let edges = elementIDs(of: best, kind: .edge)
@@ -1038,7 +1107,7 @@ final class MeshEditController {
             return !elementIDs(of: candidate, kind: .face).isEmpty
         case .hideRegion:
             return !elementIDs(of: candidate, kind: .face).isEmpty
-        case .mergeVertices:
+        case .mergeVertices, .bridgeRims:
             return elementIDs(of: candidate, kind: .vertex).count == 2
         case .createQuad:
             return stroke.worldCorners?.count == 4
@@ -1115,6 +1184,13 @@ final class MeshEditController {
             guard let edge = elementIDs(of: candidate, kind: .edge).first else { return nil }
             try mesh.rotateEdge(edge)
             verb = "pencil.rotateEdge"
+        case .bridgeRims:
+            let vertices = elementIDs(of: candidate, kind: .vertex)
+            guard vertices.count == 2 else { return nil }
+            try mesh.bridgeRims(
+                from: vertices[0], to: vertices[1], snapping: contextProvider?()?.snapper
+            )
+            verb = "pencil.bridgeRims"
         case .createQuad, .createTriangle:
             let sides = candidate.action == .createTriangle ? 3 : 4
             guard let corners = stroke.worldCorners, corners.count == sides else { return nil }
@@ -1291,16 +1367,25 @@ final class MeshEditController {
         guard shortestEdge.isFinite, shortestEdge > 1e-6 else { return false }
         let radius = min(mergeRadius, shortestEdge * 0.35)
 
-        let snapped = corners.map { mesh.nearestVertex(to: $0, maxDistance: radius)?.vertex }
-
-        // Look for a quad SIDE whose two corners both snapped to distinct
-        // existing vertices — the candidate weld side against the neighbour.
+        // Look for a quad SIDE that FOLLOWS an existing rim (change
+        // fix-quad-rim-sharing). The test used to be that the side's two CORNERS
+        // both snapped to existing vertices, which an L-derived ring can never
+        // satisfy: its bend and its inferred fourth corner hang in mid-air, and its
+        // two existing vertices sit diagonally opposite, never on one side. So the
+        // rim the artist actually drew along was invisible here, and the side came
+        // out as one long edge with every rim vertex T-junctioned against it.
         for i in 0..<4 {
             let j = (i + 1) % 4
-            guard let a = snapped[i], let b = snapped[j], a != b else { continue }
             let sharedMid = (corners[i] + corners[j]) * 0.5
-            guard let chain = boundarySubChain(mesh: mesh, from: a, to: b, near: sharedMid),
-                chain.count >= 3
+            // How far off the rim a HAND-DRAWN side may sit and still count as
+            // following it — a fraction of the side's own length, since a stroke's
+            // error scales with what it drew, not with the scene's size. `rimRun`
+            // then refines this against the rim's own cell, so it can be generous.
+            let sideLength = simd_distance(corners[i], corners[j])
+            let follow = max(radius, sideLength * rimRunFollowFraction)
+            guard let chain = rimRun(
+                mesh: mesh, from: corners[i], to: corners[j], tolerance: follow
+            ), chain.count >= 3
             else { continue }  // needs a genuinely SUBDIVIDED neighbour (≥2 cells)
 
             // Mean neighbour cell size along the shared chain.
@@ -1327,10 +1412,45 @@ final class MeshEditController {
             let rings = max(1, min(maxPatchDimension, Int((depth / cell).rounded())))
             let perRing = offsetVec / Float(rings)
             do {
-                let extended = try mesh.extendBoundary(
-                    chain: chain, closed: false, offset: perRing, rings: rings, snapping: snapper
-                )
-                if extended.newFaces > 0 { return true }
+                // ONE ROW AT A TIME, so each row can close onto whatever rim it lands
+                // on before the next is stepped off it. `extendBoundary` reports the
+                // row it just made (`outerChain`), which is the only trustworthy name
+                // for it — a live-vertex-id diff around the call is not, and welding
+                // off such a diff collapsed the patch it was meant to close.
+                var row = chain
+                var built = 0
+                for _ in 0..<rings {
+                    let extended = try mesh.extendBoundary(
+                        chain: row, closed: false, offset: perRing, rings: 1, snapping: snapper
+                    )
+                    guard extended.newFaces > 0 else { break }
+                    built += extended.newFaces
+                    // A patch filling the inside of an L lands ON the second rim the
+                    // stroke followed. Weld this row onto that rim so the patch MEETS
+                    // it instead of laying a duplicate row over it.
+                    //
+                    // Measured in the patch's OWN CELL, not in scene units: a row is
+                    // placed from the drawn ring's estimated corners, so it lands a few
+                    // percent of a cell off the rim it means to meet (0.04 and 0.08 of
+                    // a unit cell in the regression fixture) — near enough to be the
+                    // same point, but well outside a scene-derived pick radius, which
+                    // is what left the duplicates. A third of a cell cannot reach the
+                    // row behind it, so the bound still holds.
+                    let placed = extended.outerChain.compactMap { mesh.vertexPosition($0) }
+                    guard placed.count == extended.outerChain.count else { break }
+                    try mesh.weldNewVerticesOntoExisting(
+                        Set(extended.outerChain), mergeRadius: cell * 0.35
+                    )
+                    // Step the NEXT row off where this one actually ended up: a welded
+                    // vertex is dead, and its keeper is the rim vertex it folded onto.
+                    row = zip(extended.outerChain, placed).compactMap { id, position in
+                        mesh.vertexPosition(id) != nil
+                            ? id
+                            : mesh.nearestVertex(to: position, maxDistance: cell * 0.35)?.vertex
+                    }
+                    guard row.count == extended.outerChain.count else { break }
+                }
+                if built > 0 { return true }
             } catch {
                 // A non-boundary chain / winding rejection: leave the mesh for
                 // the single-quad fallback rather than losing the stroke.
@@ -1340,41 +1460,141 @@ final class MeshEditController {
         return false
     }
 
-    /// The ordered boundary sub-chain of existing vertices from `a` to `b`
-    /// (inclusive) — the arc of the boundary loop nearest the drawn shared side.
-    /// nil when the shared side is not on a boundary or `a`/`b` are not both on
-    /// that loop.
-    private static func boundarySubChain(
-        mesh: Mesh, from a: UInt32, to b: UInt32, near: SIMD3<Float>
-    ) -> [UInt32]? {
-        guard let edge = mesh.nearestEdge(to: near, maxDistance: .greatestFiniteMagnitude)?.edge,
-            mesh.isBoundaryEdge(edge) == true,
-            let loop = mesh.boundaryChain(through: edge)
-        else { return nil }
-        let verts = loop.vertices
-        guard let ia = verts.firstIndex(of: a), let ib = verts.firstIndex(of: b) else {
-            return nil
-        }
-        if loop.closed {
-            // Two arcs wrap the closed loop; the shorter one is the shared side.
-            func arc(from: Int, to: Int) -> [UInt32] {
-                var out: [UInt32] = []
-                var k = from
-                while true {
-                    out.append(verts[k])
-                    if k == to { break }
-                    k = (k + 1) % verts.count
-                }
-                return out
+    /// A side must cover at least this fraction of its length with the rim's own
+    /// vertices before it counts as FOLLOWING that rim. A side that merely touches
+    /// a rim near one end is an append, not a traced edge.
+    static let rimRunMinCoverage: Float = 0.6
+
+    /// How far off a rim a hand-drawn side may sit, as a fraction of that side's own
+    /// length, and still count as following it. Kept well under half a cell by the
+    /// self-consistency check at the call site.
+    static let rimRunFollowFraction: Float = 0.12
+
+    /// The boundary chain through the nearest BOUNDARY edge to `point` within
+    /// `radius`. Edge ids are sparse, so this probes past the live count rather than
+    /// assuming density (the scan `WeaveFillDomain.openBoundaryEdges` also does).
+    static func nearestBoundaryChain(
+        mesh: Mesh, to point: SIMD3<Float>, within radius: Float
+    ) -> Mesh.BoundaryChain? {
+        let live = mesh.edgeCount
+        guard live > 0 else { return nil }
+        var best: (edge: UInt32, distance: Float)?
+        var seen = 0
+        var id: UInt32 = 0
+        // Sparse ids: the scan runs to the id CAPACITY, never to a
+        // multiple of the live count (see `Mesh.edgeCapacity`).
+        let limit = mesh.edgeCapacity
+        while seen < live, Int(id) < limit {
+            defer { id += 1 }
+            guard let ends = mesh.edgeEndpoints(of: id) else { continue }
+            seen += 1
+            guard mesh.isBoundaryEdge(id) == true,
+                let a = mesh.vertexPosition(ends.0), let b = mesh.vertexPosition(ends.1)
+            else { continue }
+            // Distance to the SEGMENT, not to its midpoint: a side lying exactly
+            // along a rim sits half a cell from every edge midpoint on it, so a
+            // midpoint test finds nothing precisely when the answer is "this one".
+            let span = b - a
+            let lengthSquared = simd_length_squared(span)
+            let closest = lengthSquared > 1e-12
+                ? a + span * simd_clamp(simd_dot(point - a, span) / lengthSquared, 0, 1)
+                : a
+            let distance = simd_distance(closest, point)
+            if distance <= radius, distance < (best?.distance ?? .greatestFiniteMagnitude) {
+                best = (id, distance)
             }
-            let forward = arc(from: ia, to: ib)
-            let backward = arc(from: ib, to: ia)
-            return forward.count <= backward.count ? forward : backward.reversed()
         }
-        // Open boundary: the linear slice between the two indices, a → b.
-        let lo = min(ia, ib), hi = max(ia, ib)
-        let slice = Array(verts[lo...hi])
-        return ia <= ib ? slice : slice.reversed()
+        guard let best else { return nil }
+        return mesh.boundaryChain(through: best.edge)
+    }
+
+    /// The run of consecutive boundary-chain vertices that the drawn side
+    /// `start → end` FOLLOWS: each within `tolerance` of the segment and projecting
+    /// inside it, ordered from the `start` end. nil when the side follows no rim.
+    ///
+    /// Geometric on purpose. The corner-based predecessor asked whether the side's
+    /// two ENDS were existing vertices, which says nothing about the cells between
+    /// them and is unanswerable for a ring whose corners were inferred from a bend.
+    /// What matters is whether the artist drew ALONG existing topology, and that is
+    /// a question about the rim's vertices, not the ring's corners.
+    static func rimRun(
+        mesh: Mesh, from start: SIMD3<Float>, to end: SIMD3<Float>, tolerance: Float
+    ) -> [UInt32]? {
+        let span = end - start
+        let length = simd_length(span)
+        guard length > 1e-6 else { return nil }
+        let direction = span / length
+        // Seed on the nearest BOUNDARY edge to the side's middle. Asking for the
+        // nearest edge and then testing whether it happens to be a boundary (what the
+        // predecessor did) fails exactly here: a side traced along a rim has that
+        // rim's INTERIOR neighbours only half a cell away, so the nearest edge is
+        // often an interior one and the whole continuation bailed out. Bounded, too —
+        // an unbounded search always finds something, however distant.
+        guard let loop = nearestBoundaryChain(
+            mesh: mesh, to: (start + end) * 0.5, within: tolerance
+        ) else { return nil }
+
+        /// Does this rim vertex lie ON the drawn side, within `slack`?
+        func onSide(_ vertex: UInt32, _ slack: Float) -> Bool {
+            guard let point = mesh.vertexPosition(vertex) else { return false }
+            let along = simd_dot(point - start, direction)
+            guard along >= -slack, along <= length + slack else { return false }
+            return simd_distance(point, start + direction * along) <= slack
+        }
+
+        /// Longest consecutive run of on-side vertices, wrapping only on a closed loop.
+        func longestRun(_ slack: Float) -> [UInt32] {
+            let ring = loop.vertices
+            guard !ring.isEmpty else { return [] }
+            let reach = loop.closed ? ring.count * 2 - 1 : ring.count
+            var best: [UInt32] = []
+            var current: [UInt32] = []
+            for step in 0..<reach {
+                let index = step % ring.count
+                if loop.closed, step >= ring.count, current.isEmpty { break }
+                if onSide(ring[index], slack), !current.contains(ring[index]) {
+                    current.append(ring[index])
+                    if current.count > best.count { best = current }
+                } else {
+                    current = []
+                }
+            }
+            return best
+        }
+
+        // Two passes. The first is generous, because how far a HAND-DRAWN side sits
+        // off the rim scales with what was drawn. But "generous" has to be judged
+        // against the rim's CELL — a slack of half a cell would sweep in a PARALLEL
+        // rim one cell away and extrude the patch from the wrong chain — and the cell
+        // is only knowable once a run exists. So the run measures its own cell and
+        // re-filters against it. Refining beats rejecting: a side spanning many cells
+        // legitimately needs a slack that is a small fraction of ITSELF and a large
+        // one of a single cell, and a one-shot tolerance cannot be both.
+        var best = longestRun(tolerance)
+        if best.count >= 2 {
+            var total: Float = 0
+            var cells = 0
+            for index in 1..<best.count {
+                guard let p = mesh.vertexPosition(best[index - 1]),
+                    let q = mesh.vertexPosition(best[index])
+                else { continue }
+                total += simd_distance(p, q)
+                cells += 1
+            }
+            if cells > 0, total > 0 {
+                let refined = min(tolerance, total / Float(cells) * 0.35)
+                if refined < tolerance { best = longestRun(refined) }
+            }
+        }
+        guard best.count >= 2 else { return nil }
+        // The run has to actually COVER the side, not just touch it near one end.
+        guard let first = mesh.vertexPosition(best[0]),
+            let last = mesh.vertexPosition(best[best.count - 1]),
+            simd_distance(first, last) >= length * rimRunMinCoverage
+        else { return nil }
+        // Ordered from the side's start, so the extrusion's offset points across it.
+        return simd_dot(first - start, direction) <= simd_dot(last - start, direction)
+            ? best : best.reversed()
     }
 
     func applyCreate(

@@ -602,6 +602,17 @@ struct DocumentEditorView: View {
                     inputModel.chooseAlternative(index)
                 }
                 .padding(.bottom, 52)
+            } else if let hint = inputModel.snapHint {
+                // What the drag WILL do if released now. Shares the chip's slot
+                // (a drag and a post-stroke chip never coexist) so it reads in
+                // the place the artist already looks for outcomes.
+                Text(hint)
+                    .font(.footnote.weight(.semibold))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(.thinMaterial, in: Capsule())
+                    .accessibilityIdentifier("snap-hint")
+                    .padding(.bottom, 52)
             }
         }
         .sheet(isPresented: Binding(

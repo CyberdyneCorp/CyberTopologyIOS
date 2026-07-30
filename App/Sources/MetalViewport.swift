@@ -519,6 +519,9 @@ struct MetalViewport: UIViewRepresentable {
                     edgeEndpoints: { _ in nil },
                     vertexPosition: { _ in nil }
                 ))
+                // ...and NAME the outcome while the drag still holds it, so the
+                // merge is visible before the release rather than after it.
+                self.inputModel.snapHighlightChanged(engaged: target != nil)
             }
             let haptics = SnapHapticsEngine(view: view)
             snapHaptics = haptics

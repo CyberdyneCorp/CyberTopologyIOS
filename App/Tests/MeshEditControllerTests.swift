@@ -961,6 +961,202 @@ struct MeshEditControllerTests {
         #expect(try harness.editMesh().faceCount == 8)
     }
 
+    /// EditMesh: two disconnected 3-quad strips facing each other across a
+    /// ONE-UNIT gap (cells are 1 unit too, so the bridge is a single row).
+    /// The corridor between y = 1 and y = 2 is bare Target.
+    private func addFacingStripsEditMesh(to harness: Harness) throws {
+        let strips = try meshFromOBJ("""
+        v 0 0 0
+        v 1 0 0
+        v 2 0 0
+        v 3 0 0
+        v 0 1 0
+        v 1 1 0
+        v 2 1 0
+        v 3 1 0
+        v 0 2 0
+        v 1 2 0
+        v 2 2 0
+        v 3 2 0
+        v 0 3 0
+        v 1 3 0
+        v 2 3 0
+        v 3 3 0
+        f 1 2 6 5
+        f 2 3 7 6
+        f 3 4 8 7
+        f 9 10 14 13
+        f 10 11 15 14
+        f 11 12 16 15
+        """)
+        try harness.bundle.addObject(name: "cage", role: .editMesh, mesh: strips)
+        harness.sync()
+    }
+
+    /// EditMesh: an L-shaped cage leaving an EMPTY 2x2 corner block at x 1..3,
+    /// y 1..3 — the device shape. A row of three quads runs along the bottom
+    /// (its top rim, y = 1, is subdivided at x = 1, 2, 3) and a column of two
+    /// runs up the left (its right rim, x = 1, is subdivided at y = 1, 2, 3).
+    ///
+    ///   (0,3)--(1,3)          .           the block is bounded BELOW by the row's
+    ///     |      |                        top rim and on the LEFT by the column's
+    ///   (0,2)--(1,2)          .           right rim, and is open up and right
+    ///     |      |
+    ///   (0,1)--(1,1)--(2,1)--(3,1)
+    ///     |      |      |      |
+    ///   (0,0)--(1,0)--(2,0)--(3,0)
+    private func cornerBlockEditMesh(to harness: Harness) throws {
+        let cage = try meshFromOBJ("""
+        v 0 0 0
+        v 1 0 0
+        v 2 0 0
+        v 3 0 0
+        v 0 1 0
+        v 1 1 0
+        v 2 1 0
+        v 3 1 0
+        v 0 2 0
+        v 1 2 0
+        v 0 3 0
+        v 1 3 0
+        f 1 2 6 5
+        f 2 3 7 6
+        f 3 4 8 7
+        f 5 6 10 9
+        f 9 10 12 11
+        """)
+        try harness.bundle.addObject(name: "cage", role: .editMesh, mesh: cage)
+        harness.sync()
+    }
+
+    /// The device question behind fix-quad-rim-sharing — "why are the quads not
+    /// sharing the same edge?". A face drawn along a SUBDIVIDED rim came out as one
+    /// face whose long side crossed every rim vertex without sharing it: a crack, not
+    /// a shared edge. The rim's cells must be continued across the drawn region.
+    ///
+    /// The stroke is the device shape: an L tracing the two rims that bound the empty
+    /// corner block, from one existing vertex to another with the bend between them.
+    /// That ring is why the old corner-based trigger could never fire — its two
+    /// existing vertices sit DIAGONALLY opposite, never on one side.
+    @Test func quadDrawnAlongASubdividedRimSharesEveryVertexOfIt() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        try cornerBlockEditMesh(to: harness)
+        let object = try #require(harness.editObject)
+        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
+        #expect(try harness.editMesh().faceCount == 5)
+        #expect(try harness.editMesh().vertexCount == 12)
+
+        // (3,1) → left along the row's top rim → (1,1) → up the column's right rim
+        // → (1,3). Both endpoints are existing vertices; the fourth corner (3,3) is
+        // inferred out in the open.
+        harness.stroke(verb: .pencil, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(3, 1, 0)),
+            harness.screenPoint(of: SIMD3(1, 1, 0)),
+            harness.screenPoint(of: SIMD3(1, 3, 0)),
+        ]))
+
+        #expect(harness.bundle.journal.depth == 1, "one stroke, one journal entry")
+        let built = try harness.editMesh()
+        // The traced rim's two cells were CONTINUED across the block's two cells of
+        // depth: four quads, not one face stretched over the whole block.
+        #expect(built.faceCount == 9, "2 rim cells x 2 rows of depth = 4 new quads")
+        // The interior rim vertex (2,1) is shared: it had the row's two quads, and now
+        // also carries the patch. A single stretched face would have left it at two,
+        // T-junctioned against the new long edge.
+        let interior = try #require(built.nearestVertex(to: SIMD3(2, 1, 0), maxDistance: 0.1))
+        let touching = built.liveFaceIDs().filter {
+            built.faceVertices($0).contains(interior.vertex)
+        }
+        #expect(
+            touching.count == 4,
+            "rim vertex (2,1) is in \(touching.count) faces — the patch skipped it"
+        )
+        // The patch's far side lands on the column's rim at (1,2) and (1,3): those weld
+        // onto the existing vertices instead of laying duplicates over them, so the
+        // count is 12 + 6 created - 2 welded.
+        let nearColumnRim = built.liveVertexIDs()
+            .compactMap { built.vertexPosition($0) }
+            .filter { abs($0.x - 1) < 0.2 && $0.y > 1.5 }
+            .sorted { ($0.y, $0.x) < ($1.y, $1.x) }
+        #expect(
+            built.vertexCount == 16,
+            "the patch must close onto the second rim; vertices near it: \(nearColumnRim)"
+        )
+
+        harness.undo()
+        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
+        #expect(try harness.editMesh().faceCount == 5)
+    }
+
+    /// REGRESSION GUARD: the one-cell append must stay a single face — the trigger
+    /// widened, so this is the case it must NOT swallow.
+    @Test func oneCellAppendIsStillASingleFace() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        try addFacingStripsEditMesh(to: harness)
+        let object = try #require(harness.editObject)
+        let facesBefore = try harness.editMesh().faceCount
+
+        // A quad appended off ONE cell of the lower strip's top rim (x 0..1 at y = 1).
+        harness.stroke(verb: .pencil, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(0, 1, 0)),
+            harness.screenPoint(of: SIMD3(0, 1.8, 0)),
+            harness.screenPoint(of: SIMD3(1, 1.8, 0)),
+            harness.screenPoint(of: SIMD3(1, 1, 0)),
+        ]))
+
+        let built = try harness.editMesh()
+        #expect(
+            built.faceCount == facesBefore + 1,
+            "a one-cell append must stay exactly one face, got \(built.faceCount - facesBefore)"
+        )
+        _ = object
+    }
+
+    /// The device case behind add-stroke-rim-bridge: a straight stroke across an
+    /// unfilled gap used to insert an edge loop into a ring it only clipped at
+    /// its endpoints. It now bridges the two rims, in ONE journal entry.
+    @Test func strokeAcrossAGapBridgesTheRimsAndUndoRestoresBytes() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        try addFacingStripsEditMesh(to: harness)
+        let object = try #require(harness.editObject)
+        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
+        #expect(try harness.editMesh().faceCount == 6)
+
+        // From the lower strip's rim vertex (1,1) straight up across the gap to
+        // the upper strip's rim vertex (1,2).
+        harness.stroke(verb: .pencil, through: harness.densified(through: [
+            harness.screenPoint(of: SIMD3(1, 1, 0)),
+            harness.screenPoint(of: SIMD3(1, 2, 0)),
+        ]))
+
+        let summary = harness.coordinator.inputModel.lastInterpretation?.summary ?? "nil"
+        #expect(
+            harness.bundle.journal.depth == 1,
+            "the whole bridge is one journal entry; interpretation was \(summary)"
+        )
+        guard case .meshEdit(let edit) = try #require(harness.committed.first) else {
+            Issue.record("expected a meshEdit command")
+            return
+        }
+        #expect(edit.verb == "pencil.bridgeRims")
+        let bridged = try harness.editMesh()
+        // Three bridge quads — the corridor fills on BOTH sides of the stroke,
+        // not just under it — built from the existing rim vertices, so the
+        // vertex count is unchanged.
+        #expect(bridged.faceCount == 9)
+        #expect(bridged.vertexCount == 16)
+        #expect(try bridged.stats().quads == 9)
+
+        harness.undo()
+        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
+        #expect(try harness.editMesh().faceCount == 6)
+        harness.redo()
+        #expect(try harness.editMesh().faceCount == 9)
+    }
+
     // lineAlongLoopTagsWholeLoop... retired: tagLoop is no longer a stroke
     // gesture (a line along a loop is a tool now). Loop tagging keeps
     // annotation-tool coverage in AnnotationToolsTests.
@@ -1456,12 +1652,15 @@ struct MeshEditControllerTests {
         #expect(try harness.editMesh().vertexCount == 16)
     }
 
-    /// Move's half of the snap detection: dragging the SEED within merge
-    /// range of a vertex on the DISCONNECTED strip pre-highlights it and,
-    /// on release, welds the seed's position exactly onto the target
-    /// vertex — without merging topology (the moved region keeps its
-    /// structure; geodesic falloff still never touches the other strip).
-    @Test func moveDragSnapsSeedPositionOntoDisconnectedVertexWithoutTopologyMerge() throws {
+    /// Move's half of the snap detection: dragging the SEED within merge range
+    /// of a vertex on the DISCONNECTED strip pre-highlights it and, on release,
+    /// MERGES the seed into it.
+    ///
+    /// Move used to weld the seed's position only, leaving two coincident
+    /// vertices where the artist plainly meant one. Only the seed merges — the
+    /// vertex under the finger, never anything the falloff carried — so the
+    /// moved region still keeps its structure.
+    @Test func moveDragMergesSeedIntoTheDisconnectedVertexItLandsOn() throws {
         let harness = try Harness()
         try addPlaneTarget(to: harness)
         try addStripsEditMesh(to: harness)
@@ -1483,11 +1682,47 @@ struct MeshEditControllerTests {
             Issue.record("expected a meshEdit command")
             return
         }
-        #expect(edit.verb == "move.vertexSnap")
+        #expect(edit.verb == "move.mergeSnap")
         let moved = try harness.editMesh()
-        // No topology merge: both vertices exist, now coincident.
-        #expect(moved.vertexCount == 16)
-        #expect(allPositions(of: moved).count { $0 == SIMD3(0, 1.2, 0) } == 2)
+        // ONE vertex where there were two: the seed was absorbed, not parked on
+        // top of the target.
+        #expect(moved.vertexCount == 15)
+        #expect(allPositions(of: moved).count { $0 == SIMD3(0, 1.2, 0) } == 1)
+    }
+
+    /// The merge window is the grabbed vertex's OWN CELL, not a slice of the
+    /// scene: the same gesture has to behave the same on a coarse cage and a
+    /// fine one, and a scene-relative window is a different multiple of a cell
+    /// on each.
+    @Test func mergeRangeFollowsTheLocalCellNotTheScene() throws {
+        // One quad with 1-unit cells, in a scene whose radius is 100.
+        let coarse = try meshFromOBJ("""
+        v 0 0 0
+        v 1 0 0
+        v 1 1 0
+        v 0 1 0
+        f 1 2 3 4
+        """)
+        let cellRange = MeshEditController.mergeRange(
+            around: 0, in: coarse, sceneRadius: 100
+        )
+        // 30% of the 1-unit cell — NOT 4% of the 100-unit scene (which would be
+        // 4 whole cells and would swallow every vertex in the quad).
+        #expect(abs(cellRange - 0.3) < 1e-4, "expected the cell's own scale, got \(cellRange)")
+
+        // The same cage in a tiny scene: the SAME range. This is the whole point —
+        // the gesture cannot mean different things because the scene resized.
+        let tightRange = MeshEditController.mergeRange(
+            around: 0, in: coarse, sceneRadius: 0.001
+        )
+        #expect(abs(tightRange - 0.3) < 1e-4)
+
+        // A vertex with no edges to measure falls back to the scene-derived
+        // window — the only case where it still applies.
+        #expect(
+            abs(MeshEditController.mergeRange(around: 99, in: coarse, sceneRadius: 2) - 0.08)
+                < 1e-4
+        )
     }
 
     /// Haptics are user-disableable (spec): disabling silences the ticks
@@ -1599,5 +1834,68 @@ struct MeshEditControllerTests {
     @Test func screenRayRejectsDegenerateMatrices() {
         let zero = simd_float4x4()
         #expect(ScreenRay.ray(inverseViewProjection: zero, normalizedPoint: SIMD2(0.5, 0.5)) == nil)
+    }
+
+    /// The Halve batch command end to end: one journal entry, the cage halves, and
+    /// one undo restores the bytes.
+    @Test func halveBatchCommandHalvesTheCageInOneEntry() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        // A 4x4 grid: halves to 2x2.
+        var lines: [String] = []
+        for y in 0...4 {
+            for x in 0...4 { lines.append("v \(x) \(y) 0") }
+        }
+        for y in 0..<4 {
+            for x in 0..<4 {
+                let a = y * 5 + x + 1
+                lines.append("f \(a) \(a + 1) \(a + 6) \(a + 5)")
+            }
+        }
+        try harness.bundle.addObject(
+            name: "cage", role: .editMesh, mesh: try meshFromOBJ(lines.joined(separator: "\n"))
+        )
+        harness.sync()
+        let object = try #require(harness.editObject)
+        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
+        #expect(try harness.editMesh().faceCount == 16)
+
+        #expect(harness.coordinator.meshEditor.runBatchCommand(.halve))
+
+        #expect(harness.bundle.journal.depth == 1)
+        #expect(try harness.editMesh().faceCount == 4)
+        #expect(try harness.editMesh().stats().quads == 4)
+
+        harness.undo()
+        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
+        #expect(try harness.editMesh().faceCount == 16)
+    }
+
+    /// A REFUSED halve changes nothing and journals nothing — the odd-span cage.
+    @Test func refusedHalveJournalsNothing() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        var lines: [String] = []
+        for y in 0...3 {
+            for x in 0...3 { lines.append("v \(x) \(y) 0") }
+        }
+        for y in 0..<3 {
+            for x in 0..<3 {
+                let a = y * 4 + x + 1
+                lines.append("f \(a) \(a + 1) \(a + 5) \(a + 4)")
+            }
+        }
+        try harness.bundle.addObject(
+            name: "cage", role: .editMesh, mesh: try meshFromOBJ(lines.joined(separator: "\n"))
+        )
+        harness.sync()
+        let object = try #require(harness.editObject)
+        let payloadBefore = try #require(harness.bundle.payloads[object.payloadFile])
+
+        #expect(!harness.coordinator.meshEditor.runBatchCommand(.halve))
+
+        #expect(harness.bundle.journal.depth == 0, "a refusal must journal nothing")
+        #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
+        #expect(try harness.editMesh().faceCount == 9)
     }
 }
