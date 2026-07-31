@@ -57,8 +57,23 @@ extension MetalViewport.Coordinator {
         region: SolveRegion = .wholeMesh
     ) async -> Bool {
         guard let target = currentTargetMesh() else { return false }
-        let targetData: Data
-        do { targetData = try target.payloadData() } catch { return false }
+        // CARVE FIRST, on the live mesh, THEN serialize.
+        //
+        // Face ids cannot cross this boundary: `payloadData()` round-trips through
+        // OBJ, which RENUMBERS every element (see `Mesh.duplicated`). Sending
+        // `.faces(ids)` off-main to be carved there matched arbitrary faces of the
+        // deserialized mesh — or nothing at all, which `solveOffMain` swallowed as
+        // a silent nil. Reported from device as "I ask to retopologize and nothing
+        // happens" with the painted extent visibly correct.
+        let prepared: PreparedSolve
+        do { prepared = try Self.prepare(target: target, region: region, params: parameters) }
+        catch {
+            MeshEditController.log.error(
+                "region carve failed: \(String(describing: error), privacy: .public)"
+            )
+            return false
+        }
+        let targetData = prepared.payload
 
         // Honour the document's active symmetry (clip + mirror about the plane)
         // and any authored guide strokes (steer the cross field toward them).
@@ -71,8 +86,9 @@ extension MetalViewport.Coordinator {
         defer { inputModel.autoRetopoSolving = false }
 
         let solved = await Self.solveOffMain(
-            targetData: targetData, params: parameters, constraints: constraints,
-            region: region, solver: weaveSolver
+            targetData: targetData, params: prepared.params, constraints: constraints,
+            // Always whole-mesh off-main: the domain is already the carve.
+            region: .wholeMesh, solver: weaveSolver
         )
         let ghostData = solved?.payload
         guard let ghostData else {
@@ -237,6 +253,39 @@ extension MetalViewport.Coordinator {
     /// it. Caught by the fill UI test, whose row identifier is derived from the name.
     /// (The object's UUID still changes, and with it every face id; that is the
     /// separate sharp edge documented on `acceptAutoRetopo`.)
+    /// What crosses the thread boundary for a solve: the payload of the mesh to
+    /// remesh, and the parameters to remesh it with.
+    struct PreparedSolve {
+        let payload: Data
+        let params: SolverParameters
+        /// Fraction of the Target's faces the domain kept (1 for a whole-mesh solve).
+        let share: Float
+    }
+
+    /// Builds the solve domain on the LIVE mesh, where the region's face ids are
+    /// valid, and scales the quad budget to the painted share.
+    ///
+    /// The budget scaling belongs here for the same reason the carve does: off-main
+    /// only ever sees a whole mesh, so it cannot know the region was a tenth of a
+    /// model. A budget is a statement about the whole Target ("about 1500 quads for
+    /// this bunny"); applied unscaled to a patch it asks for the entire model's
+    /// topology inside one ear — measured at the engine's raw default, a 12-face
+    /// carve did not finish inside a minute.
+    static func prepare(
+        target: Mesh, region: SolveRegion, params: SolverParameters
+    ) throws -> PreparedSolve {
+        let carve = try EngineRemeshSolver.carved(target, to: region)
+        var scaled = params
+        if carve.share < 1 {
+            scaled.remesh.targetQuads = max(
+                4, Int((Float(params.remesh.targetQuads) * carve.share).rounded())
+            )
+        }
+        return PreparedSolve(
+            payload: try carve.mesh.payloadData(), params: scaled, share: carve.share
+        )
+    }
+
     /// Appends `patch` to the document's existing EditMesh as ONE journaled
     /// entry, or nil when there is no cage to merge into (the caller then falls
     /// back to creating one).
