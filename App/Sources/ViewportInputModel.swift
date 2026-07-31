@@ -118,6 +118,15 @@ final class ViewportInputModel {
         }
     }
 
+    /// The live box-selection rectangle in normalized viewport coordinates, or nil
+    /// when none is being dragged (openspec add-box-region-selection). A drag with no
+    /// visible box is a drag into the void.
+    private(set) var regionSelectionBox: SelectionBox?
+
+    func regionSelectionBoxChanged(_ box: SelectionBox?) {
+        regionSelectionBox = box
+    }
+
     private(set) var paintModeHint: String?
     @ObservationIgnored private var paintModeHintToken: UUID?
 

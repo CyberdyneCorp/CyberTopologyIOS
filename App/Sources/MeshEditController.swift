@@ -192,6 +192,13 @@ final class MeshEditController {
     var paintErasesStorage = false
     /// The paint brush switched between painting and erasing.
     var onPaintModeChanged: ((Bool) -> Void)?
+    /// The live box-selection rectangle, or nil when none is being dragged.
+    var onRegionBoxChanged: ((SelectionBox?) -> Void)?
+    /// The Target mesh for region selection, cached by the coordinator — reading it
+    /// from the document per use is what made painting lag by seconds.
+    var regionTargetProvider: (() -> Mesh?)?
+    /// First sample of the live box drag.
+    var regionBoxAnchor: StrokeSample?
     /// Injected haptic seam (task 3.7): nil = silent. Tests inject a
     /// recording fake; the coordinator installs the capability-gated
     /// `SnapHapticsEngine` (graceful no-op on simulator).
@@ -553,6 +560,12 @@ final class MeshEditController {
                     if context.snapper != nil {
                         toolStroke = ToolStroke(tool: tool, context: context)
                     }
+                } else if tool == .selectRegionBox {
+                    // Needs only a Target: the box selects its faces.
+                    if context.snapper != nil {
+                        toolStroke = ToolStroke(tool: tool, context: context)
+                        regionBoxAnchor = sample
+                    }
                 } else if tool == .paintRegion {
                     // Painting needs only a Target too, and it paints LIVE: the
                     // whole stroke is one undo step, so the history entry is taken
@@ -636,6 +649,14 @@ final class MeshEditController {
         // meant a long stroke was drawn blind (openspec improve-region-paint-ux).
         if let stroke = toolStroke, stroke.tool == .paintRegion {
             paintRegionSample(sample, in: stroke.context)
+            return
+        }
+        // The box is published live so the viewport can draw it; the selection
+        // itself lands at stroke end, when the box is final.
+        if let stroke = toolStroke, stroke.tool == .selectRegionBox,
+            let anchor = regionBoxAnchor
+        {
+            regionBoxDragged(stroke, first: anchor, current: sample)
             return
         }
         guard session != nil else { return }

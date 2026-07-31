@@ -504,6 +504,31 @@ struct DocumentEditorView: View {
             }
         )
         .clipShape(RoundedRectangle(cornerRadius: 16))
+        // The live selection box (openspec add-box-region-selection). A marquee with
+        // no visible rectangle is a drag into the void, so it is drawn while the
+        // gesture is in flight. `allowsHitTesting(false)`: this must never shield the
+        // MTKView from the very drag that is producing it.
+        .overlay {
+            GeometryReader { geometry in
+                if let box = inputModel.regionSelectionBox {
+                    let low = box.minimum
+                    let size = box.size
+                    Rectangle()
+                        .strokeBorder(.teal, style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                        .background(Color.teal.opacity(0.12))
+                        .frame(
+                            width: CGFloat(size.x) * geometry.size.width,
+                            height: CGFloat(size.y) * geometry.size.height
+                        )
+                        .offset(
+                            x: CGFloat(low.x) * geometry.size.width,
+                            y: CGFloat(low.y) * geometry.size.height
+                        )
+                        .accessibilityIdentifier("region-selection-box")
+                }
+            }
+            .allowsHitTesting(false)
+        }
         .overlay(alignment: .bottom) {
             // UI-test stroke injection (task 3.3): XCUITest cannot draw a
             // multi-segment single-touch polyline, so the end-to-end quad

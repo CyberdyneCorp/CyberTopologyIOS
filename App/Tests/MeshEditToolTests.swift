@@ -621,14 +621,16 @@ extension MeshEditToolTests {
     /// because the tool captures an INTENT rather than editing the document:
     ///
     /// - Guide (add-guide-stroke-authoring) captures steering hints.
-    /// - Paint Region (add-painted-region-retopo) marks where the next solve may
-    ///   work. Both are viewport intent, deliberately not journaled: the spec says
-    ///   the painted region is transient and cleared when a solve runs.
+    /// - Paint Region (add-painted-region-retopo) and Select Region Box
+    ///   (add-box-region-selection) mark where the next solve may work. All are
+    ///   viewport intent, deliberately not journaled: the region is transient, has
+    ///   its own undo history, and is cleared when a solve runs.
     /// Weave Fill is INCLUDED: its probe now taps and then accepts, so it journals
     /// like the rest. It was exempt while only capture existed (task 2.5) — the
     /// exemption is closed rather than left as a standing hole.
     @Test func visualVerificationProbesJournalEveryTool() throws {
-        for tool in RetopoTool.allCases where tool != .guide && tool != .paintRegion {
+        let intentOnly: Set<RetopoTool> = [.guide, .paintRegion, .selectRegionBox]
+        for tool in RetopoTool.allCases where !intentOnly.contains(tool) {
             let harness = try makeSeededHarness()
             let editor = try #require(harness.coordinator.inputModel.meshEditor)
             #expect(

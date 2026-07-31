@@ -217,8 +217,9 @@ struct ToolbarConfigurationTests {
         // content and a demo-media slot; an empty field here would render as a
         // blank help panel. The count is asserted deliberately: adding an action
         // without a gallery entry should FAIL here rather than ship a blank panel.
-        // +2 for add-painted-region-retopo: Paint region and its clear.
-        #expect(EditorAction.allCases.count == 50)
+        // +2 for add-painted-region-retopo (Paint region and its clear), +1 for
+        // add-box-region-selection (Select region box).
+        #expect(EditorAction.allCases.count == 51)
         for action in EditorAction.allCases {
             let entry = action.gallery
             #expect(!entry.title.isEmpty, "\(action) title")
