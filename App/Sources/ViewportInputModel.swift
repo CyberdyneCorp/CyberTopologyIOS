@@ -90,6 +90,23 @@ final class ViewportInputModel {
         snapHint = engaged ? "Merge" : nil
     }
 
+    /// Which scope a live Move drag picked up — "Vertex" / "Loop" / "Surface"
+    /// (openspec add-context-aware-move); nil when no Move drag is live.
+    private(set) var moveScopeHint: String?
+
+    /// Called by the viewport when a Move drag begins or ends.
+    func moveScopeChanged(_ scope: String?) {
+        moveScopeHint = scope
+    }
+
+    /// What the chip slot shows during a drag.
+    ///
+    /// A merge outranks the scope: both are true at once on a vertex drag held
+    /// over a neighbour, and "Merge" is the one that names an OUTCOME, while the
+    /// scope only names what is being carried. The scope reappears the moment
+    /// the drag leaves merge range.
+    var dragHint: String? { snapHint ?? moveScopeHint }
+
     private(set) var interpretationChip: InterpretationChipState.Chip?
     /// The pure chip state machine (unit-tested transitions).
     @ObservationIgnored private var chipMachine = InterpretationChipState()

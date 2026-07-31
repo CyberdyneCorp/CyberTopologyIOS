@@ -211,15 +211,24 @@ struct RegionWeaveSolverTests {
         return faces
     }
 
-    @Test("EngineRemeshSolver still rejects a sub-region — the split is deliberate")
-    func engineBackendStillRefusesRegions() throws {
+    /// WAS "EngineRemeshSolver still rejects a sub-region". It now carves the
+    /// source and remeshes the carve (openspec add-painted-region-retopo), which
+    /// is what lets Auto-Retopo work on a painted part of the Target. The SPLIT
+    /// this test named is still real — the prescribed-boundary region solve is a
+    /// different backend — but the engine backend no longer refuses a region.
+    ///
+    /// A modest budget on purpose: `SolverParameters()` is the engine's raw
+    /// 50 000-quad default, and this test took 156 seconds while it was passed
+    /// through unscaled.
+    @Test("EngineRemeshSolver carves a sub-region instead of refusing it", .timeLimit(.minutes(1)))
+    func engineBackendCarvesRegions() async throws {
         let source = try grid66()
-        #expect(throws: CyberKitError.self) {
-            _ = try EngineRemeshSolver().solve(
-                source: source, region: .faces(centreBlock), constraints: WeaveConstraints(),
-                params: SolverParameters(), onProgress: nil, isCancelled: { false }
-            )
-        }
+        let ghost = try EngineRemeshSolver().solve(
+            source: source, region: .faces(centreBlock), constraints: WeaveConstraints(),
+            params: .coarse, onProgress: nil, isCancelled: { false }
+        )
+        #expect(ghost != nil)
+        #expect(source.faceCount == 36, "the source is never modified by a solve")
     }
 
     @Test("CompositeWeaveSolver routes each region to its backend")

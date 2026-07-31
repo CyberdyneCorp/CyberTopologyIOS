@@ -162,12 +162,18 @@ struct MeshEditControllerTests {
     }
 
     /// Big flat Target at z = 0 (verbs anchor their brushes to it).
-    private func addPlaneTarget(to harness: Harness) throws {
+    ///
+    /// `halfSize` matters when a test asserts exact positions: snapping projects
+    /// onto the Target, so a cage vertex OUTSIDE its extent is clamped to the
+    /// nearest point on it. The 3x2 grid fixture reaches x = 6, past the default
+    /// ±5, which is enough to make a rigid move look non-rigid.
+    private func addPlaneTarget(to harness: Harness, halfSize: Float = 5) throws {
+        let s = halfSize
         let target = try meshFromOBJ("""
-        v -5 -5 0
-        v 5 -5 0
-        v 5 5 0
-        v -5 5 0
+        v \(-s) \(-s) 0
+        v \(s) \(-s) 0
+        v \(s) \(s) 0
+        v \(-s) \(s) 0
         f 1 2 3 4
         """)
         try harness.bundle.addObject(name: "target", role: .target, mesh: target)
@@ -374,30 +380,43 @@ struct MeshEditControllerTests {
 
     // MARK: - Move (geodesic falloff)
 
+    /// Surface scope: the drag starts in a FACE INTERIOR, away from every vertex
+    /// and edge.
+    ///
+    /// It used to start ON the vertex at (0,1). Since add-context-aware-move
+    /// that is vertex scope — one vertex, no falloff — so the start moved to the
+    /// interior of the quad it borders, which is what "started on a face" means
+    /// now. The falloff behaviour under test is unchanged.
     @Test func moveDragsWithGeodesicFalloffIgnoringDisconnectedComponent() throws {
         let harness = try Harness()
         try addPlaneTarget(to: harness)
         try addStripsEditMesh(to: harness)
 
-        // Drag the strip-A vertex at (0,1) — 0.2 away from strip B — along
-        // +x by 0.6 world units.
-        let grab = harness.screenPoint(of: SIMD3(0, 1, 0))
-        let drop = harness.screenPoint(of: SIMD3(0.6, 1, 0))
+        // (0.6, 0.55) sits inside the quad (0,0)-(1,1): 0.4 from the nearest
+        // edge and 0.6 from the nearest vertex (1,1), both outside the scope
+        // windows (0.35 and 0.3 of a 1-unit cell). Drag +x by 0.6.
+        let grab = harness.screenPoint(of: SIMD3(0.6, 0.55, 0))
+        let drop = harness.screenPoint(of: SIMD3(1.2, 0.55, 0))
         harness.stroke(verb: .move, through: [grab, drop])
 
         #expect(harness.bundle.journal.depth == 1)
+        guard case .meshEdit(let edit) = try #require(harness.committed.first) else {
+            Issue.record("expected a meshEdit command")
+            return
+        }
+        #expect(edit.verb == "move", "surface scope keeps the bare verb")
         let moved = try harness.editMesh()
-        // The seed followed the drag (full weight at zero geodesic
-        // distance)…
-        let seed = try #require(moved.nearestVertex(to: SIMD3(0.6, 1, 0), maxDistance: 0.1))
-        #expect(abs(seed.position.x - 0.6) < 1e-3)
-        // …its strip-A neighbor (the only vertex left on y == 1 between
-        // x 1 and 2) moved partially along the drag…
+        // The seed — the vertex at (1,1) — followed the drag in full (full
+        // weight at zero geodesic distance)…
+        let seed = try #require(moved.nearestVertex(to: SIMD3(1.6, 1, 0), maxDistance: 0.1))
+        #expect(abs(seed.position.x - 1.6) < 1e-3)
+        // …its strip-A neighbor at (2,1) moved PARTIALLY along the drag, which
+        // is the falloff this test exists for…
         let positions = allPositions(of: moved)
         let neighbor = try #require(positions.first {
-            abs($0.y - 1) < 1e-3 && $0.x > 1.05 && $0.x < 1.7
+            abs($0.y - 1) < 1e-3 && $0.x > 2.0 && $0.x < 2.6
         })
-        #expect(neighbor.x > 1.05)
+        #expect(neighbor.x > 2.0)
         // …and the whole Euclidean-close strip B stayed bit-exact (spec
         // scenario "Geodesic Move falloff"), starting with the vertex only
         // 0.2 away from the seed.
@@ -410,6 +429,344 @@ struct MeshEditControllerTests {
                 #expect(pick.position == expected)
             }
         }
+    }
+
+    // MARK: - Move scope (openspec add-context-aware-move)
+
+    /// Started ON a vertex: that vertex and NOTHING else. This is the assertion
+    /// that fails before the change — the falloff always carried the neighbours.
+    @Test func moveFromAVertexMovesThatVertexAlone() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        try addGridEditMesh(to: harness)
+        let before = allPositions(of: try harness.editMesh())
+
+        let grab = harness.screenPoint(of: SIMD3(2, 2, 0))
+        let drop = harness.screenPoint(of: SIMD3(2.5, 2, 0))
+        harness.stroke(verb: .move, through: [grab, drop])
+
+        guard case .meshEdit(let edit) = try #require(harness.committed.first) else {
+            Issue.record("expected a meshEdit command")
+            return
+        }
+        #expect(edit.verb == "move.vertex")
+        let after = allPositions(of: try harness.editMesh())
+        #expect(after.count == before.count)
+        let moved = Set(after).subtracting(before)
+        #expect(moved.count == 1, "moved \(moved.count) vertices, expected exactly 1")
+        let landed = try #require(moved.first)
+        #expect(abs(landed.x - 2.5) < 1e-3 && abs(landed.y - 2) < 1e-3)
+        // Every neighbour of the grabbed vertex is bit-exact.
+        for neighbour in [SIMD3<Float>(0, 2, 0), SIMD3(4, 2, 0), SIMD3(2, 0, 0), SIMD3(2, 4, 0)] {
+            #expect(before.contains(neighbour) && after.contains(neighbour), "\(neighbour) moved")
+        }
+    }
+
+    /// Started ON an edge: the whole loop, rigidly.
+    @Test func moveFromAnEdgeMovesTheWholeLoopRigidly() throws {
+        let harness = try Harness()
+        // Wide enough to cover the grid's x = 6 column: on the default ±5
+        // Target the snapper clamps that vertex to x = 5, and a rigid move
+        // reads as a sheared one.
+        try addPlaneTarget(to: harness, halfSize: 10)
+        try addGridEditMesh(to: harness)
+        let before = allPositions(of: try harness.editMesh())
+
+        // (1,2) is the midpoint of the edge (0,2)-(2,2): 1 unit from either
+        // vertex (window 0.6 of a 2-unit cell) and 0 from the edge.
+        let grab = harness.screenPoint(of: SIMD3(1, 2, 0))
+        let drop = harness.screenPoint(of: SIMD3(1, 2.5, 0))
+        harness.stroke(verb: .move, through: [grab, drop])
+
+        guard case .meshEdit(let edit) = try #require(harness.committed.first) else {
+            Issue.record("expected a meshEdit command")
+            return
+        }
+        #expect(edit.verb == "move.loop")
+        let after = allPositions(of: try harness.editMesh())
+        // The whole middle row moved together, by the same amount…
+        for x in [Float(0), 2, 4, 6] {
+            #expect(
+                after.contains { abs($0.x - x) < 1e-3 && abs($0.y - 2.5) < 1e-3 },
+                """
+                the loop vertex at (\(x),2) did not arrive at y 2.5
+                after: \(after.sorted { ($0.y, $0.x) < ($1.y, $1.x) })
+                """
+            )
+        }
+        // …and the rows above and below did not move at all.
+        for x in [Float(0), 2, 4, 6] {
+            for y in [Float(0), 4] {
+                let expected = SIMD3(x, y, 0)
+                #expect(before.contains(expected) && after.contains(expected))
+            }
+        }
+    }
+
+    /// A loop drag never merges, however close it lands: the release would
+    /// decide a merge for every vertex at once.
+    @Test func aDraggedLoopNeverMerges() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        try addGridEditMesh(to: harness)
+        let probe = SnapProbe(harness)
+        let countBefore = try harness.editMesh().vertexCount
+
+        // Drag the middle row (y = 2) down to y = 0.5 — half a cell from the
+        // bottom row, well inside the 0.6 merge range a vertex drag would use.
+        let grab = harness.screenPoint(of: SIMD3(1, 2, 0))
+        let drop = harness.screenPoint(of: SIMD3(1, 0.5, 0))
+        harness.stroke(verb: .move, through: [grab, drop])
+
+        guard case .meshEdit(let edit) = try #require(harness.committed.first) else {
+            Issue.record("expected a meshEdit command")
+            return
+        }
+        #expect(edit.verb == "move.loop", "a loop drag must never gain .mergeSnap")
+        #expect(try harness.editMesh().vertexCount == countBefore)
+        #expect(
+            probe.highlights.compactMap { $0 }.isEmpty,
+            "a loop drag must not offer a merge candidate to highlight"
+        )
+    }
+
+    /// The scope is decided once. Passing over an edge mid-drag must not turn a
+    /// vertex drag into a loop drag.
+    @Test func theScopeSurvivesTheDrag() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        try addGridEditMesh(to: harness)
+        let before = allPositions(of: try harness.editMesh())
+
+        // Start on the vertex (2,2), pass through (2,3) — the midpoint of the
+        // edge above, which would resolve to loop scope on its own — and release
+        // at (2,3.2), which is 0.8 from the vertex at (2,4): outside the 0.6
+        // merge range, so this tests the SCOPE and not the merge.
+        harness.stroke(verb: .move, through: [
+            harness.screenPoint(of: SIMD3(2, 2, 0)),
+            harness.screenPoint(of: SIMD3(2, 3, 0)),
+            harness.screenPoint(of: SIMD3(2, 3.2, 0)),
+        ])
+
+        guard case .meshEdit(let edit) = try #require(harness.committed.first) else {
+            Issue.record("expected a meshEdit command")
+            return
+        }
+        #expect(edit.verb == "move.vertex", "the drag changed scope under the finger")
+        let after = allPositions(of: try harness.editMesh())
+        #expect(Set(after).subtracting(before).count == 1)
+    }
+
+    /// A pinned vertex inside a dragged loop holds, and the rest of the loop
+    /// still moves — the shear documented in the design, not a refused drag.
+    @Test func aPinnedVertexInsideADraggedLoopHolds() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        try addGridEditMesh(to: harness)
+        let mesh = try harness.editMesh()
+        let pinned = try #require(mesh.nearestVertex(to: SIMD3(0, 2, 0), maxDistance: 1e-3))
+        let index = try #require(
+            harness.bundle.manifest.objects.firstIndex { $0.role == .editMesh }
+        )
+        harness.bundle.manifest.objects[index].annotations =
+            MeshAnnotations(pinnedVertices: [pinned.vertex])
+        harness.sync()
+
+        harness.stroke(verb: .move, through: [
+            harness.screenPoint(of: SIMD3(1, 2, 0)),
+            harness.screenPoint(of: SIMD3(1, 2.5, 0)),
+        ])
+
+        let after = allPositions(of: try harness.editMesh())
+        #expect(
+            after.contains(SIMD3(0, 2, 0)), "the pinned loop vertex was displaced"
+        )
+        #expect(
+            after.contains { abs($0.x - 2) < 1e-3 && abs($0.y - 2.5) < 1e-3 },
+            "the unpinned rest of the loop did not move"
+        )
+    }
+
+    // MARK: - Move scope resolution (pure)
+
+    /// The windows are fractions of the LOCAL CELL, so the same gesture picks
+    /// the same thing on cages of different density. A scene-relative window has
+    /// been the defect four times in this line of work.
+    @Test func theScopeIsTheSameOnACoarseAndAFineCage() throws {
+        func grid(cell: Float) throws -> Mesh {
+            var obj = ""
+            for row in 0...2 {
+                for col in 0...2 { obj += "v \(Float(col) * cell) \(Float(row) * cell) 0\n" }
+            }
+            for row in 0..<2 {
+                for col in 0..<2 {
+                    let a = row * 3 + col + 1
+                    obj += "f \(a) \(a + 1) \(a + 4) \(a + 3)\n"
+                }
+            }
+            return try meshFromOBJ(obj)
+        }
+        // The same OFFSETS, expressed as fractions of each cage's own cell.
+        for cell in [Float(1), 0.25, 8] {
+            let mesh = try grid(cell: cell)
+            let scene = cell * 20  // a scene far bigger than the cage, as on device
+            let onVertex = MeshEditController.resolveMoveScope(
+                at: SIMD3(cell * 0.1, 0, 0), in: mesh, sceneRadius: scene
+            )
+            let onEdge = MeshEditController.resolveMoveScope(
+                at: SIMD3(cell * 0.5, 0, 0), in: mesh, sceneRadius: scene
+            )
+            guard case .vertex = try #require(onVertex) else {
+                Issue.record("cell \(cell): 0.1 of a cell from a vertex is not vertex scope")
+                return
+            }
+            guard case .loop = try #require(onEdge) else {
+                Issue.record("cell \(cell): the middle of an edge is not loop scope")
+                return
+            }
+        }
+    }
+
+    /// Reported from device: starting a Move on a face stopped stretching the
+    /// patch. The edge window was eating the face.
+    ///
+    /// A TRIANGLE is the extreme case. Its farthest interior point from any edge
+    /// is the incenter, and for a right-isoceles triangle (what a triangulated
+    /// quad gives) that is only ~0.26 of the mean edge length. An edge window of
+    /// 0.35 therefore covers the WHOLE triangle: surface scope was unreachable
+    /// inside one, at any touch position.
+    @Test func theInteriorOfATriangleResolvesToSurfaceScope() throws {
+        let mesh = try meshFromOBJ("""
+        v 0 0 0
+        v 1 0 0
+        v 0 1 0
+        f 1 2 3
+        """)
+        // The incenter: 0.293 from all three edges, 0.414 from the nearest
+        // vertex — as far from an edge as a point in this triangle can be.
+        let scope = MeshEditController.resolveMoveScope(
+            at: SIMD3(0.293, 0.293, 0), in: mesh, sceneRadius: 10
+        )
+        guard case .surface = try #require(scope) else {
+            Issue.record(
+                "the middle of a triangle must be surface scope, got \(String(describing: scope))"
+            )
+            return
+        }
+    }
+
+    /// The face interior is the DEFAULT gesture, so it has to be the dominant
+    /// region of a cell — not a pinhole at the exact centre. This is the
+    /// property that broke on device: at a 0.35 edge window only the inner 9%
+    /// of a square cell resolved to surface.
+    @Test func mostOfAQuadsInteriorResolvesToSurfaceScope() throws {
+        let mesh = try meshFromOBJ("""
+        v 0 0 0
+        v 1 0 0
+        v 1 1 0
+        v 0 1 0
+        f 1 2 3 4
+        """)
+        var surface = 0
+        var sampled = 0
+        for row in 1..<10 {
+            for column in 1..<10 {
+                sampled += 1
+                let hit = SIMD3(Float(column) / 10, Float(row) / 10, 0)
+                if case .surface = MeshEditController.resolveMoveScope(
+                    at: hit, in: mesh, sceneRadius: 10
+                ) {
+                    surface += 1
+                }
+            }
+        }
+        let share = Double(surface) / Double(sampled)
+        #expect(
+            share >= 0.4,
+            """
+            only \(Int(share * 100))% of the cell's interior is surface scope — \
+            the artist has to hit a pinhole to stretch a patch
+            """
+        )
+    }
+
+    /// The counterweight to the test above: shrinking the edge window must not
+    /// put edge scope out of reach for someone aiming at an edge.
+    @Test func aTouchAimedAtAnEdgeStillResolvesToLoopScope() throws {
+        let mesh = try meshFromOBJ("""
+        v 0 0 0
+        v 1 0 0
+        v 2 0 0
+        v 0 1 0
+        v 1 1 0
+        v 2 1 0
+        v 0 2 0
+        v 1 2 0
+        v 2 2 0
+        f 1 2 5 4
+        f 2 3 6 5
+        f 4 5 8 7
+        f 5 6 9 8
+        """)
+        // A tenth of a cell off the middle of the interior edge (0,1)-(1,1).
+        let scope = MeshEditController.resolveMoveScope(
+            at: SIMD3(0.5, 1.1, 0), in: mesh, sceneRadius: 10
+        )
+        guard case .loop = try #require(scope) else {
+            Issue.record("aiming at an edge must still grab its loop")
+            return
+        }
+    }
+
+    /// A cell that cannot be measured must not make every scope unreachable.
+    /// The answer is vertex scope — NOT a scene-derived floor under the windows,
+    /// which would win on any cage smaller than the scene and reinstate exactly
+    /// the scene-relative behavior these windows exist to remove.
+    @Test func anUnmeasurableCellResolvesToVertexScope() throws {
+        // Two coincident vertices: the edge between them has zero length, so
+        // there is no cell to measure.
+        let mesh = try meshFromOBJ("""
+        v 0 0 0
+        v 0 0 0
+        v 1 0 0
+        f 1 2 3
+        """)
+        let scope = MeshEditController.resolveMoveScope(
+            at: SIMD3(0, 0, 0), in: mesh, sceneRadius: 10
+        )
+        guard case .vertex = try #require(scope, "an unmeasurable cell left the drag inert")
+        else {
+            Issue.record("expected vertex scope, got \(String(describing: scope))")
+            return
+        }
+    }
+
+    /// An edge whose loop cannot be walked still moves something: the drag
+    /// visibly grabbed an edge, so being inert would be the wrong answer.
+    @Test func anUnwalkableLoopDegradesToTheEdgeItself() throws {
+        // A lone triangle: every vertex is on the boundary, so the loop walk
+        // stops immediately.
+        let mesh = try meshFromOBJ("""
+        v 0 0 0
+        v 1 0 0
+        v 0 1 0
+        f 1 2 3
+        """)
+        let edge = try #require(mesh.nearestEdge(to: SIMD3(0.5, 0, 0), maxDistance: 0.1))
+        try #require(
+            mesh.edgeLoopVertices(from: edge.edge).count < 3,
+            "fixture no longer exercises the degradation — pick another"
+        )
+
+        let scope = MeshEditController.resolveMoveScope(
+            at: SIMD3(0.5, 0, 0), in: mesh, sceneRadius: 10
+        )
+        guard case .loop(let vertices, _, _) = try #require(scope) else {
+            Issue.record("expected the edge to still resolve to a movable set")
+            return
+        }
+        let ends = try #require(mesh.edgeEndpoints(of: edge.edge))
+        #expect(Set(vertices) == Set([ends.0, ends.1]))
     }
 
     /// x,y,z of every live vertex (walks stable engine ids).
@@ -1682,7 +2039,9 @@ struct MeshEditControllerTests {
             Issue.record("expected a meshEdit command")
             return
         }
-        #expect(edit.verb == "move.mergeSnap")
+        // Vertex scope, because the drag started ON the vertex — and vertex
+        // scope still merges on release.
+        #expect(edit.verb == "move.vertex.mergeSnap")
         let moved = try harness.editMesh()
         // ONE vertex where there were two: the seed was absorbed, not parked on
         // top of the target.

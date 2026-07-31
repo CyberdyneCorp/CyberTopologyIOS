@@ -58,11 +58,15 @@ extension EditorAction {
             GalleryEntry(
                 title: "Move",
                 symbol: "arrow.up.and.down.and.arrow.left.and.right",
-                gesture: "Verb — drag a vertex; falloff follows the surface",
-                notes: "Drags vertices with geodesic falloff: influence "
-                    + "travels along the connected surface, never jumping "
-                    + "across gaps to disconnected parts. Dropping onto a "
-                    + "nearby vertex snaps the position onto it.",
+                gesture: "Verb — drag; what you start on decides what moves",
+                notes: "Start on a vertex to move that vertex alone; start on "
+                    + "an edge to move its whole loop, rigidly; start anywhere "
+                    + "else on a face to drag the region with geodesic "
+                    + "falloff — influence travels along the connected "
+                    + "surface, never jumping across gaps to disconnected "
+                    + "parts. The viewport names the scope while you drag. "
+                    + "Dropping a single vertex within merge range of another "
+                    + "merges the two; a loop never merges.",
                 demoFrames: [
                     "arrow.up.and.down.and.arrow.left.and.right",
                     "dot.circle.and.hand.point.up.left.fill",
@@ -486,6 +490,31 @@ extension EditorAction {
                     + "because you generally want to see what you are "
                     + "protecting. Painting the same faces again thaws them.",
                 demoFrames: ["snowflake", "square.grid.2x2"]
+            )
+        case .paintRegion:
+            GalleryEntry(
+                title: "Paint region",
+                symbol: "paintbrush.pointed",
+                gesture: "Tool — paint the part of the Target to retopologize",
+                notes: "Auto-Retopo normally remeshes the whole Target. Paint a "
+                    + "region first and it solves only that part, at a quad "
+                    + "budget scaled to how much you painted, then MERGES the "
+                    + "patch into your existing cage — the topology you built by "
+                    + "hand is untouched. The patch's border sits on the cage "
+                    + "without being welded, so join it with Merge Pair or a "
+                    + "vertex drag when you want it sealed. The paint clears "
+                    + "each time you run, so a stale area never shapes the next "
+                    + "solve.",
+                demoFrames: ["paintbrush.pointed", "square.grid.3x3", "checkmark.circle"]
+            )
+        case .clearPaintedRegion:
+            GalleryEntry(
+                title: "Clear painted region",
+                symbol: "paintbrush.pointed.fill",
+                gesture: "Command — discards the painted region",
+                notes: "Empties the painted region without running a solve. "
+                    + "Painting is not journaled, so this is not an undo step.",
+                demoFrames: ["paintbrush.pointed.fill", "paintbrush.pointed"]
             )
         case .unwrapUVs:
             GalleryEntry(

@@ -86,6 +86,10 @@ extension MetalViewport.Coordinator {
             syncAutoRetopoGhostState()
             return false
         }
+        // Remembered because ACCEPT behaves differently for a region patch: it
+        // merges into the existing cage instead of replacing it (openspec
+        // add-painted-region-retopo).
+        autoRetopoGhostIsRegional = { if case .faces = region { return true } else { return false } }()
         autoRetopoGhost = SolverGhost(
             mesh: ghostMesh,
             addedFaces: ghostMesh.liveFaceIDs(),
@@ -171,10 +175,20 @@ extension MetalViewport.Coordinator {
     @discardableResult
     func acceptAutoRetopo() -> Bool {
         guard let ghost = autoRetopoGhost, let bundle = bundleProvider?() else { return false }
-        guard let command = try? bundle.objectCommand(
-            for: ghost.mesh, name: Self.acceptedEditMeshName(in: bundle),
-            role: .editMesh, verb: "autoRetopo.accept"
-        ) else { return false }
+        // A REGION patch merges into the cage the artist is building; a whole-mesh
+        // solve replaces it, as before. Merging keeps one cage, which is what
+        // filling a hole in one means (spec: "An accepted region patch merges into
+        // the existing cage"). With no cage yet, the patch simply becomes it.
+        let command: DocumentCommand?
+        if autoRetopoGhostIsRegional, let merge = Self.mergeCommand(ghost.mesh, into: bundle) {
+            command = merge
+        } else {
+            command = try? bundle.objectCommand(
+                for: ghost.mesh, name: Self.acceptedEditMeshName(in: bundle),
+                role: .editMesh, verb: "autoRetopo.accept"
+            )
+        }
+        guard let command else { return false }
         autoRetopoGhost = nil
         weaveFillBasePayload = nil
         syncAutoRetopoGhostState()
@@ -223,11 +237,30 @@ extension MetalViewport.Coordinator {
     /// it. Caught by the fill UI test, whose row identifier is derived from the name.
     /// (The object's UUID still changes, and with it every face id; that is the
     /// separate sharp edge documented on `acceptAutoRetopo`.)
+    /// Appends `patch` to the document's existing EditMesh as ONE journaled
+    /// entry, or nil when there is no cage to merge into (the caller then falls
+    /// back to creating one).
+    ///
+    /// The patch's border is NOT welded to the cage: coincident vertices stay
+    /// separate until the artist merges them deliberately. A silent weld would
+    /// move hand-placed vertices without being asked.
+    static func mergeCommand(_ patch: Mesh, into bundle: DocumentBundle) -> DocumentCommand? {
+        guard let object = bundle.manifest.objects.first(where: { $0.role == .editMesh }),
+            let payload = bundle.payloads[object.payloadFile],
+            let cage = try? bundle.mesh(for: object)
+        else { return nil }
+        let transaction = MeshEditTransaction(
+            object: object, mesh: cage, currentPayload: payload
+        )
+        guard (try? cage.append(patch)) != nil else { return nil }
+        return try? transaction.command(verb: "autoRetopo.acceptRegion")
+    }
+
     static func acceptedEditMeshName(in bundle: DocumentBundle) -> String {
         bundle.manifest.objects.first { $0.role == .editMesh }?.name ?? "EditMesh"
     }
 
-    private func currentTargetMesh() -> Mesh? {
+    func currentTargetMesh() -> Mesh? {
         guard let bundle = bundleProvider?() else { return nil }
         guard let target = bundle.manifest.objects.first(where: { $0.role == .target }) else {
             return nil

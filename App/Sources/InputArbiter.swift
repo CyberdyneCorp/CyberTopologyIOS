@@ -197,6 +197,49 @@ struct InputArbiter {
         return touch.role == .authoring ? [.cancelStroke(id)] : []
     }
 
+    /// The touch sequence ended: nothing is on the glass any more, so anything
+    /// still tracked was never released and must be dropped (openspec
+    /// fix-lost-finger-navigation).
+    ///
+    /// WHY THIS EXISTS. Entries leave `touches` only through `touchEnded` /
+    /// `touchCancelled`, both driven by UIKit callbacks. A single touch whose
+    /// end never arrives is therefore permanent — and two of them make
+    /// `allowsCameraTouch` refuse every finger for the rest of the session,
+    /// which is precisely the reported failure: orbit, pinch and pan die while
+    /// the toolbar (SwiftUI, outside the viewport) and the pen (gated only by
+    /// `penStrokeTouch`) carry on. There was no path back short of relaunching.
+    ///
+    /// Returns the decisions the leak owed: an authoring stroke whose touch has
+    /// vanished must be CANCELLED, not left half-open, because no end can ever
+    /// come for it.
+    mutating func allTouchesFinished() -> [Decision] {
+        guard !touches.isEmpty else { return [] }
+        var decisions: [Decision] = []
+        for (id, touch) in touches where touch.role == .authoring {
+            decisions.append(.cancelStroke(id))
+        }
+        touches.removeAll()
+        penStrokeTouch = nil
+        return decisions
+    }
+
+    /// Drops touches the UIKit layer has determined are no longer on the glass,
+    /// cancelling any authoring stroke among them.
+    ///
+    /// The companion to `allTouchesFinished` for the case that actually bites: a
+    /// touch whose end was never delivered, while OTHER touches are still live.
+    /// `UITouch.phase` is authoritative — UIKit updates it on the object whether
+    /// or not our callback runs — so the layer above can name the dead ones.
+    mutating func forget(_ ids: [TouchID]) -> [Decision] {
+        var decisions: [Decision] = []
+        for id in ids {
+            guard let touch = touches.removeValue(forKey: id) else { continue }
+            clearStrokePointer(id)
+            if touch.role == .authoring { decisions.append(.cancelStroke(id)) }
+        }
+        return decisions
+    }
+
     // MARK: - Recognizer gating (queried from `shouldReceive touch`)
 
     /// May a camera recognizer receive this touch? Pencil never drives the

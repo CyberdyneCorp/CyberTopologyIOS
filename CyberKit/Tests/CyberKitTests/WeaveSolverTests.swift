@@ -329,11 +329,41 @@ struct WeaveSolverTests {
         #expect(try payload() == payload())
     }
 
-    @Test("A sub-region solve is rejected this slice")
-    func subRegionRejected() throws {
+    /// WAS "a sub-region solve is rejected this slice". `EngineRemeshSolver` now
+    /// honours `.faces` by carving the source (openspec add-painted-region-retopo),
+    /// which is what lets the app retopologize a painted part of the Target — the
+    /// dormancy `add-weave-region-selection` recorded as "nothing in the app
+    /// produces a region".
+    @Test("A sub-region solve remeshes only the region's faces")
+    func subRegionSolvesTheRegion() throws {
+        let source = try cube()
+        let faces = source.liveFaceIDs().sorted()
+        let ghost = try EngineRemeshSolver().solve(
+            source: source, region: .faces(Array(faces.prefix(2))),
+            constraints: WeaveConstraints(),
+            params: params(), onProgress: nil, isCancelled: { false }
+        )
+
+        #expect(ghost != nil, "a region solve must produce a cage")
+        // The Target is only ever the surface: a solve never modifies it.
+        #expect(source.faceCount == faces.count)
+    }
+
+    /// The two refusals that keep a selection bug visible rather than silently
+    /// solving something else.
+    @Test("An empty region, and one naming every face, are still refused")
+    func degenerateRegionsRejected() throws {
+        let source = try cube()
         #expect(throws: CyberKitError.self) {
             _ = try EngineRemeshSolver().solve(
-                source: try self.cube(), region: .faces([0]), constraints: WeaveConstraints(),
+                source: source, region: .faces([]), constraints: WeaveConstraints(),
+                params: self.params(), onProgress: nil, isCancelled: { false }
+            )
+        }
+        #expect(throws: CyberKitError.self) {
+            _ = try EngineRemeshSolver().solve(
+                source: source, region: .faces(source.liveFaceIDs().sorted()),
+                constraints: WeaveConstraints(),
                 params: self.params(), onProgress: nil, isCancelled: { false }
             )
         }

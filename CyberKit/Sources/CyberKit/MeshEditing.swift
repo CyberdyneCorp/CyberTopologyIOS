@@ -64,6 +64,45 @@ extension Mesh {
         }
     }
 
+    /// Rigid move: displaces every listed vertex by the SAME `displacement`,
+    /// reprojecting each onto the Target when a snapper is given. Returns how
+    /// many vertices actually moved.
+    ///
+    /// This is the loop-scope Move (openspec add-context-aware-move; spec:
+    /// pencil-interaction / "An edge loop moves rigidly"). Rigid, not
+    /// falloff-weighted: a loop's value in a cage is its SHAPE, so a drag has to
+    /// carry it as a unit — bending it from the grab point is a sculpting
+    /// gesture, not a retopology one.
+    ///
+    /// Pinned vertices are skipped, per "Pinned vertices SHALL NOT be displaced
+    /// by Move". A pinned vertex inside a dragged loop therefore SHEARS that
+    /// loop rather than blocking the drag: the alternatives are refusing the
+    /// gesture (which makes pins a trap) or moving the pin (which breaks the
+    /// invariant pins exist to state).
+    ///
+    /// Dead ids are skipped rather than throwing — a caller holding a loop
+    /// walked before an edit is not a programming error.
+    ///
+    /// Every position is read BEFORE anything moves, so the result cannot
+    /// depend on the order the ids arrive in.
+    @discardableResult
+    public func moveVertices(
+        _ vertices: [UInt32], by displacement: SIMD3<Float>,
+        pinned: [UInt32] = [], snapping snapper: SurfaceSnapper? = nil
+    ) throws -> Int {
+        let held = Set(pinned)
+        let targets: [(UInt32, SIMD3<Float>)] = vertices.compactMap { vertex in
+            guard !held.contains(vertex), let position = vertexPosition(vertex) else {
+                return nil
+            }
+            return (vertex, position + displacement)
+        }
+        for (vertex, target) in targets {
+            try tweakVertex(vertex, to: target, snapping: snapper)
+        }
+        return targets.count
+    }
+
     /// Relax: tangential Laplacian smoothing inside the brush (`radius` <= 0
     /// relaxes the whole mesh). Explicit pins are honored; `autoPinCorners`
     /// additionally pins low-valence grid corners so regular patch shapes

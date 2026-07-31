@@ -9,11 +9,16 @@ import simd
 // devices) hovering previews what a stroke or tap at that location would do,
 // BEFORE contact and WITHOUT modifying the mesh:
 //
+//   - vertex               → snap-target vertex highlight (yellow),
+//   - edge                 → the edge loop a drag would carry (red),
+//   - face                 → the face a surface drag would stretch, filled
+//                            (pink),
 //   - empty surface        → ghost quad hint at the snap position (rendered
-//                            through the task-2.4 ghost pipeline),
-//   - interior edge        → the edge loop a double-tap would slide,
-//                            highlighted over the wireframe,
-//   - near-merge vertex    → snap-target vertex highlight.
+//                            through the task-2.4 ghost pipeline).
+//
+// The first three are resolved by `MeshEditController.resolveMoveScope` — the
+// same function the drag uses to decide its scope — so the highlight always
+// predicts what a drag would grab (openspec add-hover-scope-highlight).
 //
 // Split exactly like the arbiter (design D5): `HoverPreviewState` is the
 // PURE policy (event in, preview out — headless unit tests inject events and
@@ -23,18 +28,22 @@ import simd
 // `MetalViewport.Coordinator`; actual hover event delivery is hardware-only
 // (device test plan, task 9.6).
 
-/// Answers the three hover queries at a normalized viewport point. The pure
-/// state machine consults them in priority order (vertex > loop > ghost)
+/// Answers the hover queries at a normalized viewport point. The pure state
+/// machine consults them in priority order (vertex > loop > face > ghost)
 /// and stops at the first hit, so implementations never pay for previews
 /// that lose the priority race. The production implementation is
 /// `EngineHoverQueries`; tests inject fakes.
 protocol HoverPreviewQuerying {
     /// EditMesh vertex within merge-snap range of the hover point, if any.
     func snapTargetVertex(at point: SIMD2<Float>) -> HoverPreviewState.SnapTarget?
-    /// The edge loop a double-tap at the hover point would slide: engine
-    /// edge ids of the loop through the INTERIOR edge under the point.
-    /// nil for no edge / a boundary edge (not slidable).
+    /// The edge loop a drag at the hover point would carry: engine edge ids
+    /// of the loop through the edge under the point, boundary edges
+    /// included. nil when no edge claims the point.
     func slideLoop(at point: SIMD2<Float>) -> [UInt32]?
+    /// Ring positions of the face under the hover point, when a drag there
+    /// would carry the SURFACE (no vertex or edge claims it). nil when the
+    /// point is not over a face.
+    func faceUnderPoint(at point: SIMD2<Float>) -> [SIMD3<Float>]?
     /// Ghost-quad corner positions ON the Target surface, when the point
     /// hovers over empty surface (no EditMesh element in reach).
     func ghostQuadCorners(at point: SIMD2<Float>) -> [SIMD3<Float>]?
@@ -54,18 +63,22 @@ struct HoverPreviewState: Equatable {
     enum Preview: Equatable {
         /// Empty surface: the quad a stroke would create, on the Target.
         case ghostQuad(corners: [SIMD3<Float>])
-        /// Interior edge: the loop a double-tap would slide (engine ids).
+        /// Edge under the pointer: the loop a drag would carry (engine ids).
         case loopHighlight(edges: [UInt32])
         /// Near-merge vertex: the snap target a drag/merge would commit to.
         case snapTarget(SnapTarget)
+        /// Face under the pointer: the ring a surface drag would stretch
+        /// (openspec add-hover-scope-highlight).
+        case faceHighlight(corners: [SIMD3<Float>])
     }
 
     private(set) var isHovering = false
     private(set) var preview: Preview?
 
     /// Hover entered or moved: resolves the preview for `point` in priority
-    /// order — snap vertex beats loop beats ghost quad (the closer the
-    /// element class, the more specific the action a tap would take).
+    /// order — snap vertex beats loop beats face beats ghost quad. This is the
+    /// order a Move drag resolves its scope in, so the highlight predicts the
+    /// drag; the ghost quad stays last, for empty surface only.
     /// Returns true when the published preview CHANGED (the caller only
     /// re-uploads render state on change).
     mutating func hoverChanged(
@@ -77,6 +90,8 @@ struct HoverPreviewState: Equatable {
             resolved = .snapTarget(snap)
         } else if let loop = queries.slideLoop(at: point) {
             resolved = .loopHighlight(edges: loop)
+        } else if let ring = queries.faceUnderPoint(at: point) {
+            resolved = .faceHighlight(corners: ring)
         } else if let corners = queries.ghostQuadCorners(at: point) {
             resolved = .ghostQuad(corners: corners)
         } else {
@@ -126,8 +141,21 @@ struct HoverRenderState: Equatable {
         var isEmpty: Bool { segments.isEmpty && points.isEmpty }
     }
 
+    /// Which element this state describes, so the renderer can colour it
+    /// (openspec add-hover-scope-highlight, design D5). The fill is shared by
+    /// the create hint and the face highlight, which need DIFFERENT styles —
+    /// amber and pulsing versus pink and constant — so the distinction has to
+    /// travel with the geometry.
+    enum Element: Equatable {
+        case vertex
+        case loop
+        case face
+        case createHint
+    }
+
     var ghost: GhostQuad?
     var highlight: Highlight?
+    var element: Element?
 
     static let empty = HoverRenderState()
 
@@ -154,17 +182,28 @@ enum HoverPreviewGeometry {
             return .empty
         case .ghostQuad(let corners):
             return HoverRenderState(
-                ghost: ghostQuad(corners: corners, facing: viewDirection)
+                ghost: ghostQuad(corners: corners, facing: viewDirection),
+                element: .createHint
             )
         case .loopHighlight(let edges):
             let highlight = loopHighlight(
                 edges: edges, edgeEndpoints: edgeEndpoints, vertexPosition: vertexPosition
             )
-            return HoverRenderState(highlight: highlight.isEmpty ? nil : highlight)
+            return HoverRenderState(
+                highlight: highlight.isEmpty ? nil : highlight, element: .loop
+            )
         case .snapTarget(let target):
-            return HoverRenderState(highlight: Highlight(
-                points: [target.position.x, target.position.y, target.position.z]
-            ))
+            return HoverRenderState(
+                highlight: Highlight(
+                    points: [target.position.x, target.position.y, target.position.z]
+                ),
+                element: .vertex
+            )
+        case .faceHighlight(let corners):
+            guard let fill = faceFill(corners: corners, facing: viewDirection) else {
+                return .empty
+            }
+            return HoverRenderState(ghost: fill, element: .face)
         }
     }
 
@@ -197,6 +236,51 @@ enum HoverPreviewGeometry {
         }
         return HoverRenderState.GhostQuad(
             positions: positions, normals: normals, indices: [0, 1, 2, 0, 2, 3]
+        )
+    }
+
+    /// Fan-triangulated fill over a face ring of 3 or more corners, with the
+    /// ring's plane normal on every vertex — the ghost pipeline's geometry
+    /// contract, generalised past the create hint's 4 corners (design D3).
+    ///
+    /// nil for a ring too short to have an interior, or a degenerate one whose
+    /// corners are collinear: no fill is a better answer than a malformed one.
+    static func faceFill(
+        corners: [SIMD3<Float>], facing viewDirection: SIMD3<Float>? = nil
+    ) -> HoverRenderState.GhostQuad? {
+        guard corners.count >= 3 else { return nil }
+        // The first non-degenerate corner triple decides the plane: a ring can
+        // start with a collinear run and still enclose an area.
+        var normal: SIMD3<Float>?
+        for index in 1..<(corners.count - 1) {
+            let cross = simd_cross(
+                corners[index] - corners[0], corners[index + 1] - corners[0]
+            )
+            let length = simd_length(cross)
+            if length.isFinite, length > .ulpOfOne {
+                normal = cross / length
+                break
+            }
+        }
+        guard var plane = normal else { return nil }
+        if let viewDirection, simd_dot(plane, viewDirection) > 0 {
+            plane = -plane
+        }
+        var positions: [Float] = []
+        var normals: [Float] = []
+        positions.reserveCapacity(corners.count * 3)
+        normals.reserveCapacity(corners.count * 3)
+        for corner in corners {
+            positions.append(contentsOf: [corner.x, corner.y, corner.z])
+            normals.append(contentsOf: [plane.x, plane.y, plane.z])
+        }
+        var indices: [UInt32] = []
+        indices.reserveCapacity((corners.count - 2) * 3)
+        for index in 1..<(corners.count - 1) {
+            indices.append(contentsOf: [0, UInt32(index), UInt32(index + 1)])
+        }
+        return HoverRenderState.GhostQuad(
+            positions: positions, normals: normals, indices: indices
         )
     }
 
@@ -236,33 +320,61 @@ struct EngineHoverQueries: HoverPreviewQuerying {
     /// Ghost-quad half extent in normalized viewport units.
     let ghostHalfExtent: Float
 
-    func snapTargetVertex(at point: SIMD2<Float>) -> HoverPreviewState.SnapTarget? {
-        guard
-            let mesh = context.editMesh,
-            let hit = surfaceHit(at: point),
-            let pick = mesh.nearestVertex(to: hit.point, maxDistance: vertexRadius)
-        else { return nil }
-        return HoverPreviewState.SnapTarget(vertex: pick.vertex, position: pick.position)
+    /// What a Move drag started here would carry (openspec
+    /// add-hover-scope-highlight, design D1).
+    ///
+    /// The preview's whole job is to predict the drag, so it asks the SAME
+    /// function the drag asks. Hover used to measure its own windows —
+    /// `0.05`/`0.07 × sceneRadius` against the drag's `0.25`/`0.15` of a CELL,
+    /// which on a 1-unit cage in a scene of radius 7 is 0.49 against 0.15 for an
+    /// edge. Two rules cannot be held in agreement by intention.
+    private func scope(at point: SIMD2<Float>) -> MeshEditController.MoveScope? {
+        guard let mesh = context.editMesh, let hit = surfaceHit(at: point) else { return nil }
+        return MeshEditController.resolveMoveScope(
+            at: hit.point, in: mesh, sceneRadius: context.sceneRadius
+        )
     }
 
+    func snapTargetVertex(at point: SIMD2<Float>) -> HoverPreviewState.SnapTarget? {
+        guard case .vertex(let vertex) = scope(at: point),
+            let position = context.editMesh?.vertexPosition(vertex)
+        else { return nil }
+        return HoverPreviewState.SnapTarget(vertex: vertex, position: position)
+    }
+
+    /// The loop under the point — INCLUDING on a boundary edge, which this query
+    /// used to reject as "not slidable" (D4). The preview answers "what would a
+    /// drag grab", and a drag does grab a boundary edge, degrading to that
+    /// edge's own vertices. Whether a double-tap may SLIDE it is a separate rule
+    /// this does not touch.
     func slideLoop(at point: SIMD2<Float>) -> [UInt32]? {
-        guard
+        guard case .loop(_, let edge, _) = scope(at: point), let mesh = context.editMesh else {
+            return nil
+        }
+        let loop = mesh.edgeLoop(from: edge)
+        // A loop that cannot be walked still has the picked edge itself, which
+        // is exactly what the drag would move.
+        return loop.isEmpty ? [edge] : loop
+    }
+
+    func faceUnderPoint(at point: SIMD2<Float>) -> [SIMD3<Float>]? {
+        guard case .surface = scope(at: point),
             let mesh = context.editMesh,
             let hit = surfaceHit(at: point),
-            let pick = mesh.nearestEdge(to: hit.point, maxDistance: edgeRadius),
-            mesh.isBoundaryEdge(pick.edge) == false
+            let face = mesh.nearestFace(to: hit.point, maxDistance: context.sceneRadius)
         else { return nil }
-        let loop = mesh.edgeLoop(from: pick.edge)
-        return loop.isEmpty ? nil : loop
+        let ring = mesh.faceVertices(face.face).compactMap { mesh.vertexPosition($0) }
+        return ring.count >= 3 ? ring : nil
     }
 
     func ghostQuadCorners(at point: SIMD2<Float>) -> [SIMD3<Float>]? {
         guard let snapper = context.snapper, let hit = surfaceHit(at: point) else {
             return nil
         }
-        // "Empty surface" only: near ANY EditMesh element (including
-        // boundary edges, which the slide-loop query deliberately rejects)
-        // a create hint would be misleading.
+        // "Empty surface" only: near ANY EditMesh element a create hint would
+        // be misleading. This keeps its own generous radii deliberately — the
+        // question here is "is there anything here at all", which is wider than
+        // "what would a drag grab".
         if let mesh = context.editMesh {
             if mesh.nearestVertex(to: hit.point, maxDistance: vertexRadius) != nil {
                 return nil

@@ -247,14 +247,29 @@ public struct EngineRemeshSolver: WeaveSolving {
         onProgress: ((SolverProgress) -> Void)?,
         isCancelled: () -> Bool
     ) throws -> SolverGhost? {
-        guard case .wholeMesh = region else {
-            // Sub-region solve is the constraint-aware backend's job; fail
-            // clearly so callers rely on `.wholeMesh` this slice.
-            throw CyberKitError(code: .invalidArgument, message: "EngineRemeshSolver supports only .wholeMesh")
-        }
+        // A region solve remeshes a CARVED COPY of the source: everything
+        // outside the region is deleted, and the existing whole-mesh remesher
+        // then produces a cage covering exactly the painted area, with its own
+        // open boundary (openspec add-painted-region-retopo).
+        //
+        // Carving rather than teaching the remesher about regions is what makes
+        // this need no engine change — and it is honest about the result: the
+        // solver genuinely sees a smaller model, so its density, boundaries and
+        // cancellation all behave exactly as they do for a whole mesh.
+        let carve = try Self.carved(source, to: region)
+        let source = carve.mesh
         // Density: the density constraint scales the edge length (finer edge →
         // smaller scale) on top of the params' quad budget.
         var remeshParams = params.remesh
+        // The quad budget follows the painted SHARE. A budget is a statement
+        // about the whole model ("about 1500 quads for this bunny"), so applying
+        // it unscaled to a patch asks for the entire model's topology inside one
+        // haunch: measured, a 12-face carve at the raw 50 000-quad default did
+        // not finish inside a minute. Painting a tenth of the Target now asks for
+        // about a tenth of the quads.
+        if carve.share < 1 {
+            remeshParams.targetQuads = max(4, Int((Float(remeshParams.targetQuads) * carve.share).rounded()))
+        }
         if let density = constraints.density {
             remeshParams.edgeScale = Self.edgeScale(for: density, base: remeshParams.edgeScale)
         }
@@ -323,6 +338,41 @@ public struct EngineRemeshSolver: WeaveSolving {
     /// Maps a density field's target edge length onto the remesher's edge scale:
     /// a finer edge shrinks the scale. Clamped to a sane range so a stray value
     /// cannot make the remesh degenerate or runaway.
+    /// The source restricted to `region`: a duplicate with every face outside
+    /// the region removed. `.wholeMesh` hands back the source untouched.
+    ///
+    /// Refuses an empty region and one naming every live face — the first has
+    /// nothing to solve, and the second is a whole-mesh solve wearing a disguise,
+    /// which would hide a selection bug rather than report it. Dead ids are
+    /// IGNORED: a Target can be reloaded under a stale selection, and that is not
+    /// worth failing a solve over.
+    /// A carved solve domain: the mesh to remesh, and what FRACTION of the
+    /// source's faces it kept (1 for a whole-mesh solve).
+    public struct Carve {
+        public let mesh: Mesh
+        public let share: Float
+    }
+
+    public static func carved(_ source: Mesh, to region: SolveRegion) throws -> Carve {
+        guard case .faces(let faces) = region else { return Carve(mesh: source, share: 1) }
+        let live = Set(source.liveFaceIDs())
+        let keep = Set(faces).intersection(live)
+        guard !keep.isEmpty else {
+            throw CyberKitError(
+                code: .invalidArgument, message: "the region names no live face of the Target"
+            )
+        }
+        guard keep.count < live.count else {
+            throw CyberKitError(
+                code: .invalidArgument,
+                message: "the region names every face — run a whole-mesh solve instead"
+            )
+        }
+        let carved = try source.duplicated()
+        try carved.deleteFaces(Array(live.subtracting(keep)))
+        return Carve(mesh: carved, share: Float(keep.count) / Float(live.count))
+    }
+
     private static func edgeScale(for density: DensityField, base: Float) -> Float {
         guard density.targetEdgeLength > 0 else { return base }
         return min(max(base * density.targetEdgeLength, 0.05), 100)
