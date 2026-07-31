@@ -127,14 +127,35 @@ struct PaintedRegionRetopoTests {
         let domain = try Mesh(payloadData: prepared.payload)
         #expect(domain.faceCount == 400)
         #expect(target.faceCount > 400, "the Target itself is never carved")
-        // …and the budget followed the painted share, so a patch is not asked for a
-        // whole model's worth of quads.
         #expect(
             abs(prepared.share - Float(400) / Float(target.faceCount)) < 1e-5,
             "share \(prepared.share) should be 400 of \(target.faceCount) faces"
         )
-        #expect(prepared.params.remesh.targetQuads < SolverParameters.medium.remesh.targetQuads)
-        #expect(prepared.params.remesh.targetQuads >= 4, "never zero quads")
+        // The requested count applies to the PATCH — scaling it by the share starved
+        // the solve and made the cage uneven (measured: 44 quads -> 15.4x area
+        // spread, 500 -> 2.9x). Capped at four quads per source triangle so a
+        // whole-model budget dropped on one ear cannot starve the machine.
+        #expect(prepared.params.remesh.targetQuads == 1500, "500 painted faces support 1500")
+        // …and the patch-specific quality policy is applied.
+        #expect(prepared.params.remesh.adaptivity == 0, "a patch wants an EVEN grid")
+        #expect(
+            prepared.params.remesh.holeFillMaxBoundary == 0,
+            "filling the region's own boundary seals the patch into a bubble"
+        )
+    }
+
+    /// The cap: a tiny paint cannot be handed a whole model's budget.
+    @Test func aTinyRegionCapsTheRequestedCount() throws {
+        let target = try Mesh.loadOBJ(at: MeshFixtureCorpus.stanfordBunnyURL())
+        let painted = Array(target.liveFaceIDs().sorted().prefix(10))
+
+        let prepared = try MetalViewport.Coordinator.prepare(
+            target: target, region: .faces(painted), params: .targetingQuads(50_000)
+        )
+
+        // Four quads per source triangle, not 50 000 — at the raw default a 12-face
+        // carve did not finish inside a minute.
+        #expect(prepared.params.remesh.targetQuads == 40)
     }
 
     @Test func aWholeMeshSolveIsPreparedUnchanged() throws {

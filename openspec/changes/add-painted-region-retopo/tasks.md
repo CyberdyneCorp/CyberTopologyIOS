@@ -66,6 +66,30 @@
       and it was no slower (1.15 s vs 3.85 s for quad-dominant).
 - [x] 8.3 `regionSolveReturnsPureQuads` guards it: zero triangles, zero n-gons.
 
+## 9. Device fix: the patch was uneven, and the count did not mean what it says
+
+Measured on a 440-face painted region of the bunny, quad areas as p90/p10:
+
+- [x] 9.1 `adaptivity = 0` for a patch. The engine default is fully curvature-adaptive,
+      right for a whole model and wrong for a painted region: **31.8x** size spread
+      versus 2.9x at 0. A painted region is a statement that this area is an even grid.
+- [x] 9.2 `holeFillMaxBoundary = 0` for a patch. The region's boundary IS the hole, so
+      filling it returned a SEALED bubble — zero boundary edges — which merges into a
+      cage as a closed shell instead of an open patch.
+- [x] 9.3 The requested count applies to the PATCH. Scaling by the painted share starved
+      the solve (500 asked over a 9% patch became 44), and starvation is what makes a
+      cage uneven: 44 -> 15.4x, 250 -> 5.4x, 400 -> 3.6x, 600 -> 2.9x. Capped at four
+      quads per source triangle so a whole-model budget on one ear cannot starve the
+      machine.
+- [x] 9.4 One policy, two callers: `EngineRemeshSolver.regionParameters` is applied both
+      by the solver (a direct `.faces` request) and by `prepare` (which carves on the
+      main actor and hands the boundary a whole mesh, so the solver can no longer tell).
+- [x] 9.5 `regionPatchIsEvenAndOpen` guards spread < 6x, an open boundary, and a
+      patch-sized face count; `aTinyRegionCapsTheRequestedCount` guards the cap.
+- [ ] 9.6 Boundary smoothing (morphological closing of the painted face set) was measured
+      and NOT adopted: once adaptivity and hole filling were right it changed the spread
+      from 2.9x to 3.2x. Left undone deliberately rather than carried as dead code.
+
 ## 6. Device verification
 
 - [x] 6.1 Ran on iPad Air 13-inch (M3): 1185 tests, passed.

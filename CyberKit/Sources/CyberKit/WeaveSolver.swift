@@ -286,7 +286,7 @@ public struct EngineRemeshSolver: WeaveSolving {
         // not finish inside a minute. Painting a tenth of the Target now asks for
         // about a tenth of the quads.
         if carve.share < 1 {
-            remeshParams.targetQuads = max(4, Int((Float(remeshParams.targetQuads) * carve.share).rounded()))
+            remeshParams = Self.regionParameters(remeshParams, carve: carve)
         }
         if let density = constraints.density {
             remeshParams.edgeScale = Self.edgeScale(for: density, base: remeshParams.edgeScale)
@@ -369,6 +369,38 @@ public struct EngineRemeshSolver: WeaveSolving {
     public struct Carve {
         public let mesh: Mesh
         public let share: Float
+    }
+
+    /// Remesh parameters for a PAINTED PATCH, as opposed to a whole model.
+    ///
+    /// Three engine defaults are wrong for a patch, each measured on a 440-face
+    /// painted region of the bunny (quad areas, p90 over p10):
+    ///
+    /// - `adaptivity = 1` (fully curvature-adaptive) is right for a whole model —
+    ///   quads follow the detail — and gave a **31.8x** size spread on a patch. At 0
+    ///   the same patch measures 2.9x. A painted region is a statement that this
+    ///   area should be an even grid.
+    /// - Hole filling SEALS the patch: the region's boundary IS the hole, so filling
+    ///   it returned a closed bubble with ZERO boundary edges, which merges into a
+    ///   cage as a sealed shell rather than an open patch.
+    /// - The requested count applies to the PATCH, not the model. Scaling it by the
+    ///   painted share starved the solve — a 500-quad request over a 9% patch became
+    ///   44, and starvation is what makes a cage uneven: 44 -> 15.4x, 250 -> 5.4x,
+    ///   400 -> 3.6x, 600 -> 2.9x. Asking for 500 faces in a painted area now asks
+    ///   the patch for 500.
+    ///
+    /// The count is capped at four quads per source triangle so an absurd request
+    /// (a whole-model budget dropped on one ear) cannot starve the machine: at the
+    /// engine's raw 50 000 default, a 12-face carve did not finish inside a minute.
+    public static func regionParameters(
+        _ params: RemeshParameters, carve: Carve
+    ) -> RemeshParameters {
+        var out = params
+        let ceiling = max(4, carve.mesh.faceCount * 4)
+        out.targetQuads = min(max(4, params.targetQuads), ceiling)
+        out.adaptivity = 0
+        out.holeFillMaxBoundary = 0
+        return out
     }
 
     public static func carved(_ source: Mesh, to region: SolveRegion) throws -> Carve {

@@ -140,6 +140,65 @@ struct RegionRetopoOpsTests {
         )
     }
 
+    /// QUALITY, measured: a painted patch comes back as an EVEN, OPEN grid.
+    ///
+    /// Reported from device with a screenshot of a patch whose quads varied wildly
+    /// over a near-planar surface. Two engine defaults were wrong for a region:
+    /// `adaptivity = 1` (fully curvature-adaptive, right for a whole model) gave a
+    /// 31.8x spread between the largest and smallest quad on a 440-face patch, and
+    /// hole filling SEALED the patch — zero boundary edges, a closed bubble rather
+    /// than something to merge into a cage.
+    @Test("a painted patch is an even, open grid", .timeLimit(.minutes(3)))
+    func regionPatchIsEvenAndOpen() async throws {
+        let target = try Mesh.loadOBJ(at: MeshFixtureCorpus.stanfordBunnyURL())
+        let ids = target.liveFaceIDs().sorted()
+        // A compact blob, like a painted one — not "the first N ids".
+        let seed = try #require(target.faceCentroid(ids[ids.count / 3]))
+        let centroids = ids.compactMap { target.faceCentroid($0) }
+        let lo = centroids.reduce(SIMD3<Float>(repeating: .greatestFiniteMagnitude)) { simd_min($0, $1) }
+        let hi = centroids.reduce(SIMD3<Float>(repeating: -.greatestFiniteMagnitude)) { simd_max($0, $1) }
+        let radius = simd_length(hi - lo) * 0.12
+        let painted = ids.filter { face in
+            (target.faceCentroid(face)).map { simd_distance($0, seed) < radius } ?? false
+        }
+        #expect(painted.count > 100, "the fixture patch is too small to judge")
+
+        let ghost = try #require(
+            try EngineRemeshSolver().solve(
+                source: target, region: .faces(painted), constraints: WeaveConstraints(),
+                params: .targetingQuads(500), onProgress: nil, isCancelled: { false }
+            )
+        )
+        let patch = ghost.mesh
+
+        // OPEN: the region's boundary must survive, or the patch is a sealed bubble.
+        var boundary = 0
+        for id in UInt32(0)..<UInt32(patch.edgeCapacity) where patch.isBoundaryEdge(id) == true {
+            boundary += 1
+        }
+        #expect(boundary > 0, "the patch came back sealed — hole filling closed the region")
+
+        // EVEN: quad areas within an order of magnitude, p90 over p10.
+        var areas: [Float] = []
+        for face in patch.liveFaceIDs() {
+            let ring = patch.faceVertices(face).compactMap { patch.vertexPosition($0) }
+            guard ring.count >= 3 else { continue }
+            var area: Float = 0
+            for index in 1..<(ring.count - 1) {
+                area += simd_length(
+                    simd_cross(ring[index] - ring[0], ring[index + 1] - ring[0])
+                ) / 2
+            }
+            areas.append(area)
+        }
+        areas.sort()
+        let spread = areas[areas.count * 9 / 10] / max(areas[areas.count / 10], 1e-9)
+        #expect(spread < 6, "quad areas spread \(spread)x — the cage is uneven")
+        // The requested count reaches the PATCH: 500 asked, a patch-sized cage back.
+        #expect(patch.faceCount > 300 && patch.faceCount < 900, "patch has \(patch.faceCount) f")
+
+    }
+
     // MARK: - Merging the patch
 
     @Test("append adds the patch's faces to the receiving cage")

@@ -275,14 +275,16 @@ extension MetalViewport.Coordinator {
         target: Mesh, region: SolveRegion, params: SolverParameters
     ) throws -> PreparedSolve {
         let carve = try EngineRemeshSolver.carved(target, to: region)
-        var scaled = params
+        var prepared = params
         if carve.share < 1 {
-            scaled.remesh.targetQuads = max(
-                4, Int((Float(params.remesh.targetQuads) * carve.share).rounded())
-            )
+            // ONE place decides what a patch solve asks for — the same policy the
+            // solver applies to a direct `.faces` request. Applied here because this
+            // path carves on the main actor and hands the boundary a WHOLE mesh, so
+            // the solver can no longer tell it was a region.
+            prepared.remesh = EngineRemeshSolver.regionParameters(params.remesh, carve: carve)
         }
         return PreparedSolve(
-            payload: try carve.mesh.payloadData(), params: scaled, share: carve.share
+            payload: try carve.mesh.payloadData(), params: prepared, share: carve.share
         )
     }
 
