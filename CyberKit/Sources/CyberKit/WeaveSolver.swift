@@ -261,6 +261,24 @@ public struct EngineRemeshSolver: WeaveSolving {
         // Density: the density constraint scales the edge length (finer edge →
         // smaller scale) on top of the params' quad budget.
         var remeshParams = params.remesh
+        // PURE QUADS. The engine defaults to quad-DOMINANT (`pureQuads = false`)
+        // and the app inherited it: measured on a carved bunny patch, 242 of 441
+        // output faces were TRIANGLES plus 35 n-gons — the fans and slivers
+        // reported from device as bad auto-retopo quality. A retopology cage is
+        // quads; deliberate triangles are what Build Triangle is for.
+        //
+        // Set HERE and not on `SolverParameters`, because the engine refuses
+        // pureQuads for a PRESCRIBED-BOUNDARY region solve ("the pure-quad
+        // construction rewrites geometry wholesale and reprojects every vertex,
+        // which would move the prescribed boundary") — and those solves share
+        // these presets. This backend remeshes a whole mesh (or a carve of one),
+        // where there is no prescribed boundary to disturb.
+        //
+        // Pure mode cannot go as coarse as a low target asks, since removing a
+        // triangle means splitting: a 125-quad target came back as 1372 quads. The
+        // overshoot shrinks as the target rises (1500 -> 3130), and it was no
+        // slower.
+        remeshParams.pureQuads = true
         // The quad budget follows the painted SHARE. A budget is a statement
         // about the whole model ("about 1500 quads for this bunny"), so applying
         // it unscaled to a patch asks for the entire model's topology inside one

@@ -1,4 +1,5 @@
 import CyberKit
+import CyberKitTesting
 import Foundation
 import Testing
 import simd
@@ -109,6 +110,34 @@ struct RegionRetopoOpsTests {
         // a patch — not a whole model's worth of quads inside a third of one.
         let quads = try #require(ghost).mesh.faceCount
         #expect(quads > 0 && quads < 1500, "region cage has \(quads) faces")
+    }
+
+    /// QUALITY: a region solve returns QUADS, not a triangle fan.
+    ///
+    /// Reported from device as "why is the auto-retopo quality that bad?" with
+    /// slivers over a painted ear. Measured on this carve at the shipped settings:
+    /// 242 of 441 faces were triangles and 35 were n-gons, because the engine
+    /// defaults to quad-DOMINANT and the app never overrode it. Every solver preset
+    /// now asks for pure quads.
+    @Test("a region solve returns pure quads", .timeLimit(.minutes(2)))
+    func regionSolveReturnsPureQuads() async throws {
+        let target = try Mesh.loadOBJ(at: MeshFixtureCorpus.stanfordBunnyURL())
+        let all = target.liveFaceIDs().sorted()
+        let painted = Array(all.prefix(all.count / 12))
+
+        let ghost = try #require(
+            try EngineRemeshSolver().solve(
+                source: target, region: .faces(painted), constraints: WeaveConstraints(),
+                params: .medium, onProgress: nil, isCancelled: { false }
+            )
+        )
+
+        let stats = try ghost.mesh.stats()
+        #expect(stats.quads > 0)
+        #expect(
+            stats.triangles == 0 && stats.other == 0,
+            "cage has \(stats.triangles) triangles and \(stats.other) n-gons"
+        )
     }
 
     // MARK: - Merging the patch
