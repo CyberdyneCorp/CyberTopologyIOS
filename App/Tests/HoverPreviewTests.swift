@@ -48,6 +48,13 @@ struct HoverPreviewTests {
             return face
         }
 
+        /// No brush: these cases test the ELEMENT previews, and the paint cursor
+        /// outranks all of them when a paint tool is armed (openspec
+        /// improve-region-paint-ux).
+        func brushRing(at point: SIMD2<Float>) -> (centre: SIMD3<Float>, radius: Float)? {
+            nil
+        }
+
         func ghostQuadCorners(at point: SIMD2<Float>) -> [SIMD3<Float>]? {
             calls.ghost += 1
             return ghost

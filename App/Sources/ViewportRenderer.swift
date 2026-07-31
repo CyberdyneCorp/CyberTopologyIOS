@@ -197,6 +197,11 @@ final class ViewportRenderer: NSObject {
     /// Whether the hover fill draws ABOVE the committed EditMesh fill.
     var hoverFillDrawsAboveCommittedFill: Bool { hoverGhostElement == .face }
 
+    /// Whether the paint brush cursor should read as an ERASER (set by the
+    /// coordinator when the mode toggles).
+    var brushErases = false {
+        didSet { if brushErases != oldValue { invalidate() } }
+    }
     var regionPaintStyle = GhostStyle.regionPaint(sceneRadius: 1) {
         didSet { if regionPaintStyle != oldValue { invalidate() } }
     }
@@ -982,9 +987,16 @@ final class ViewportRenderer: NSObject {
         let highlight = state.highlight ?? HoverRenderState.Highlight()
         overlayPath.setHoverHighlight(
             segments: highlight.segments, points: highlight.points,
-            color: state.element == .loop
-                ? OverlayUniformsFactory.hoverLoopColor
-                : OverlayUniformsFactory.hoverColor
+            color: {
+                switch state.element {
+                case .loop: return OverlayUniformsFactory.hoverLoopColor
+                case .brush:
+                    return brushErases
+                        ? OverlayUniformsFactory.brushEraseColor
+                        : OverlayUniformsFactory.brushColor
+                default: return OverlayUniformsFactory.hoverColor
+                }
+            }()
         )
         invalidate()
     }

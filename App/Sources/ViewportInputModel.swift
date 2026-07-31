@@ -99,13 +99,35 @@ final class ViewportInputModel {
         moveScopeHint = scope
     }
 
+    /// Whether the paint brush is erasing (openspec improve-region-paint-ux). The
+    /// mode is otherwise invisible — the tool is armed either way — so it is named
+    /// in the chip slot as well as coloured in the cursor.
+    private(set) var paintErasing = false
+
+    func paintModeChanged(erasing: Bool) {
+        paintErasing = erasing
+        paintModeHint = erasing ? "Erase region" : "Paint region"
+        // The announcement is transient: it says what just changed, and the cursor
+        // colour carries the state from then on.
+        let token = UUID()
+        paintModeHintToken = token
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, self.paintModeHintToken == token else { return }
+            self.paintModeHint = nil
+        }
+    }
+
+    private(set) var paintModeHint: String?
+    @ObservationIgnored private var paintModeHintToken: UUID?
+
     /// What the chip slot shows during a drag.
     ///
     /// A merge outranks the scope: both are true at once on a vertex drag held
     /// over a neighbour, and "Merge" is the one that names an OUTCOME, while the
     /// scope only names what is being carried. The scope reappears the moment
     /// the drag leaves merge range.
-    var dragHint: String? { snapHint ?? moveScopeHint }
+    var dragHint: String? { snapHint ?? moveScopeHint ?? paintModeHint }
 
     private(set) var interpretationChip: InterpretationChipState.Chip?
     /// The pure chip state machine (unit-tested transitions).

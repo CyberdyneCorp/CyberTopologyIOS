@@ -26,6 +26,15 @@ struct PaintedRegion: Equatable {
         for face in incoming where seen.insert(face).inserted { faces.append(face) }
     }
 
+    /// Unpaints faces (the erase pass). Order of what remains is preserved, so a
+    /// paint-erase-paint sequence still solves deterministically.
+    mutating func remove(_ outgoing: [UInt32]) {
+        let dropped = Set(outgoing)
+        guard !dropped.isEmpty, !faces.isEmpty else { return }
+        faces.removeAll { dropped.contains($0) }
+        seen.subtract(dropped)
+    }
+
     mutating func clear() {
         faces.removeAll()
         seen.removeAll()
@@ -52,10 +61,22 @@ extension MeshEditController {
         return offsets
     }()
 
+    /// Whether the paint brush ERASES instead of painting. Toggled by a Pencil
+    /// double-tap while the tool is armed — the same gesture other apps use to swap
+    /// to an eraser, so it needs no on-screen control.
+    var paintErases: Bool {
+        get { paintErasesStorage }
+        set {
+            guard paintErasesStorage != newValue else { return }
+            paintErasesStorage = newValue
+            onPaintModeChanged?(newValue)
+        }
+    }
+
     /// Paint Region: unions the Target faces under the stroke into the painted
-    /// region. Nothing is journaled — the region is a statement about what to do
-    /// next, not a property of the model (spec: "The painted region is
-    /// transient").
+    /// region, or removes them when the brush is erasing. Nothing is journaled —
+    /// the region is a statement about what to do next, not a property of the model
+    /// (spec: "The painted region is transient").
     func commitRegionPaintStroke(_ stroke: ToolStroke, samples: [StrokeSample]) {
         let context = stroke.context
         guard let snapper = context.snapper, !samples.isEmpty else { return }
@@ -72,7 +93,11 @@ extension MeshEditController {
             }
         }
         guard !painted.isEmpty else { return }
-        paintedRegion.add(painted)
+        if paintErases {
+            paintedRegion.remove(painted)
+        } else {
+            paintedRegion.add(painted)
+        }
         onPaintedRegionChanged?(paintedRegion.faces)
     }
 
@@ -80,6 +105,13 @@ extension MeshEditController {
     /// the whole Target when nothing is painted.
     var solveRegion: SolveRegion {
         paintedRegion.isEmpty ? .wholeMesh : .faces(paintedRegion.faces)
+    }
+
+    /// The brush footprint in WORLD units at `point`, for the hover ring: the
+    /// screen-space radius projected onto the surface distance the artist is
+    /// looking at.
+    static func brushWorldRadius(sceneRadius: Float) -> Float {
+        sceneRadius * regionPaintRadiusFraction
     }
 
     /// Empties the painted region and tells the viewport to stop drawing it.

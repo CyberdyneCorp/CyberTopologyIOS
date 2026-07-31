@@ -182,6 +182,10 @@ final class MeshEditController {
     /// Target faces painted for the next region solve. Viewport state: never
     /// journaled, never persisted, cleared when a solve runs.
     var paintedRegion = PaintedRegion()
+    /// Backing store for `paintErases` (the property has a willSet-style hook).
+    var paintErasesStorage = false
+    /// The paint brush switched between painting and erasing.
+    var onPaintModeChanged: ((Bool) -> Void)?
     /// Injected haptic seam (task 3.7): nil = silent. Tests inject a
     /// recording fake; the coordinator installs the capability-gated
     /// `SnapHapticsEngine` (graceful no-op on simulator).

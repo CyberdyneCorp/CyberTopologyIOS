@@ -261,4 +261,128 @@ struct PaintedRegionRetopoTests {
         // Painting the Target is not a camera-manipulator tool.
         #expect(!RetopoTool.paintRegion.isCameraManipulator)
     }
+
+    // MARK: - Paint UX (openspec improve-region-paint-ux)
+
+    @Test func erasingRemovesFacesFromTheRegion() {
+        var region = PaintedRegion()
+        region.add([1, 2, 3, 4])
+        region.remove([2, 4])
+        // What remains keeps its first-touched order, so a paint-erase-paint
+        // sequence still solves deterministically.
+        #expect(region.faces == [1, 3])
+        // …and an erased face can be painted again: `remove` forgets it, rather
+        // than only hiding it from the list.
+        region.add([2])
+        #expect(region.faces == [1, 3, 2])
+    }
+
+    @Test func erasingWhatWasNeverPaintedIsHarmless() {
+        var region = PaintedRegion()
+        region.add([1])
+        region.remove([99])
+        #expect(region.faces == [1])
+        region.remove([])
+        #expect(region.faces == [1])
+    }
+
+    /// The mode is otherwise invisible — the tool is armed either way — so toggling
+    /// must announce itself.
+    @Test func togglingTheBrushModeAnnouncesItself() {
+        let controller = MeshEditController()
+        var announced: [Bool] = []
+        controller.onPaintModeChanged = { announced.append($0) }
+
+        controller.paintErases = true
+        controller.paintErases = true  // no change, no announcement
+        controller.paintErases = false
+
+        #expect(announced == [true, false])
+    }
+
+    @Test func theBrushRingIsAClosedCircleFacingTheCamera() {
+        let ring = HoverPreviewGeometry.brushRing(
+            centre: SIMD3(1, 2, 3), radius: 0.5, facing: SIMD3(0, 0, 1), segments: 16
+        )
+        // 16 segments, each two points of three floats.
+        #expect(ring.segments.count == 16 * 2 * 3)
+        #expect(ring.points.isEmpty, "the cursor is a ring, not a dot")
+
+        // Every vertex sits on the circle, and the ring closes.
+        var radii: [Float] = []
+        for base in stride(from: 0, to: ring.segments.count, by: 3) {
+            let point = SIMD3(ring.segments[base], ring.segments[base + 1], ring.segments[base + 2])
+            radii.append(simd_distance(point, SIMD3(1, 2, 3)))
+        }
+        #expect(radii.allSatisfy { abs($0 - 0.5) < 1e-5 })
+        let first = SIMD3(ring.segments[0], ring.segments[1], ring.segments[2])
+        let last = SIMD3(
+            ring.segments[ring.segments.count - 3], ring.segments[ring.segments.count - 2],
+            ring.segments[ring.segments.count - 1]
+        )
+        #expect(simd_distance(first, last) < 1e-5, "the ring must close")
+    }
+
+    @Test func aDegenerateBrushDrawsNothing() {
+        #expect(
+            HoverPreviewGeometry.brushRing(
+                centre: .zero, radius: 0, facing: nil
+            ).isEmpty
+        )
+        #expect(
+            HoverPreviewGeometry.brushRing(
+                centre: .zero, radius: 1, facing: nil, segments: 2
+            ).isEmpty
+        )
+    }
+
+    /// The brush is a CURSOR: while the paint tool is armed it outranks every
+    /// element highlight, because "what would a Move drag grab" is not the question
+    /// being asked.
+    @Test func theBrushRingOutranksEveryOtherPreview() {
+        var state = HoverPreviewState()
+        let queries = BrushQueries(
+            brush: (SIMD3(1, 1, 1), 0.25),
+            snap: .init(vertex: 1, position: .zero),
+            loop: [1, 2],
+            face: [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 1, 0)],
+            ghost: [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 1, 0), SIMD3(0, 1, 0)]
+        )
+        let changed = state.hoverChanged(at: SIMD2(0.5, 0.5), queries: queries)
+        #expect(changed)
+        guard case .brushRing(let centre, let radius) = state.preview else {
+            Issue.record("expected the brush cursor, got \(String(describing: state.preview))")
+            return
+        }
+        #expect(centre == SIMD3(1, 1, 1))
+        #expect(radius == 0.25)
+    }
+
+    /// Fake queries answering every hover question at once, so priority is testable.
+    private struct BrushQueries: HoverPreviewQuerying {
+        var brush: (centre: SIMD3<Float>, radius: Float)?
+        var snap: HoverPreviewState.SnapTarget?
+        var loop: [UInt32]?
+        var face: [SIMD3<Float>]?
+        var ghost: [SIMD3<Float>]?
+
+        func brushRing(at point: SIMD2<Float>) -> (centre: SIMD3<Float>, radius: Float)? { brush }
+        func snapTargetVertex(at point: SIMD2<Float>) -> HoverPreviewState.SnapTarget? { snap }
+        func slideLoop(at point: SIMD2<Float>) -> [UInt32]? { loop }
+        func faceUnderPoint(at point: SIMD2<Float>) -> [SIMD3<Float>]? { face }
+        func ghostQuadCorners(at point: SIMD2<Float>) -> [SIMD3<Float>]? { ghost }
+    }
+
+    /// The brush cursor renders in the paint colour family, so the ring and the
+    /// extent it leaves behind read as one thing.
+    @Test func theBrushCursorCarriesItsOwnElement() {
+        let state = HoverPreviewGeometry.renderState(
+            for: .brushRing(centre: .zero, radius: 1),
+            edgeEndpoints: { _ in nil }, vertexPosition: { _ in nil },
+            viewDirection: SIMD3(0, 0, 1)
+        )
+        #expect(state.element == .brush)
+        #expect(state.highlight?.segments.isEmpty == false)
+        #expect(state.ghost == nil, "a cursor is lines, not a fill")
+    }
 }
