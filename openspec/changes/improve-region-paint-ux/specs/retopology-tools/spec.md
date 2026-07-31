@@ -104,3 +104,52 @@ keystroke, because the ceiling is on screen beside the field.
 #### Scenario: The dialog is not covered
 - **WHEN** the prompt is shown
 - **THEN** the statement of what is available SHALL remain visible while entering a count
+
+### Requirement: The region paints while the stroke is in progress
+
+Painting SHALL apply as the pencil moves, not when the stroke ends.
+
+Rationale: with the extent appearing only after the pen lifts, a long stroke is drawn blind —
+the artist cannot see what has been covered until it is too late to adjust.
+
+#### Scenario: The extent grows during a stroke
+- **WHEN** the user paints a stroke across the Target
+- **THEN** faces SHALL be added to the region as the stroke passes over them
+
+#### Scenario: A tap paints
+- **WHEN** the user taps once with the paint tool armed
+- **THEN** the faces under that tap SHALL be painted
+
+### Requirement: Undo and redo cover painting
+
+Undo SHALL step back one paint stroke at a time, and redo SHALL reapply it. Where there is no
+paint history, undo and redo SHALL act on the document as before.
+
+A paint stroke SHALL be one undo step regardless of how many samples it covered. Starting a
+new stroke SHALL drop any redo branch, and clearing the region — which running a solve does —
+SHALL drop the history with it.
+
+Rationale: the artist's undo means "the last thing I did", and painting is one of those
+things. It is NOT a document command, because the mask is viewport state that is never
+persisted and a journal entry mutating nothing in the bundle would break the journal's replay
+contract — so paint keeps its own history and undo consumes that first.
+
+Stale history after a solve would be worse than none: those strokes describe a mask the solve
+has already consumed.
+
+#### Scenario: Undoing a paint stroke
+- **WHEN** the user paints a stroke and then undoes
+- **THEN** that stroke's faces SHALL be unpainted
+- **AND** the document's own history SHALL be untouched
+
+#### Scenario: Falling through to the document
+- **WHEN** there is no paint history and the user undoes
+- **THEN** the document's last command SHALL be undone
+
+#### Scenario: An erase stroke is undoable too
+- **WHEN** the user erases part of the region and then undoes
+- **THEN** the erased faces SHALL come back
+
+#### Scenario: Running a solve drops the history
+- **WHEN** a solve runs and clears the region
+- **THEN** there SHALL be no paint history to step back into

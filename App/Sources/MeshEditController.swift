@@ -182,6 +182,12 @@ final class MeshEditController {
     /// Target faces painted for the next region solve. Viewport state: never
     /// journaled, never persisted, cleared when a solve runs.
     var paintedRegion = PaintedRegion()
+    /// Paint-stroke history, so undo/redo cover painting (openspec
+    /// improve-region-paint-ux). Separate from the document journal on purpose: the
+    /// mask is viewport state that is never persisted, and a journal entry that
+    /// mutates nothing in the bundle would break the journal's replay contract.
+    var paintUndoStack: [PaintedRegion] = []
+    var paintRedoStack: [PaintedRegion] = []
     /// Backing store for `paintErases` (the property has a willSet-style hook).
     var paintErasesStorage = false
     /// The paint brush switched between painting and erasing.
@@ -547,6 +553,15 @@ final class MeshEditController {
                     if context.snapper != nil {
                         toolStroke = ToolStroke(tool: tool, context: context)
                     }
+                } else if tool == .paintRegion {
+                    // Painting needs only a Target too, and it paints LIVE: the
+                    // whole stroke is one undo step, so the history entry is taken
+                    // here, before the first sample lands.
+                    if context.snapper != nil {
+                        toolStroke = ToolStroke(tool: tool, context: context)
+                        beginPaintStrokeHistory()
+                        paintRegionSample(sample, in: context)
+                    }
                 } else if tool.isCameraManipulator || allowsStrokeAgainstLiveMesh(),
                     context.editObject != nil, context.editMesh != nil,
                     context.editPayload != nil, context.snapper != nil {
@@ -617,6 +632,12 @@ final class MeshEditController {
     }
 
     func strokeContinued(sample: StrokeSample) {
+        // Paint Region paints AS the pencil moves: waiting for the stroke to end
+        // meant a long stroke was drawn blind (openspec improve-region-paint-ux).
+        if let stroke = toolStroke, stroke.tool == .paintRegion {
+            paintRegionSample(sample, in: stroke.context)
+            return
+        }
         guard session != nil else { return }
         applyBrush(at: sample)
     }

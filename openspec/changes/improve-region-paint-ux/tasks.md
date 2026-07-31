@@ -38,6 +38,24 @@
       would exceed the ceiling is IGNORED rather than accepted and rewritten.
 - [x] 3a.4 Retopologize is disabled below the solver's minimum.
 
+## 3b. Live painting and paint undo
+
+- [x] 3b.1 `paintRegionSample(_:in:)` paints ONE sample; `strokeContinued` calls it for an
+      armed paint stroke, and the first sample lands at stroke start. Painting at stroke end
+      meant a long stroke was drawn blind.
+- [x] 3b.2 The fill is re-uploaded only when the region actually CHANGED, so a stroke
+      lingering over painted faces does not re-upload every sample.
+- [x] 3b.3 Paint history: one entry per stroke, taken at stroke start, bounded at 32.
+- [x] 3b.4 `undoPaint()` / `redoPaint()` return false when empty so callers FALL THROUGH to
+      the document's undo. Undo therefore means "the last thing I did".
+- [x] 3b.5 Wired into every undo surface: the toolbar buttons (with their enabled state) and
+      the multi-finger tap gestures.
+- [x] 3b.6 A new stroke drops the redo branch; clearing the region (which a solve does) drops
+      the history.
+- [x] 3b.7 NOT journaled as a DocumentCommand, deliberately: the mask is viewport state that
+      is never persisted, and a command mutating nothing in the bundle would break the
+      journal's replay contract.
+
 ## 4. Tests
 
 - [x] 4.1 Erase removes faces and preserves the remaining order; erasing an unpainted face
@@ -47,6 +65,8 @@
       nothing.
 - [x] 4.4 The cursor outranks snap/loop/face/ghost previews when all are available.
 - [x] 4.5 The cursor carries its own render element and is lines rather than a fill.
+- [x] 4.6a Paint undo: one stroke per step, redo reapplies, a new stroke forks the branch,
+      clearing drops the history, an ERASE stroke is undoable, and the stack is bounded.
 - [x] 4.6 Keypad: typing builds the count and stops at the ceiling; backspace and clear;
       halve/double bounds; the initial value is clamped into range; running needs the floor.
 

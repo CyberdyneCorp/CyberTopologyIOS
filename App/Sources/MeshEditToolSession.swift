@@ -159,7 +159,9 @@ extension MeshEditController {
         case .guide:
             commitGuideStroke(stroke, samples: samples)
         case .paintRegion:
-            commitRegionPaintStroke(stroke, samples: samples)
+            // Painted live during the stroke; the last sample lands here so a TAP
+            // (which produces no moves) still paints.
+            paintRegionSample(last, in: stroke.context)
         }
     }
 

@@ -52,6 +52,8 @@ extension MeshEditController {
     /// Offsets sampled around each stroke point, in units of the brush radius.
     /// Eight around plus the centre: enough to cover the band without turning one
     /// stroke into hundreds of raycasts per sample.
+    /// How many paint strokes can be stepped back through.
+    static let paintHistoryLimit = 32
     static let regionPaintFootprint: [SIMD2<Float>] = {
         var offsets: [SIMD2<Float>] = [.zero]
         for step in 0..<8 {
@@ -73,32 +75,77 @@ extension MeshEditController {
         }
     }
 
-    /// Paint Region: unions the Target faces under the stroke into the painted
-    /// region, or removes them when the brush is erasing. Nothing is journaled —
-    /// the region is a statement about what to do next, not a property of the model
-    /// (spec: "The painted region is transient").
-    func commitRegionPaintStroke(_ stroke: ToolStroke, samples: [StrokeSample]) {
-        let context = stroke.context
-        guard let snapper = context.snapper, !samples.isEmpty else { return }
+    /// Paint Region, LIVE: paints the Target faces under one sample as the pencil
+    /// moves, rather than waiting for the stroke to end.
+    ///
+    /// Painting at stroke end meant the extent appeared only after lifting the pen,
+    /// so a long stroke was drawn blind — reported from device. The work per sample
+    /// is a handful of raycasts against the snapper's BVH, which the hover cursor
+    /// already does every frame.
+    func paintRegionSample(_ sample: StrokeSample, in context: Context) {
+        guard let snapper = context.snapper else { return }
         let radius = Self.regionPaintRadiusFraction
-        var painted: [UInt32] = []
-        for sample in samples {
-            let centre = point(of: sample)
-            for offset in Self.regionPaintFootprint {
-                let probe = centre + offset * radius
-                guard let ray = context.ray(probe),
-                    let hit = snapper.raycast(origin: ray.origin, direction: ray.direction)
-                else { continue }
-                painted.append(hit.face)
-            }
+        let centre = point(of: sample)
+        var touched: [UInt32] = []
+        for offset in Self.regionPaintFootprint {
+            let probe = centre + offset * radius
+            guard let ray = context.ray(probe),
+                let hit = snapper.raycast(origin: ray.origin, direction: ray.direction)
+            else { continue }
+            touched.append(hit.face)
         }
-        guard !painted.isEmpty else { return }
+        guard !touched.isEmpty else { return }
+        let before = paintedRegion
         if paintErases {
-            paintedRegion.remove(painted)
+            paintedRegion.remove(touched)
         } else {
-            paintedRegion.add(painted)
+            paintedRegion.add(touched)
         }
+        // Only redraw when the region actually changed: a stroke lingering over
+        // already-painted faces would otherwise re-upload the fill every sample.
+        guard paintedRegion != before else { return }
         onPaintedRegionChanged?(paintedRegion.faces)
+    }
+
+    /// A paint stroke is starting: remember the region so the whole stroke is ONE
+    /// undo step, and drop any redo history (a new stroke forks it).
+    func beginPaintStrokeHistory() {
+        paintUndoStack.append(paintedRegion)
+        // Bounded: the mask is transient anyway, and an unbounded stack on a
+        // long session is memory nobody asked for.
+        if paintUndoStack.count > Self.paintHistoryLimit { paintUndoStack.removeFirst() }
+        paintRedoStack.removeAll()
+    }
+
+    var canUndoPaint: Bool { !paintUndoStack.isEmpty }
+    var canRedoPaint: Bool { !paintRedoStack.isEmpty }
+
+    /// Undoes one paint stroke. Returns false when there is nothing painted to
+    /// undo, so the caller can fall through to the DOCUMENT's undo.
+    @discardableResult
+    func undoPaint() -> Bool {
+        guard let previous = paintUndoStack.popLast() else { return false }
+        paintRedoStack.append(paintedRegion)
+        paintedRegion = previous
+        onPaintedRegionChanged?(paintedRegion.faces)
+        return true
+    }
+
+    @discardableResult
+    func redoPaint() -> Bool {
+        guard let next = paintRedoStack.popLast() else { return false }
+        paintUndoStack.append(paintedRegion)
+        paintedRegion = next
+        onPaintedRegionChanged?(paintedRegion.faces)
+        return true
+    }
+
+    /// Paint history is dropped when the region is cleared or solved: the strokes
+    /// described a mask that no longer exists, and stepping back into it after a
+    /// solve would resurrect an extent the artist already consumed.
+    func clearPaintHistory() {
+        paintUndoStack.removeAll()
+        paintRedoStack.removeAll()
     }
 
     /// The region the next auto-retopology should solve: the painted faces, or
@@ -120,6 +167,7 @@ extension MeshEditController {
     /// shaping the next solve is worse than repainting, and the artist has already
     /// seen the proposal by then.
     func clearPaintedRegion() {
+        clearPaintHistory()
         guard !paintedRegion.isEmpty else { return }
         paintedRegion.clear()
         onPaintedRegionChanged?([])
