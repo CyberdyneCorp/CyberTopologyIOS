@@ -199,6 +199,58 @@ struct RegionRetopoOpsTests {
 
     }
 
+    /// The same painted region must solve IDENTICALLY twice.
+    ///
+    /// It did not: three solves of one region returned 649, 631 and 603 faces, one
+    /// of them containing a 434 996:1 degenerate face. The remesher is deterministic
+    /// — the CARVE was not. `deleteFaces` is order-sensitive (it compacts ids and
+    /// prunes isolated vertices as it goes) and was being handed a `Set`'s arbitrary
+    /// iteration order, so the mesh reaching the remesher differed run to run.
+    ///
+    /// This is also why every quality number measured against this path before the
+    /// fix was a single sample of a distribution rather than a measurement.
+    @Test("the same painted region solves identically twice", .timeLimit(.minutes(3)))
+    func regionSolveIsDeterministic() async throws {
+        let target = try Mesh.loadOBJ(at: MeshFixtureCorpus.stanfordBunnyURL())
+        // Dense enough to exercise a real carve (device Targets are far denser).
+        _ = try target.subdivide()
+        let ids = target.liveFaceIDs().sorted()
+        let seed = try #require(target.faceCentroid(ids[ids.count / 3]))
+        let centroids = ids.compactMap { target.faceCentroid($0) }
+        let lo = centroids.reduce(SIMD3<Float>(repeating: .greatestFiniteMagnitude)) { simd_min($0, $1) }
+        let hi = centroids.reduce(SIMD3<Float>(repeating: -.greatestFiniteMagnitude)) { simd_max($0, $1) }
+        let radius = simd_length(hi - lo) * 0.12
+        let painted = ids.filter { face in
+            (target.faceCentroid(face)).map { simd_distance($0, seed) < radius } ?? false
+        }
+
+        func solveOnce() throws -> Data {
+            let ghost = try #require(
+                try EngineRemeshSolver().solve(
+                    source: target, region: .faces(painted), constraints: WeaveConstraints(),
+                    params: .targetingQuads(500), onProgress: nil, isCancelled: { false }
+                )
+            )
+            return try ghost.mesh.payloadData()
+        }
+
+        let first = try solveOnce()
+        let second = try solveOnce()
+        #expect(first == second)
+    }
+
+    /// The carve itself, which is where the instability lived.
+    @Test("carving the same region twice gives the same mesh")
+    func carveIsDeterministic() throws {
+        let target = try Mesh.loadOBJ(at: MeshFixtureCorpus.stanfordBunnyURL())
+        let painted = Array(target.liveFaceIDs().sorted().prefix(300))
+        let first = try EngineRemeshSolver.carved(target, to: .faces(painted))
+        let second = try EngineRemeshSolver.carved(target, to: .faces(painted))
+        let a = try first.mesh.payloadData()
+        let b = try second.mesh.payloadData()
+        #expect(a == b)
+    }
+
     // MARK: - Merging the patch
 
     @Test("append adds the patch's faces to the receiving cage")
