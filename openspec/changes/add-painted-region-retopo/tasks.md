@@ -136,7 +136,16 @@ honours it.
 ## 6. Device verification
 
 - [x] 6.1 Ran on iPad Air 13-inch (M3): 1185 tests, passed.
-- [ ] 6.2 Awaiting a device pass: paint the bunny's haunch, run, accept — the patch covers the
-      paint, merges into the cage, and the rest of the Target is untouched. Also worth checking
-      the brush footprint (`regionPaintRadiusFraction` 0.03 of the scene radius, a 9-point ring
-      per sample) and that the teal extent reads against the Target.
+- [x] 6.2 CONFIRMED on device (iPad, 69 451-face bunny Target). Painted the shoulder, asked
+      for 40 faces, accepted: the cage went 334 -> 419 faces as ONE EditMesh object, the patch
+      covers the paint, the rest of the Target is untouched, and the teal extent read clearly
+      while painting. The grid is near-uniform and the border is a smooth polygonal outline —
+      the sawtooth and the spikes are gone.
+- [x] 6.2a Observed and expected: 40 asked, 85 delivered. Pure-quad mode cannot go as coarse as
+      a low target asks, since removing a triangle means splitting (measured 125 -> 1372 at a
+      finer scale). The count is a request, not a contract, at the coarse end — the Action
+      Gallery copy should say so.
+- [ ] 6.2b Remaining, minor: a few step NOTCHES survive at concave corners of the mask. These
+      are mask shape, not slivers — the dilation fills teeth but not notches. A closing would,
+      and was rejected for producing degenerate faces (10.7), so any fix needs a different
+      construction.
