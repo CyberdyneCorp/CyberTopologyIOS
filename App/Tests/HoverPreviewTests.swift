@@ -23,11 +23,13 @@ struct HoverPreviewTests {
         final class Calls {
             var snap = 0
             var loop = 0
+            var face = 0
             var ghost = 0
         }
 
         var snap: HoverPreviewState.SnapTarget?
         var loop: [UInt32]?
+        var face: [SIMD3<Float>]?
         var ghost: [SIMD3<Float>]?
         let calls = Calls()
 
@@ -39,6 +41,11 @@ struct HoverPreviewTests {
         func slideLoop(at point: SIMD2<Float>) -> [UInt32]? {
             calls.loop += 1
             return loop
+        }
+
+        func faceUnderPoint(at point: SIMD2<Float>) -> [SIMD3<Float>]? {
+            calls.face += 1
+            return face
         }
 
         func ghostQuadCorners(at point: SIMD2<Float>) -> [SIMD3<Float>]? {
@@ -359,18 +366,25 @@ struct HoverPreviewTests {
         #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
     }
 
-    @Test func hoverOverBoundaryEdgeShowsNoPreview() throws {
+    /// CHANGED by openspec add-hover-scope-highlight (design D4). This used to
+    /// assert NO preview over a boundary edge, because a double-tap cannot slide
+    /// one. The preview now answers "what would a drag grab", and a Move drag
+    /// does grab a boundary edge — so staying silent would have been a lie by
+    /// omission exactly where the artist is aiming carefully. The double-tap
+    /// slide keeps its own boundary rule; only the preview changed.
+    @Test func hoverOverBoundaryEdgeHighlightsWhatADragWouldGrab() throws {
         let harness = try Harness()
         try addPlaneTarget(to: harness)
         try addGridEditMesh(to: harness)
 
-        // Midpoint of the bottom boundary edge (0,0)-(1,0): not slidable,
-        // and not empty surface either — no preview at all.
+        // Midpoint of the bottom boundary edge (0,0)-(1,0).
         harness.hover(over: SIMD3(0.5, 0, 0))
-        #expect(harness.coordinator.hoverPreview.preview == nil)
+        guard case .loopHighlight = try #require(harness.coordinator.hoverPreview.preview) else {
+            Issue.record("a boundary edge must preview the loop a drag would carry")
+            return
+        }
         let renderer = try #require(harness.coordinator.renderer)
-        #expect(!renderer.overlayPath.hasHoverHighlight)
-        #expect(!renderer.hasHoverGhost)
+        #expect(renderer.overlayPath.hasHoverHighlight)
     }
 
     @Test func hoverNearVertexHighlightsTheSnapTarget() throws {
@@ -498,5 +512,211 @@ struct HoverPreviewTests {
         let recognizer = try #require(harness.coordinator.hoverRecognizer)
         #expect(recognizer.view === harness.view)
         #expect(recognizer.isEnabled)
+    }
+
+    // MARK: - Scope highlight (openspec add-hover-scope-highlight)
+
+    @Test func faceOutranksTheGhostQuadAndLosesToLoopAndVertex() {
+        var state = HoverPreviewState()
+        let ring: [SIMD3<Float>] = [
+            SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 1, 0), SIMD3(0, 1, 0),
+        ]
+        // Over a face, with empty-surface corners also available: the face wins,
+        // and the ghost query is never even asked.
+        let overFace = FakeQueries(face: ring, ghost: corners)
+        let faceShown = state.hoverChanged(at: origin, queries: overFace)
+        #expect(faceShown)
+        #expect(state.preview == .faceHighlight(corners: ring))
+        #expect(overFace.calls.ghost == 0)
+
+        // A loop outranks it…
+        let overLoop = FakeQueries(loop: [3, 4], face: ring, ghost: corners)
+        let loopShown = state.hoverChanged(at: origin, queries: overLoop)
+        #expect(loopShown)
+        #expect(state.preview == .loopHighlight(edges: [3, 4]))
+        #expect(overLoop.calls.face == 0)
+
+        // …and a vertex outranks that.
+        let target = HoverPreviewState.SnapTarget(vertex: 2, position: SIMD3(9, 9, 9))
+        let overVertex = FakeQueries(snap: target, loop: [3, 4], face: ring, ghost: corners)
+        let vertexShown = state.hoverChanged(at: origin, queries: overVertex)
+        #expect(vertexShown)
+        #expect(state.preview == .snapTarget(target))
+        #expect(overVertex.calls.face == 0)
+    }
+
+    @Test func aFaceFillsAsATriangleFanAndDegenerateRingsDoNot() {
+        let quad: [SIMD3<Float>] = [
+            SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 1, 0), SIMD3(0, 1, 0),
+        ]
+        let quadFill = HoverPreviewGeometry.faceFill(corners: quad)
+        #expect(quadFill?.indices == [0, 1, 2, 0, 2, 3])
+        #expect(quadFill?.positions.count == 12)
+        #expect(quadFill?.normals.count == 12)
+
+        let triangle: [SIMD3<Float>] = [SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 1, 0)]
+        #expect(HoverPreviewGeometry.faceFill(corners: triangle)?.indices == [0, 1, 2])
+
+        // A 5-gon fans into 3 triangles.
+        let pentagon = quad + [SIMD3(-0.5, 0.5, 0)]
+        #expect(HoverPreviewGeometry.faceFill(corners: pentagon)?.indices.count == 9)
+
+        // No interior: no fill, rather than malformed geometry.
+        #expect(HoverPreviewGeometry.faceFill(corners: [SIMD3(0, 0, 0), SIMD3(1, 0, 0)]) == nil)
+        #expect(
+            HoverPreviewGeometry.faceFill(corners: [
+                SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(2, 0, 0),
+            ]) == nil,
+            "collinear corners enclose no area"
+        )
+    }
+
+    /// A ring that starts with a collinear run still encloses an area, so the
+    /// plane must come from the first NON-degenerate corner triple.
+    @Test func aRingStartingCollinearStillFills() {
+        let ring: [SIMD3<Float>] = [
+            SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(2, 0, 0), SIMD3(2, 1, 0), SIMD3(0, 1, 0),
+        ]
+        #expect(HoverPreviewGeometry.faceFill(corners: ring) != nil)
+    }
+
+    @Test func eachElementCarriesItsOwnRenderIdentity() {
+        let ring: [SIMD3<Float>] = [
+            SIMD3(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 1, 0), SIMD3(0, 1, 0),
+        ]
+        let face = HoverPreviewGeometry.renderState(
+            for: .faceHighlight(corners: ring), edgeEndpoints: { _ in nil },
+            vertexPosition: { _ in nil }
+        )
+        #expect(face.element == .face)
+        #expect(face.ghost != nil, "a face is a FILL, not an outline")
+
+        let vertex = HoverPreviewGeometry.renderState(
+            for: .snapTarget(.init(vertex: 1, position: .zero)),
+            edgeEndpoints: { _ in nil }, vertexPosition: { _ in nil }
+        )
+        #expect(vertex.element == .vertex)
+
+        let loop = HoverPreviewGeometry.renderState(
+            for: .loopHighlight(edges: [0]),
+            edgeEndpoints: { _ in (0, 1) },
+            vertexPosition: { id in SIMD3(Float(id), 0, 0) }
+        )
+        #expect(loop.element == .loop)
+
+        let hint = HoverPreviewGeometry.renderState(
+            for: .ghostQuad(corners: ring), edgeEndpoints: { _ in nil },
+            vertexPosition: { _ in nil }
+        )
+        #expect(hint.element == .createHint)
+    }
+
+    /// The face fill states a fact; the create hint invites. Only the hint pulses.
+    @Test func theFaceFillDoesNotPulse() {
+        let face = GhostStyle.faceHighlight(sceneRadius: 10)
+        #expect(face.pulseFloor == 1, "a constant alpha is what makes it a statement")
+        #expect(face.color != GhostStyle.hoverHint.color)
+        #expect(GhostStyle.hoverHint.pulseFloor < 1, "the create hint still pulses")
+    }
+
+    /// Reported from device: vertex and loop highlight, a face does not. The
+    /// state machine and the geometry were both right — nothing asserted that
+    /// the RENDERER ever received the fill.
+    @Test func hoveringAFaceLoadsTheFillIntoTheRenderer() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        try addGridEditMesh(to: harness)
+        let renderer = try #require(harness.coordinator.renderer)
+
+        // Middle of the quad (1,1)-(2,2): away from every vertex and edge.
+        harness.hover(over: SIMD3(1.5, 1.5, 0))
+
+        guard case .faceHighlight = try #require(harness.coordinator.hoverPreview.preview) else {
+            Issue.record("the face did not even resolve")
+            return
+        }
+        #expect(renderer.hasHoverGhost, "the fill never reached the renderer")
+        #expect(!renderer.overlayPath.hasHoverHighlight, "a face is a fill, not lines")
+        // The fill reached the renderer even when the highlight was invisible on
+        // device: the committed EditMesh fill is encoded AFTER the hover fill and
+        // painted straight over the face being highlighted. A hovered face has to
+        // draw above it.
+        #expect(
+            renderer.hoverFillDrawsAboveCommittedFill,
+            "the committed fill would paint over the highlight"
+        )
+    }
+
+    /// …while the create hint keeps its place UNDER the committed fill: it
+    /// proposes geometry that does not exist yet.
+    @Test func theCreateHintStillDrawsUnderTheCommittedFill() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        try addGridEditMesh(to: harness)
+        let renderer = try #require(harness.coordinator.renderer)
+
+        // Empty Target, far from the cage.
+        harness.hover(over: SIMD3(-3, -3, 0))
+
+        guard case .ghostQuad = try #require(harness.coordinator.hoverPreview.preview) else {
+            Issue.record("expected the create hint over empty surface")
+            return
+        }
+        #expect(renderer.hasHoverGhost)
+        #expect(!renderer.hoverFillDrawsAboveCommittedFill)
+    }
+
+    /// THE guard for this whole change: the highlight and the drag must name the
+    /// same element, at every point. They are only in agreement because they ask
+    /// the same function — hover used to measure its own scene-relative windows
+    /// (0.05/0.07 of the scene against the drag's 0.25/0.15 of a CELL), which on
+    /// a 1-unit cage in a scene of radius 7 is 0.49 against 0.15 for an edge.
+    @Test func theHighlightNamesWhatTheDragWouldGrab() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        try addGridEditMesh(to: harness)
+        let mesh = try #require(harness.coordinator.recognizerEditMesh)
+        let context = try #require(harness.coordinator.meshEditor.contextProvider?())
+
+        // Sampled OFF the lattice on purpose. A point exactly on a window
+        // boundary (1.75 is exactly 0.25 from the vertex at (2,1)) is a tie, and
+        // hover's hit arrives via a screen round-trip whose float error decides
+        // it either way. That is inherent to any threshold, not a divergence —
+        // so the sweep steps by 0.111 from an offset origin and lands on no
+        // boundary at all.
+        var compared = 0
+        for row in 0...8 {
+            for column in 0...8 {
+                let hit = SIMD3(
+                    1.037 + Float(column) * 0.111, 1.041 + Float(row) * 0.111, 0
+                )
+                let scope = MeshEditController.resolveMoveScope(
+                    at: hit, in: mesh, sceneRadius: context.sceneRadius
+                )
+                harness.hover(over: hit)
+                let preview = harness.coordinator.hoverPreview.preview
+                compared += 1
+                switch scope {
+                case .vertex:
+                    guard case .snapTarget = preview else {
+                        Issue.record("\(hit): drag says vertex, hover says \(String(describing: preview))")
+                        return
+                    }
+                case .loop:
+                    guard case .loopHighlight = preview else {
+                        Issue.record("\(hit): drag says loop, hover says \(String(describing: preview))")
+                        return
+                    }
+                case .surface:
+                    guard case .faceHighlight = preview else {
+                        Issue.record("\(hit): drag says surface, hover says \(String(describing: preview))")
+                        return
+                    }
+                case .none:
+                    break
+                }
+            }
+        }
+        #expect(compared == 81)
     }
 }

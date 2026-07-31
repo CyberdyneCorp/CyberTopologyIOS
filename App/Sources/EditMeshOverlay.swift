@@ -27,14 +27,28 @@ struct OverlaySettings: Equatable {
     /// True x-ray mode: far-side wireframe rendered depth-attenuated
     /// (spec scenario "X-ray mode").
     var xrayEnabled = false
-    /// Occlusion depth threshold in NDC depth units: how far behind the
-    /// Target surface edges stay visible before they are occluded.
+    /// Occlusion allowance as a FRACTION OF THE SCENE RADIUS: how far behind
+    /// the Target surface an overlay stays visible before it is occluded.
+    ///
+    /// Scene-relative, not NDC, since openspec fix-target-occlusion: NDC depth is
+    /// nonlinear and scaled by the near/far planes, so the old 0.002 was fifty
+    /// times a fitted model's entire depth range and occluded nothing. The
+    /// renderer converts it with `CameraState.depthBias(forWorldOffset:bounds:)`
+    /// once per frame.
     var occlusionBias: Float = Float(ViewportSettings.defaultOcclusionBias)
     /// Translucent face fill under the wireframe, 0...1. 0 = wireframe
     /// only (the pre-fill behaviour). Independent of `opacity`: the fill
     /// and the wire are separate reads — you can want a solid-looking face
     /// with a faint wire, or the reverse.
     var fillOpacity: Float = Float(ViewportSettings.defaultFillOpacity)
+
+    /// `occlusionBias` converted to NDC depth for the CURRENT camera, by
+    /// `CameraState.depthBias(forWorldOffset:bounds:)`. This is the number the
+    /// shader compares against; `occlusionBias` is the scene-relative intent it
+    /// came from. Kept as a separate field so the two can never be mistaken for
+    /// each other — passing scene units to a shader expecting NDC is exactly the
+    /// bug openspec fix-target-occlusion exists to remove.
+    var resolvedDepthBias: Float = 0
 }
 
 /// Creation micro-animation timing: a pure time→progress mapping so the
@@ -99,6 +113,11 @@ enum OverlayUniformsFactory {
     /// Hover-preview highlight color (task 3.6): warm yellow, distinct from
     /// both the cyan wire and the green tag pass.
     static let hoverColor = SIMD3<Float>(1.0, 0.85, 0.25)
+    /// Hovered edge-LOOP colour (openspec add-hover-scope-highlight): red, far
+    /// from the cyan wire and the amber ghost. It reads apart from the pink face
+    /// fill by FORM first — a thin bright line against a broad low-alpha
+    /// region — so the pair survives being hard to tell apart by hue.
+    static let hoverLoopColor = SIMD3<Float>(1.0, 0.25, 0.2)
     /// Pin-marker color (task 4.3, docs/COZYBLANKET_REFERENCE §4.1: pins
     /// render as yellow circles). Saturated yellow — deliberately the
     /// hover family, since both mean "this element is special right now",
@@ -160,7 +179,7 @@ enum OverlayUniformsFactory {
             mvp: mvp,
             color: SIMD4(wireColor, settings.opacity),
             params: SIMD4(
-                animationProgress, settings.occlusionBias,
+                animationProgress, settings.resolvedDepthBias,
                 xrayAttenuation, Float(vertexCount)
             ),
             misc: sizes.misc,
@@ -209,13 +228,14 @@ enum OverlayUniformsFactory {
     /// visibility rules.
     static func hover(
         mvp: simd_float4x4, settings: OverlaySettings,
-        viewport: OverlayViewport = OverlayViewport()
+        viewport: OverlayViewport = OverlayViewport(),
+        color: SIMD3<Float> = hoverColor
     ) -> OverlayUniforms {
         let sizes = screen(viewport, points: hoverPointSize, edge: hoverEdgeWidth)
         return OverlayUniforms(
             mvp: mvp,
-            color: SIMD4(hoverColor, hoverAlpha),
-            params: SIMD4(1, settings.occlusionBias, xrayAttenuation, 0),
+            color: SIMD4(color, hoverAlpha),
+            params: SIMD4(1, settings.resolvedDepthBias, xrayAttenuation, 0),
             misc: sizes.misc,
             line: sizes.line
         )
@@ -233,7 +253,7 @@ enum OverlayUniformsFactory {
         return OverlayUniforms(
             mvp: mvp,
             color: SIMD4(color, min(1, settings.opacity * 1.2)),
-            params: SIMD4(1, settings.occlusionBias, xrayAttenuation, 0),
+            params: SIMD4(1, settings.resolvedDepthBias, xrayAttenuation, 0),
             misc: sizes.misc,
             line: sizes.line
         )
@@ -251,7 +271,7 @@ enum OverlayUniformsFactory {
         return OverlayUniforms(
             mvp: mvp,
             color: SIMD4(pinColor, 1),
-            params: SIMD4(1, settings.occlusionBias, xrayAttenuation, 0),
+            params: SIMD4(1, settings.resolvedDepthBias, xrayAttenuation, 0),
             misc: sizes.misc,
             line: sizes.line
         )
@@ -499,6 +519,9 @@ final class EditMeshOverlayPath {
     private(set) var hoverSegmentVertexCount = 0
     private(set) var hoverPointVertexCount = 0
     private var hoverVertexBuffer: MTLBuffer?
+    /// Colour for the hover pass, set with its geometry: yellow for a vertex,
+    /// red for a loop (openspec add-hover-scope-highlight).
+    private(set) var hoverColor = OverlayUniformsFactory.hoverColor
     /// Annotation pass (task 4.3): pin markers + per-colour tagged loops,
     /// standalone world-space vertices in ONE buffer (pins first, then
     /// each colour group). Rebuilt only when the annotations change.
@@ -629,7 +652,11 @@ final class EditMeshOverlayPath {
     /// point-primitive vertices (the snap-target dot). Both live in ONE
     /// small buffer — segments first, points appended — replaced only when
     /// the preview changes. Empty input clears the pass.
-    func setHoverHighlight(segments: [Float], points: [Float]) {
+    func setHoverHighlight(
+        segments: [Float], points: [Float],
+        color: SIMD3<Float> = OverlayUniformsFactory.hoverColor
+    ) {
+        hoverColor = color
         let floats = segments + points
         guard
             !floats.isEmpty,
@@ -809,7 +836,7 @@ final class EditMeshOverlayPath {
     ) {
         guard hasHoverHighlight, let buffer = hoverVertexBuffer else { return }
         var uniforms = OverlayUniformsFactory.hover(
-            mvp: mvp, settings: settings, viewport: viewport
+            mvp: mvp, settings: settings, viewport: viewport, color: hoverColor
         )
         encoder.setDepthStencilState(occludedDepthState)
         encoder.setVertexBuffer(buffer, offset: 0, index: 0)

@@ -83,6 +83,10 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     // immediate command, also hosted by the batch panel beside clearPins.
     case freezeFlip
     case clearFrozen
+    /// add-painted-region-retopo: paint a region of the TARGET, then Auto-Retopo
+    /// solves only that region and merges the patch into the cage.
+    case paintRegion
+    case clearPaintedRegion
     /// add-uv-seam-authoring: Seam Flip arms the seam tool; clearSeams sews every seam.
     case seamFlip
     case clearSeams
@@ -185,6 +189,7 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
         case .freezeFlip: .freezeFlip
         case .seamFlip: .seamFlip
         case .weaveFill: .weaveFill
+        case .paintRegion: .paintRegion
         default: nil
         }
     }

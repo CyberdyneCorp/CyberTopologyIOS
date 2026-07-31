@@ -151,6 +151,15 @@ targets:
       # Worth the device slot specifically because its bug was an ID-SPACE one —
       # the kind that only shows on an edited cage, which is what device use is.
       - path: CyberKit/Tests/CyberKitTests/HalveDensityOpsTests.swift
+      # Rigid multi-vertex move (add-context-aware-move): the op behind a
+      # loop-scope Move drag. On device because the drag it serves is a device
+      # gesture, and its re-snap onto the Target is what keeps a moved loop on
+      # the surface.
+      - path: CyberKit/Tests/CyberKitTests/MoveVerticesOpsTests.swift
+      # Painted-region retopo (add-painted-region-retopo): carving the solve
+      # domain and merging the patch. On device because the whole point is a
+      # gesture-driven solve over a real Target.
+      - path: CyberKit/Tests/CyberKitTests/RegionRetopoOpsTests.swift
       # Mesh fixtures the integration tests import, bundled into the test
       # target so they load on a physical device too (a #filePath / absolute
       # Mac path only resolves on the simulator's shared filesystem). This

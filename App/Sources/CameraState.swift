@@ -66,6 +66,11 @@ struct CameraState: Equatable {
     static let orbitRadiansPerPoint: Float = 0.008
     /// Frame-to-fit margin so the fitted object does not touch the edges.
     static let framingMargin: Float = 1.15
+    /// Smallest near/far ratio the depth buffer is allowed to be squeezed to.
+    /// 1e-3 leaves ~3 decades of depth resolution across the scene; the 1e-5
+    /// this replaced left the front and back of a fitted model indistinguishable.
+    static let minNearFarRatio: Float = 1e-3
+
     /// Zoom clamp relative to scene radius: deliberately allows diving well
     /// inside the mesh (rescue always recovers) but never to a degenerate
     /// zero/negative distance.
@@ -77,19 +82,28 @@ struct CameraState: Equatable {
     var azimuth: Float
     var elevation: Float
     var fovY: Float
+    /// Roll about the view direction, in radians (openspec add-two-finger-roll).
+    ///
+    /// Camera STATE rather than a display transform: `basis` is what the picking
+    /// rays, the pan direction and the camera-as-manipulator tools all read, and
+    /// a roll applied only where the image is produced would leave every one of
+    /// them computing against an up vector the artist can see is wrong.
+    var roll: Float
 
     init(
         focus: SIMD3<Float> = .zero,
         distance: Float = 1,
         azimuth: Float = CameraState.defaultAzimuth,
         elevation: Float = CameraState.defaultElevation,
-        fovY: Float = CameraState.defaultFovY
+        fovY: Float = CameraState.defaultFovY,
+        roll: Float = 0
     ) {
         self.focus = focus
         self.distance = distance
         self.azimuth = azimuth
         self.elevation = elevation
         self.fovY = fovY
+        self.roll = roll
     }
 
     // MARK: - Derived geometry
@@ -107,18 +121,26 @@ struct CameraState: Equatable {
         focus + distance * Self.direction(azimuth: azimuth, elevation: elevation)
     }
 
-    /// View-space basis in world coordinates (right, up, forward).
+    /// View-space basis in world coordinates (right, up, forward), including
+    /// `roll` — everything downstream of this agrees with what is on screen.
     var basis: (right: SIMD3<Float>, up: SIMD3<Float>, forward: SIMD3<Float>) {
         let forward = normalize(focus - position)
-        let right = normalize(cross(forward, SIMD3(0, 1, 0)))
-        let up = cross(right, forward)
-        return (right, up, forward)
+        let level = normalize(cross(forward, SIMD3(0, 1, 0)))
+        let levelUp = cross(level, forward)
+        guard roll != 0, roll.isFinite else { return (level, levelUp, forward) }
+        let c = cos(roll)
+        let s = sin(roll)
+        // Rodrigues about `forward`, the SAME sense `roll(byRadians:about:)`
+        // rotates the focus in. The two must agree or they do not cancel, and
+        // the pivot slides across the screen as the view rolls (`forward ×
+        // right = -up`, which is where the signs below come from).
+        return (level * c - levelUp * s, levelUp * c + level * s, forward)
     }
 
     /// True when any component is non-finite or the distance collapsed —
     /// the poses camera-rescue must recover from.
     var isDegenerate: Bool {
-        let scalars = [focus.x, focus.y, focus.z, distance, azimuth, elevation, fovY]
+        let scalars = [focus.x, focus.y, focus.z, distance, azimuth, elevation, fovY, roll]
         return scalars.contains { !$0.isFinite } || distance <= 0
     }
 
@@ -152,6 +174,35 @@ struct CameraState: Equatable {
         let worldPerPoint = 2 * distance * tan(fovY * 0.5) / viewportHeight
         let (right, up, _) = basis
         focus += (-delta.x * right + delta.y * up) * worldPerPoint
+    }
+
+    /// Two-finger twist: rolls the view about the axis through `pivot` parallel
+    /// to the view direction, so the pivot keeps its screen position.
+    ///
+    /// SIGN: a positive angle turns the scene COUNTER-clockwise on screen.
+    /// UIKit's gesture rotation is positive clockwise, so `handleRotation`
+    /// negates it — that is what makes the scene follow the fingers rather than
+    /// fight them, and it is invisible to any assertion about the angle alone
+    /// (`CameraRollTests.rollingTurnsTheSceneAroundThePivot` pins it by
+    /// projecting a marker and checking which way it travels).
+    ///
+    /// Rolling about the camera's OWN axis would spin the scene about the screen
+    /// centre and slide the work out from under the fingers — the opposite of
+    /// what the gesture promises. Rotating the focus about the pivot's axis
+    /// leaves `distance`, `azimuth` and `elevation` untouched, and the eye
+    /// follows for free: the eye-to-focus offset lies ALONG the rotation axis,
+    /// so the rotation does not move it.
+    mutating func roll(byRadians angle: Float, about pivot: SIMD3<Float>) {
+        guard angle.isFinite, angle != 0 else { return }
+        let axis = basis.forward
+        let offset = focus - pivot
+        let c = cos(angle)
+        let s = sin(angle)
+        // Rodrigues about a unit axis.
+        let rotated =
+            offset * c + cross(axis, offset) * s + axis * dot(axis, offset) * (1 - c)
+        focus = pivot + rotated
+        roll += angle
     }
 
     // MARK: - Framing / rescue
@@ -204,7 +255,13 @@ struct CameraState: Equatable {
         let centerDistance = length(position - bounds.center)
         let safeDistance = centerDistance.isFinite ? centerDistance : radius * 3
         let far = safeDistance + 4 * radius
-        let near = max(safeDistance - 2 * radius, far * 1e-5)
+        // Floored so `far/near` stays bounded. The old floor (`far * 1e-5`)
+        // allowed a ratio of 100,000, and it took over at exactly the pose that
+        // matters: framed to fit, `safeDistance ≈ 2 * radius`, so `d - 2r ≈ 0`.
+        // The whole scene then occupied 4e-5 of the depth range — measured — and
+        // no depth test, biased or not, can separate a model's front from its
+        // back in that state (openspec fix-target-occlusion).
+        let near = max(safeDistance - 2 * radius, far * Self.minNearFarRatio)
         return (near, far)
     }
 
@@ -234,6 +291,31 @@ struct CameraState: Equatable {
             SIMD4(0, 0, zScale, -1),
             SIMD4(0, 0, near * zScale, 0)
         ))
+    }
+
+    /// The NDC-depth bias equivalent to pulling a surface `offset` world units
+    /// toward the camera, measured at the FOCUS depth — what the artist is
+    /// looking at, and where a surface-snapped overlay actually sits.
+    ///
+    /// This is the whole reason the occlusion allowance is expressed in scene
+    /// units and converted here rather than stored as an NDC number: NDC depth
+    /// is nonlinear and its scale depends entirely on the near and far planes,
+    /// so one fixed number cannot mean the same thing on two scenes. Measured on
+    /// a fitted unit-radius model, an allowance of 0.002 NDC was fifty times the
+    /// model's ENTIRE depth range.
+    func depthBias(forWorldOffset offset: Float, bounds: SceneBounds) -> Float {
+        guard offset.isFinite, offset > 0 else { return 0 }
+        let (near, far) = clipPlanes(for: bounds)
+        guard far > near, near > 0 else { return 0 }
+        // NDC depth of a point `t` in front of the camera, from the same
+        // projection `projectionMatrix` builds.
+        func depth(_ t: Float) -> Float {
+            let zScale = far / (near - far)
+            return (zScale * -t + near * zScale) / t
+        }
+        let t = max(distance, near * 2)
+        let pulled = max(t - offset, near * 1.001)
+        return abs(depth(t) - depth(pulled))
     }
 
     // MARK: - Animation support

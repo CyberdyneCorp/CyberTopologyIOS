@@ -165,6 +165,23 @@ final class MeshEditController {
     /// the coordinator renders/clears the snap-target highlight through the
     /// overlay's highlight pass. nil = clear. Fires BEFORE any commit.
     var onSnapHighlightChanged: ((HoverPreviewState.SnapTarget?) -> Void)?
+    /// Which scope a live Move drag picked up — "Vertex" / "Loop" / "Surface",
+    /// nil when no Move drag is live (openspec add-context-aware-move; spec:
+    /// pencil-interaction / "The viewport names the scope before the drag
+    /// commits").
+    ///
+    /// The scope turns on a distance as small as a third of a cell. If it were
+    /// knowable only from the result, a mis-pick would be discovered after the
+    /// mesh had already changed.
+    var onMoveScopeChanged: ((String?) -> Void)?
+    /// The painted Target region changed (openspec add-painted-region-retopo):
+    /// the viewport draws the extent so it is visible before a solve runs. Empty
+    /// clears it.
+    var onPaintedRegionChanged: (([UInt32]) -> Void)?
+
+    /// Target faces painted for the next region solve. Viewport state: never
+    /// journaled, never persisted, cleared when a solve runs.
+    var paintedRegion = PaintedRegion()
     /// Injected haptic seam (task 3.7): nil = silent. Tests inject a
     /// recording fake; the coordinator installs the capability-gated
     /// `SnapHapticsEngine` (graceful no-op on simulator).
@@ -213,7 +230,7 @@ final class MeshEditController {
     static let relaxRadiusFraction: Float = 0.18
     static let moveRadiusFraction: Float = 0.3
     static let eraseBaseRadiusFraction: Float = 0.08
-    static let vertexPickRadiusFraction: Float = 0.12
+    nonisolated static let vertexPickRadiusFraction: Float = 0.12
     /// Draw Strip release-merge cap (task 4.2a): a rail vertex may weld onto
     /// existing topology no further than this fraction of the strip's own
     /// width, so it can never reach across the strip to its opposite rail.
@@ -223,7 +240,7 @@ final class MeshEditController {
     /// to another vertex for the snap target to pre-highlight and the
     /// stroke-end merge/snap to engage. Deliberately much tighter than the
     /// grab radius so ordinary tweaks near neighbors do not merge.
-    static let mergeSnapRadiusFraction: Float = 0.04
+    nonisolated static let mergeSnapRadiusFraction: Float = 0.04
 
     /// Snap-feedback mapping (task 3.7): pure event → highlight/tick state,
     /// fed by the Tweak/Move snap detection below. `hapticsEnabled` is the
@@ -254,12 +271,62 @@ final class MeshEditController {
         }
     }
 
+    /// What a Move drag carries, decided from the element under its FIRST
+    /// sample (openspec add-context-aware-move; spec: pencil-interaction /
+    /// "Move's scope is what the drag starts on").
+    ///
+    /// Resolved ONCE, at grab, and held for the whole drag: the gesture must not
+    /// change meaning under the finger, and a drag journals ONE entry — one that
+    /// would otherwise end up describing something the artist never started.
+    enum MoveScope: Equatable {
+        /// Started on a vertex: that vertex alone, no falloff.
+        case vertex(UInt32)
+        /// Started on an edge: its whole loop, rigidly. `edge` is the edge the
+        /// pick landed on — the hover preview walks it to draw the loop, so that
+        /// the highlight and the drag can never disagree about which loop it is
+        /// (openspec add-hover-scope-highlight, design D2). `seed` is the vertex
+        /// the pick measured from, kept for diagnostics.
+        case loop([UInt32], edge: UInt32, seed: UInt32)
+        /// Started on a face: today's geodesic falloff around `seed`.
+        case surface(seed: UInt32)
+
+        /// Name shown while the drag is live, so what it grabbed is knowable
+        /// before it commits.
+        var hint: String {
+            switch self {
+            case .vertex: return "Vertex"
+            case .loop: return "Loop"
+            case .surface: return "Surface"
+            }
+        }
+
+        /// Journal suffix. Surface keeps the bare `move` verb so existing
+        /// history and tests keep their meaning.
+        var verbSuffix: String {
+            switch self {
+            case .vertex: return ".vertex"
+            case .loop: return ".loop"
+            case .surface: return ""
+            }
+        }
+
+        /// Only a single-target drag may merge on release: a loop release would
+        /// decide a merge for every vertex at once, from a gesture that shows
+        /// only where the loop landed.
+        var mergesOnRelease: Bool {
+            if case .loop = self { return false }
+            return true
+        }
+    }
+
     private struct Session {
         var verb: InputArbiter.Verb
         var context: Context
         var transaction: MeshEditTransaction
         /// Vertex grabbed at stroke start (Move seed / Tweak target).
         var grabbedVertex: UInt32?
+        /// What a Move drag carries. Nil for every other verb.
+        var moveScope: MoveScope?
         /// Last surface point of the drag (Move displacement anchor).
         var anchor: SIMD3<Float>?
         /// Merge range for THIS drag, measured from the grabbed vertex's own
@@ -501,19 +568,43 @@ final class MeshEditController {
             )
         )
         if verb == .move || verb == .tweak {
-            // Grab the vertex nearest to where the stroke lands on the
-            // surface; a miss leaves the whole stroke inert.
-            guard
-                let hit = surfacePoint(at: point(of: sample), in: context),
-                let pick = mesh.nearestVertex(
-                    to: hit, maxDistance: context.sceneRadius * Self.vertexPickRadiusFraction
-                )
-            else { return }
-            newSession.grabbedVertex = pick.vertex
+            // Where the stroke lands on the surface; a miss leaves it inert.
+            guard let hit = surfacePoint(at: point(of: sample), in: context) else { return }
             newSession.anchor = hit
-            newSession.mergeRange = Self.mergeRange(
-                around: pick.vertex, in: mesh, sceneRadius: context.sceneRadius
-            )
+            if verb == .move {
+                // Decided once, here, and never re-read: see `MoveScope`. NOT
+                // gated on a vertex grab — an edge midpoint on a coarse cage
+                // sits outside the vertex reach, and gating there made loop
+                // scope unreachable.
+                guard
+                    let scope = Self.resolveMoveScope(
+                        at: hit, in: mesh, sceneRadius: context.sceneRadius
+                    )
+                else { return }
+                newSession.moveScope = scope
+                // Only a scope that merges tracks a vertex to merge WITH.
+                switch scope {
+                case .vertex(let vertex), .surface(let vertex):
+                    newSession.grabbedVertex = vertex
+                    newSession.mergeRange = Self.mergeRange(
+                        around: vertex, in: mesh, sceneRadius: context.sceneRadius
+                    )
+                case .loop:
+                    break
+                }
+                onMoveScopeChanged?(scope.hint)
+            } else {
+                // Tweak: grab the nearest vertex, as it always has.
+                guard
+                    let pick = mesh.nearestVertex(
+                        to: hit, maxDistance: context.sceneRadius * Self.vertexPickRadiusFraction
+                    )
+                else { return }
+                newSession.grabbedVertex = pick.vertex
+                newSession.mergeRange = Self.mergeRange(
+                    around: pick.vertex, in: mesh, sceneRadius: context.sceneRadius
+                )
+            }
         }
         session = newSession
         if verb == .relax || verb == .erase {
@@ -537,6 +628,7 @@ final class MeshEditController {
     ) {
         if let finished = session {
             session = nil
+            if finished.moveScope != nil { onMoveScopeChanged?(nil) }
             commit(finished)
             return
         }
@@ -559,6 +651,7 @@ final class MeshEditController {
         toolStroke = nil
         guard let cancelled = session else { return }
         session = nil
+        if cancelled.moveScope != nil { onMoveScopeChanged?(nil) }
         if cancelled.mutated {
             onDiscardLiveEdits?()
         }
@@ -596,18 +689,31 @@ final class MeshEditController {
                     pressure: Float(sample.pressure)
                 )
             case .move:
-                guard let seed = current.grabbedVertex, let anchor = current.anchor,
-                    mesh.vertexPosition(seed) != nil
-                else { return }
+                guard let scope = current.moveScope, let anchor = current.anchor else { return }
                 let displacement = hit - anchor
                 guard simd_length(displacement) > 0 else { return }
-                try mesh.moveWithGeodesicFalloff(
-                    seed: seed,
-                    displacement: displacement,
-                    radius: radiusBase * Self.moveRadiusFraction,
-                    pinned: pinned,
-                    snapping: context.snapper
-                )
+                switch scope {
+                case .vertex(let vertex):
+                    // Displacement, not placement at the touch: the grabbed
+                    // vertex keeps its offset from the finger instead of
+                    // jumping to it at the first sample.
+                    try mesh.moveVertices(
+                        [vertex], by: displacement, pinned: pinned, snapping: context.snapper
+                    )
+                case .loop(let vertices, _, _):
+                    try mesh.moveVertices(
+                        vertices, by: displacement, pinned: pinned, snapping: context.snapper
+                    )
+                case .surface(let seed):
+                    guard mesh.vertexPosition(seed) != nil else { return }
+                    try mesh.moveWithGeodesicFalloff(
+                        seed: seed,
+                        displacement: displacement,
+                        radius: radiusBase * Self.moveRadiusFraction,
+                        pinned: pinned,
+                        snapping: context.snapper
+                    )
+                }
                 session?.anchor = hit
             case .tweak:
                 guard let vertex = current.grabbedVertex else { return }
@@ -631,7 +737,7 @@ final class MeshEditController {
     /// vertex is at least 70% of the way to its target. Half a cell was tried
     /// and is too eager — it merged a vertex nudged 60% toward a neighbour,
     /// which is a tweak, not an intent to join (a test caught it).
-    static let mergeRangeCellFraction: Float = 0.3
+    nonisolated static let mergeRangeCellFraction: Float = 0.3
 
     /// Merge range for a drag, measured from the grabbed vertex's own cell —
     /// the mean length of the edges meeting it — rather than from the scene.
@@ -647,10 +753,24 @@ final class MeshEditController {
     /// floor it simply wins on any cage smaller than the scene, which is every
     /// cage, and reinstates the bug (measured: 2.0 against a cell of 1).
     static func mergeRange(around vertex: UInt32, in mesh: Mesh, sceneRadius: Float) -> Float {
-        let unmeasurable = sceneRadius * mergeSnapRadiusFraction
-        guard let origin = mesh.vertexPosition(vertex) else { return unmeasurable }
+        guard let cell = cellSize(around: vertex, in: mesh) else {
+            return sceneRadius * mergeSnapRadiusFraction
+        }
+        return cell * mergeRangeCellFraction
+    }
+
+    /// The local cell: the mean length of the edges meeting `vertex`, or nil
+    /// when there is nothing to measure (an isolated vertex, an empty cage).
+    ///
+    /// Every tolerance that means "close, as the CAGE reckons it" is a fraction
+    /// of this. A scene-relative one has been the defect four times over in this
+    /// line of work — the merge window, the rim-bridge rung clearance, the
+    /// mid-stroke guard, and Move's own grab radius — because a cage's spacing
+    /// has nothing to do with how big the scene around it happens to be.
+    nonisolated static func cellSize(around vertex: UInt32, in mesh: Mesh) -> Float? {
+        guard let origin = mesh.vertexPosition(vertex) else { return nil }
         let live = mesh.edgeCount
-        guard live > 0 else { return unmeasurable }
+        guard live > 0 else { return nil }
         var total: Float = 0
         var count = 0
         var seen = 0
@@ -674,8 +794,92 @@ final class MeshEditController {
             total += simd_distance(origin, point)
             count += 1
         }
-        guard count > 0, total > 0 else { return unmeasurable }
-        return total / Float(count) * mergeRangeCellFraction
+        guard count > 0, total > 0 else { return nil }
+        return total / Float(count)
+    }
+
+    /// How much of the local cell a touch may sit from a vertex and still count
+    /// as ON that vertex, and from an edge and still count as ON that edge.
+    ///
+    /// SIZED FROM THE FACE INTERIOR, which is what makes these numbers what they
+    /// are. Vertex and edge scope are targets the artist aims AT; the face is
+    /// the default they fall back to, so it has to be the DOMINANT region of a
+    /// cell — and an edge window is a band along every side, which eats area
+    /// fast. For a square cell, the surface region is what is left inside all
+    /// four bands: `(1 - 2e)²`. At the 0.35 first shipped that is 9% of the
+    /// cell, and device testing found exactly what those numbers predict —
+    /// starting a drag on a face almost never stretched the patch.
+    ///
+    /// A TRIANGLE sets the ceiling. Its farthest interior point from any edge is
+    /// the incenter, and for the right-isoceles triangle a triangulated quad
+    /// produces that is only ~0.26 of the mean edge. Any edge window at or above
+    /// that covers the whole triangle, so surface scope inside one becomes
+    /// unreachable at every touch position — not rare, impossible.
+    ///
+    /// At 0.15 the surface region is ~60% of a square cell and the triangle
+    /// keeps a real core, while an edge still has a band 0.15 of a cell wide on
+    /// either side to aim at.
+    nonisolated static let vertexScopeCellFraction: Float = 0.25
+    nonisolated static let edgeScopeCellFraction: Float = 0.15
+
+    /// What a Move drag starting at `hit` should carry (spec:
+    /// pencil-interaction / "Move's scope is what the drag starts on"), or nil
+    /// when nothing is close enough to grab — in which case the stroke is inert,
+    /// exactly as it was before this change.
+    ///
+    /// Order is vertex, then edge, then face. Vertex wins ties BECAUSE every
+    /// vertex also lies on edges: an edge-first order would make single-vertex
+    /// scope unreachable, which is the whole point of the feature.
+    ///
+    /// The scene-relative grab radius survives only as the outer bound that
+    /// finds a candidate to measure the cell from, so starting anywhere on a
+    /// face stays exactly as easy to hit as it is today.
+    /// `nonisolated`: a pure query over a mesh, called both from the main-actor
+    /// controller and from the nonisolated hover queries (design D1). Being
+    /// synchronous, it runs in the caller's context and sends nothing anywhere.
+    nonisolated static func resolveMoveScope(
+        at hit: SIMD3<Float>, in mesh: Mesh, sceneRadius: Float
+    ) -> MoveScope? {
+        // Both candidates are gathered with the SAME generous reach first, and
+        // only then judged against the cell-relative windows.
+        //
+        // The edge query must NOT be nested inside a successful vertex grab: on
+        // a cage that is coarse relative to its scene, the midpoint of a cell can
+        // sit outside the vertex reach entirely — a 2-unit cell in a scene of
+        // radius 7 puts it at 1.0 against a reach of 0.85 — and gating on the
+        // vertex made loop scope unreachable there, with the whole stroke inert.
+        let reach = sceneRadius * vertexPickRadiusFraction
+        let near = mesh.nearestVertex(to: hit, maxDistance: reach)
+        let edge = mesh.nearestEdge(to: hit, maxDistance: reach)
+        // The cell is measured from whichever anchor we have — the near vertex,
+        // or failing that an endpoint of the near edge.
+        let anchor = near?.vertex ?? edge.flatMap { mesh.edgeEndpoints(of: $0.edge)?.0 }
+        guard let anchor else { return nil }
+        // No edges to measure means no edges to pick either: an isolated vertex
+        // can only ever be moved alone.
+        guard let cell = cellSize(around: anchor, in: mesh) else {
+            return .vertex(anchor)
+        }
+        if let near, simd_distance(hit, near.position) <= cell * vertexScopeCellFraction {
+            return .vertex(near.vertex)
+        }
+        if let edge, simd_distance(hit, edge.point) <= cell * edgeScopeCellFraction {
+            let loop = mesh.edgeLoopVertices(from: edge.edge)
+            if loop.count >= 3 {
+                return .loop(loop, edge: edge.edge, seed: anchor)
+            }
+            // The loop could not be walked end to end — a pole, a boundary, a
+            // neighbourhood that is not quad-regular. A drag that visibly
+            // grabbed an edge still has to move something, so it moves that
+            // edge.
+            if let ends = mesh.edgeEndpoints(of: edge.edge) {
+                return .loop([ends.0, ends.1], edge: edge.edge, seed: anchor)
+            }
+        }
+        // Surface scope needs a seed vertex; without one the stroke is inert,
+        // exactly as it was before this change.
+        guard let near else { return nil }
+        return .surface(seed: near.vertex)
     }
 
     /// Merge-snap detection (task 3.7, spec scenario "Snap feedback"): when
@@ -688,6 +892,9 @@ final class MeshEditController {
         guard current.verb == .tweak || current.verb == .move,
             let grabbed = current.grabbedVertex
         else { return }
+        // A loop drag never merges, so it never offers a candidate to merge
+        // WITH: no highlight, no tick, nothing to finalize at release.
+        if current.verb == .move, current.moveScope?.mergesOnRelease == false { return }
         var candidate: HoverPreviewState.SnapTarget?
         if let dragged = mesh.vertexPosition(grabbed),
             let pick = mesh.nearestVertex(
@@ -716,22 +923,29 @@ final class MeshEditController {
         // SEED merges either way — the vertex under the finger, never anything
         // the falloff carried along — so the region still keeps its structure.
         let candidate = snapFeedback.candidate
-        var verb = finished.verb.rawValue
+        // The scope names the entry — `move.vertex`, `move.loop`, and a bare
+        // `move` for surface so existing history keeps its meaning.
+        var verb = finished.verb.rawValue + (finished.moveScope?.verbSuffix ?? "")
+        var merged = false
         lastCommit = nil
         journalOrDiscard(verb: verb) {
             if let candidate, let grabbed = finished.grabbedVertex,
                 let mesh = finished.context.editMesh,
-                finished.verb == .tweak || finished.verb == .move {
+                finished.verb == .tweak
+                    || (finished.verb == .move
+                        && finished.moveScope?.mergesOnRelease != false) {
                 try mesh.mergeVertices(keep: candidate.vertex, remove: grabbed)
                 verb += ".mergeSnap"
+                merged = true
                 onLiveEdit?()
             }
             return try finished.transaction.command(verb: verb)
         }
         // Tick ON commit (highlight was live during the drag): only when
-        // a snap/merge was engaged AND its command reached the journal.
-        let snapCommitted = candidate != nil && verb != finished.verb.rawValue
-            && lastCommit != nil
+        // a snap/merge was engaged AND its command reached the journal. Read
+        // from `merged`, NOT from the verb differing — the scope suffix makes
+        // the verb differ on every scoped drag, merge or no merge.
+        let snapCommitted = merged && lastCommit != nil
         emitSnapEffects(snapFeedback.strokeEnded(committed: snapCommitted))
     }
 

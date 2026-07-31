@@ -95,6 +95,41 @@ struct GhostStyle: Equatable {
         return style
     }()
 
+    /// Painted Target region (openspec add-painted-region-retopo): where the next
+    /// auto-retopology will solve.
+    ///
+    /// Teal and non-pulsing, deliberately unlike the amber proposal ghost: this is
+    /// a statement about what WILL be solved, not a result asking to be accepted.
+    /// Low alpha because it can cover a large part of the Target and the surface
+    /// underneath still has to be readable.
+    static func regionPaint(sceneRadius: Float) -> GhostStyle {
+        var style = GhostStyle()
+        style.color = SIMD3(0.25, 0.85, 0.8)
+        style.baseAlpha = 0.4
+        style.pulseFloor = 1
+        style.rimStrength = 0.3
+        style.normalOffset = max(sceneRadius, 1e-6) * 0.004
+        return style
+    }
+
+    /// Hovered-FACE fill (openspec add-hover-scope-highlight, design D3): the
+    /// face a surface-scope Move drag would stretch.
+    ///
+    /// Pink, and deliberately NOT pulsing — `pulseFloor = 1` holds the alpha
+    /// constant. A pulse reads as an invitation, which is right for the create
+    /// hint (draw here) and wrong here, where the fill states what is already
+    /// under the pointer. Low alpha because it covers a whole face and must not
+    /// bury the wireframe it sits on.
+    static func faceHighlight(sceneRadius: Float) -> GhostStyle {
+        var style = GhostStyle()
+        style.color = SIMD3(1.0, 0.45, 0.7)
+        style.baseAlpha = 0.35
+        style.pulseFloor = 1
+        style.rimStrength = 0.4
+        style.normalOffset = max(sceneRadius, 1e-6) * 0.005
+        return style
+    }
+
     /// `hoverHint` lifted off the surface along its camera-facing normal:
     /// the hint's flat quad spans snapped corners, so its interior dips
     /// below convex Targets and would lose the depth test without a lift.

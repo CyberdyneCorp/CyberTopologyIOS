@@ -87,7 +87,12 @@ struct EditMeshOverlayTests {
     // MARK: - Uniform math
 
     @Test func mainUniformsCarrySettingsAndProgress() {
-        let settings = OverlaySettings(opacity: 0.6, xrayEnabled: false, occlusionBias: 0.004)
+        // `resolvedDepthBias` is what reaches the shader — the scene-relative
+        // `occlusionBias` converted for the current camera (openspec
+        // fix-target-occlusion). Passing the raw setting through was the bug:
+        // it is in scene units, the shader compares NDC depth.
+        var settings = OverlaySettings(opacity: 0.6, xrayEnabled: false, occlusionBias: 0.004)
+        settings.resolvedDepthBias = 0.00012
         let uniforms = OverlayUniformsFactory.main(
             mvp: matrix_identity_float4x4, settings: settings,
             animationProgress: 0.25, vertexCount: 42
@@ -98,7 +103,7 @@ struct EditMeshOverlayTests {
                 == OverlayUniformsFactory.wireColor
         )
         #expect(uniforms.params.x == 0.25)
-        #expect(uniforms.params.y == 0.004)
+        #expect(uniforms.params.y == 0.00012)
         #expect(uniforms.params.z == OverlayUniformsFactory.xrayAttenuation)
         #expect(uniforms.params.w == 42)
         #expect(uniforms.misc.x == OverlayUniformsFactory.pointSize)

@@ -43,6 +43,10 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
     /// flow. Needs only a Target (no EditMesh) and journals nothing — guides are
     /// authoring hints, not document edits.
     case guide
+    /// Paint a region of the TARGET to bound auto-retopology (openspec
+    /// add-painted-region-retopo). Paints the Target, not the cage: it names
+    /// where the solver may work.
+    case paintRegion
     /// Weave Fill (add-weave-region-selection): fills BARE TARGET with quads that
     /// meet the existing cage's open boundary exactly. A TAP proposes the next patch
     /// outward from the nearest free edge; a PAINT stroke says how far to fill. The
@@ -64,7 +68,8 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
         case .patchClone, .extendBoundary, .transformVertices, .transformIslandUV:
             return true
         case .buildQuad, .buildTriangle, .mergePair, .pathDistribute,
-            .surfaceCut, .drawStrip, .pinFlip, .freezeFlip, .seamFlip, .guide, .weaveFill:
+            .surfaceCut, .drawStrip, .pinFlip, .freezeFlip, .seamFlip, .guide, .weaveFill,
+            .paintRegion:
             // Weave Fill is stroke-driven: the camera never manipulates the
             // proposal, the fill point and painted extent do.
             return false
@@ -153,6 +158,8 @@ extension MeshEditController {
             commitSeamFlipStroke(stroke, samples: samples)
         case .guide:
             commitGuideStroke(stroke, samples: samples)
+        case .paintRegion:
+            commitRegionPaintStroke(stroke, samples: samples)
         }
     }
 
@@ -528,8 +535,8 @@ extension MeshEditController {
             probeFreezeFlip(vertices: vertices, context: context)
         case .seamFlip:
             probeSeamFlip(vertices: vertices, context: context)
-        case .guide:
-            break  // guide capture has no screenshot probe
+        case .guide, .paintRegion:
+            break  // capture-only tools have no screenshot probe
         }
         return lastCommit != nil
     }

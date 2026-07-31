@@ -45,6 +45,9 @@ struct DocumentEditorView: View {
     private var orbitSpeed = ViewportSettings.defaultSpeed
     @AppStorage(ViewportSettings.zoomSpeedKey)
     private var zoomSpeed = ViewportSettings.defaultSpeed
+    /// Two-finger twist → camera roll (openspec add-two-finger-roll).
+    @AppStorage(ViewportSettings.twoFingerRollKey)
+    private var twoFingerRoll = true
 
     /// EditMesh overlay display options (spec: viewport-rendering /
     /// "Animated EditMesh overlay pipeline" + "X-ray and occlusion
@@ -345,6 +348,7 @@ struct DocumentEditorView: View {
                 ViewportSettingsView(
                     orbitSpeed: $orbitSpeed,
                     zoomSpeed: $zoomSpeed,
+                    twoFingerRoll: $twoFingerRoll,
                     overlayOpacity: $overlayOpacity,
                     fillOpacity: $fillOpacity,
                     xrayEnabled: $xrayEnabled,
@@ -473,6 +477,7 @@ struct DocumentEditorView: View {
             currentBundle: { document.bundle },
             orbitSpeed: orbitSpeed,
             zoomSpeed: zoomSpeed,
+            twoFingerRollEnabled: twoFingerRoll,
             inputModel: inputModel,
             overlayOpacity: overlayOpacity,
             xrayEnabled: xrayEnabled,
@@ -602,7 +607,7 @@ struct DocumentEditorView: View {
                     inputModel.chooseAlternative(index)
                 }
                 .padding(.bottom, 52)
-            } else if let hint = inputModel.snapHint {
+            } else if let hint = inputModel.dragHint {
                 // What the drag WILL do if released now. Shares the chip's slot
                 // (a drag and a post-stroke chip never coexist) so it reads in
                 // the place the artist already looks for outcomes.

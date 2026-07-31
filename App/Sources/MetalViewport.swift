@@ -31,6 +31,10 @@ struct MetalViewport: UIViewRepresentable {
     var currentBundle: (@MainActor () -> DocumentBundle)? = nil
     var orbitSpeed: Double
     var zoomSpeed: Double
+    /// Two-finger twist → camera roll (openspec add-two-finger-roll). A tilted
+    /// horizon is disorienting for anyone who did not ask for it, and a twist is
+    /// easy to trigger while pinching, so it is a setting.
+    var twoFingerRollEnabled: Bool = true
     /// Shared input arbitration model (task 3.1, design D5): the editor owns
     /// it so the verb toolbar and the viewport touches feed one arbiter.
     var inputModel = ViewportInputModel()
@@ -110,6 +114,9 @@ struct MetalViewport: UIViewRepresentable {
         coordinator.meshEditor.snapHapticsEnabled = snapHapticsEnabled
         coordinator.renderer?.orbitSpeed = Float(orbitSpeed)
         coordinator.renderer?.zoomSpeed = Float(zoomSpeed)
+        // Applied to the coordinator, not by removing the recognizer, so the
+        // setting takes effect mid-session without rebuilding the gesture stack.
+        coordinator.twoFingerRollEnabled = twoFingerRollEnabled
         coordinator.renderer?.overlaySettings = overlaySettings
         coordinator.applyResolutionScale(resolutionScale)
         // Preview LEVEL first, document second: a level change and a
@@ -203,6 +210,10 @@ struct MetalViewport: UIViewRepresentable {
         /// proposed EditMesh from a Weave solve, held until the user accepts
         /// (commits it as the EditMesh) or discards it. nil = nothing pending.
         /// Mutated only through `beginAutoRetopo`/`acceptAutoRetopo`/
+        /// Whether the pending ghost came from a PAINTED REGION rather than a
+        /// whole-Target solve — accept merges the first into the cage and replaces
+        /// it with the second (openspec add-painted-region-retopo).
+        var autoRetopoGhostIsRegional = false
         /// `discardAutoRetopo` (in AutoRetopoSession.swift).
         var autoRetopoGhost: SolverGhost?
         /// The EditMesh payload a pending WEAVE FILL proposal was derived from
@@ -242,6 +253,18 @@ struct MetalViewport: UIViewRepresentable {
         private(set) var orbitRecognizer: UIPanGestureRecognizer?
         private(set) var pinchRecognizer: UIPinchGestureRecognizer?
         private(set) var twoFingerPanRecognizer: UIPanGestureRecognizer?
+        private(set) var rotationRecognizer: UIRotationGestureRecognizer?
+        /// Whether a twist rolls the camera (`ViewportSettings.twoFingerRollKey`).
+        var twoFingerRollEnabled = true
+        /// Twist that must be exceeded before a roll begins, in radians (~7°).
+        static let rollThreshold: Float = 0.12
+        /// Pivot for the live twist, resolved ONCE at gesture begin: re-casting
+        /// it per frame lets the pivot crawl across the surface as the scene
+        /// turns beneath it, feeding its own motion (openspec
+        /// add-two-finger-roll, design D3).
+        private var rollPivot: SIMD3<Float>?
+        /// Whether this twist has passed the threshold yet.
+        private var rollEngaged = false
         private(set) var doubleTapRecognizer: UITapGestureRecognizer?
 
         /// Input arbitration (task 3.1, design D5): shared with the editor's
@@ -426,7 +449,11 @@ struct MetalViewport: UIViewRepresentable {
             // is the SwiftUI trigger surface.
             inputModel.beginAutoRetopoHandler = { [weak self] params in
                 guard let self else { return false }
-                return await self.beginAutoRetopoAsync(parameters: params)
+                // The painted region bounds the solve; it clears as the solve RUNS,
+                // so a stale extent can never shape the next one.
+                let region = meshEditor.solveRegion
+                meshEditor.clearPaintedRegion()
+                return await self.beginAutoRetopoAsync(parameters: params, region: region)
             }
             inputModel.acceptAutoRetopoHandler = { [weak self] in self?.acceptAutoRetopo() ?? false }
             inputModel.discardAutoRetopoHandler = { [weak self] in self?.discardAutoRetopo() }
@@ -522,6 +549,28 @@ struct MetalViewport: UIViewRepresentable {
                 // ...and NAME the outcome while the drag still holds it, so the
                 // merge is visible before the release rather than after it.
                 self.inputModel.snapHighlightChanged(engaged: target != nil)
+            }
+            // Which scope a Move drag picked up, named for the same reason and
+            // in the same slot (openspec add-context-aware-move).
+            // The painted extent, drawn from the TARGET's faces so it lies exactly
+            // on the surface the solver will work over.
+            meshEditor.onPaintedRegionChanged = { [weak self] faces in
+                guard let self, let renderer = self.renderer else { return }
+                guard !faces.isEmpty, let target = self.currentTargetMesh() else {
+                    renderer.setRegionPaint(positions: [], normals: [], indices: [])
+                    return
+                }
+                let fill = RegionPaintGeometry.fill(
+                    faces: faces,
+                    ring: { target.faceVertices($0) },
+                    position: { target.vertexPosition($0) }
+                )
+                renderer.setRegionPaint(
+                    positions: fill.positions, normals: fill.normals, indices: fill.indices
+                )
+            }
+            meshEditor.onMoveScopeChanged = { [weak self] scope in
+                self?.inputModel.moveScopeChanged(scope)
             }
             let haptics = SnapHapticsEngine(view: view)
             snapHaptics = haptics
@@ -684,7 +733,8 @@ struct MetalViewport: UIViewRepresentable {
         /// cannot keep steering the camera or complete an undo tap.
         private func cancelInFlightGestures() {
             let cameraRecognizers: [UIGestureRecognizer?] = [
-                orbitRecognizer, pinchRecognizer, twoFingerPanRecognizer, doubleTapRecognizer,
+                orbitRecognizer, pinchRecognizer, twoFingerPanRecognizer, rotationRecognizer,
+                doubleTapRecognizer,
             ]
             var recognizers: [UIGestureRecognizer] = cameraRecognizers.compactMap { $0 }
             recognizers.append(contentsOf: undoTapRecognizers)
@@ -706,6 +756,10 @@ struct MetalViewport: UIViewRepresentable {
             twoFingerPan.minimumNumberOfTouches = 2
             twoFingerPan.maximumNumberOfTouches = 2
 
+            let rotation = UIRotationGestureRecognizer(
+                target: self, action: #selector(handleRotation)
+            )
+
             let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap))
             doubleTap.numberOfTapsRequired = 2
             doubleTap.numberOfTouchesRequired = 1
@@ -718,13 +772,14 @@ struct MetalViewport: UIViewRepresentable {
             // InputArbiter can veto touches per recognizer (`shouldReceive`:
             // pencil never drives the camera, palm rejection while the pen
             // is down, 3rd+ finger never admitted to camera gestures).
-            for recognizer in [orbit, pinch, twoFingerPan, doubleTap] {
+            for recognizer in [orbit, pinch, twoFingerPan, rotation, doubleTap] as [UIGestureRecognizer] {
                 recognizer.delegate = self
                 view.addGestureRecognizer(recognizer)
             }
             orbitRecognizer = orbit
             pinchRecognizer = pinch
             twoFingerPanRecognizer = twoFingerPan
+            rotationRecognizer = rotation
             doubleTapRecognizer = doubleTap
         }
 
@@ -1224,6 +1279,69 @@ struct MetalViewport: UIViewRepresentable {
             feedCameraToArmedTool()
         }
 
+        /// Two-finger twist → camera roll about the point between the fingers
+        /// (openspec add-two-finger-roll).
+        ///
+        /// The threshold is subtracted from the first applied delta rather than
+        /// skipped, so the scene does not jump by the threshold the moment the
+        /// twist engages. What it guards against is not a false start but DRIFT:
+        /// the rotational noise in a straight two-finger drag otherwise
+        /// accumulates into a visibly tilted horizon over a long pan.
+        @objc func handleRotation(_ recognizer: UIRotationGestureRecognizer) {
+            guard twoFingerRollEnabled else { return }
+            trackInteraction(recognizer.state)
+            switch recognizer.state {
+            case .began:
+                rollPivot = nil
+                rollEngaged = false
+            case .changed:
+                break
+            default:
+                rollPivot = nil
+                rollEngaged = false
+                recognizer.rotation = 0
+                return
+            }
+            let rotation = Float(recognizer.rotation)
+            guard rollEngaged || abs(rotation) > Self.rollThreshold else { return }
+            let applied: Float
+            if rollEngaged {
+                applied = rotation
+            } else {
+                rollEngaged = true
+                applied = rotation - Self.rollThreshold * (rotation < 0 ? -1 : 1)
+            }
+            recognizer.rotation = 0
+            guard let renderer, applied != 0 else { return }
+            let pivot = rollPivot ?? renderer.rollPivot(
+                atNormalizedPoint: normalizedMidpoint(of: recognizer),
+                snapper: meshEditor.contextProvider?()?.snapper
+            )
+            rollPivot = pivot
+            // UIKit's rotation is positive clockwise on screen; the scene has to
+            // follow the fingers, so the camera rolls the opposite way.
+            renderer.roll(byRadians: -applied, about: pivot)
+            feedCameraToArmedTool()
+        }
+
+        /// Midpoint of the twist's two touches, in normalized viewport
+        /// coordinates (0...1, origin top-left).
+        private func normalizedMidpoint(of recognizer: UIGestureRecognizer) -> SIMD2<Float> {
+            guard let view = recognizer.view, view.bounds.width > 0, view.bounds.height > 0
+            else { return SIMD2(0.5, 0.5) }
+            let location = recognizer.numberOfTouches >= 2
+                ? CGPoint(
+                    x: (recognizer.location(ofTouch: 0, in: view).x
+                        + recognizer.location(ofTouch: 1, in: view).x) / 2,
+                    y: (recognizer.location(ofTouch: 0, in: view).y
+                        + recognizer.location(ofTouch: 1, in: view).y) / 2
+                )
+                : recognizer.location(in: view)
+            return SIMD2(
+                Float(location.x / view.bounds.width), Float(location.y / view.bounds.height)
+            )
+        }
+
         @objc func handleDoubleTap(_ recognizer: UITapGestureRecognizer) {
             // Animated reframe: the pacer keeps drawing while the camera
             // animation runs (renderer.isAnimating), no interaction pin
@@ -1279,8 +1397,12 @@ extension MetalViewport.Coordinator: UIGestureRecognizerDelegate {
     ) -> Bool {
         let pair = [gestureRecognizer, other]
         if pair.contains(where: { $0 === observerRecognizer }) { return true }
-        return pair.contains { $0 === pinchRecognizer }
-            && pair.contains { $0 === twoFingerPanRecognizer }
+        // One two-finger gesture routinely carries zoom, pan and twist at once;
+        // forcing exclusivity would make the winner arbitrary (design D4).
+        let twoFingerCamera = [pinchRecognizer, twoFingerPanRecognizer, rotationRecognizer]
+        return pair.allSatisfy { recognizer in
+            twoFingerCamera.contains { $0 === recognizer }
+        }
     }
 
     /// Central routing gate (task 3.1, design D5): every recognizer asks the
@@ -1356,6 +1478,8 @@ extension QuickVerbPaletteState.SqueezeAction {
 enum ViewportSettings {
     static let orbitSpeedKey = "viewportOrbitSpeed"
     static let zoomSpeedKey = "viewportZoomSpeed"
+    /// Two-finger twist → camera roll (openspec add-two-finger-roll).
+    static let twoFingerRollKey = "viewportTwoFingerRoll"
     static let defaultSpeed = 1.0
     static let speedRange = 0.2...3.0
 
@@ -1367,11 +1491,13 @@ enum ViewportSettings {
     static let defaultOverlayOpacity = 0.85
     static let overlayOpacityRange = 0.0...1.0
     static let fillOpacityRange = 0.0...1.0
-    /// Occlusion threshold in NDC depth units (0 = hard occlusion at the
-    /// surface, upper bound keeps the wireframe from bleeding through the
-    /// whole model).
-    static let defaultOcclusionBias = 0.002
-    static let occlusionBiasRange = 0.0...0.02
+    /// Occlusion allowance as a fraction of the SCENE RADIUS (0 = hard
+    /// occlusion at the surface; the upper bound keeps the wireframe from
+    /// bleeding through the whole model). Scene-relative since openspec
+    /// fix-target-occlusion — an NDC number could not mean the same thing on two
+    /// scenes, and at 0.002 NDC it disabled occlusion entirely.
+    static let defaultOcclusionBias = 0.004
+    static let occlusionBiasRange = 0.0...0.05
 
     /// DEBUG-only ghost preview toggle (task 2.4 demo path; the real ghost
     /// feed arrives with the Weave solver in phase 5).
@@ -1428,6 +1554,7 @@ enum ViewportSettings {
 struct ViewportSettingsView: View {
     @Binding var orbitSpeed: Double
     @Binding var zoomSpeed: Double
+    @Binding var twoFingerRoll: Bool
     @Binding var overlayOpacity: Double
     @Binding var fillOpacity: Double
     @Binding var xrayEnabled: Bool
@@ -1480,9 +1607,12 @@ struct ViewportSettingsView: View {
                     .frame(width: 180)
                     .accessibilityIdentifier("zoom-speed-slider")
             }
+            Toggle("Two-finger rotate", isOn: $twoFingerRoll)
+                .accessibilityIdentifier("two-finger-roll-toggle")
             Button("Reset to Defaults") {
                 orbitSpeed = ViewportSettings.defaultSpeed
                 zoomSpeed = ViewportSettings.defaultSpeed
+                twoFingerRoll = true
             }
             .accessibilityIdentifier("reset-camera-speeds")
 

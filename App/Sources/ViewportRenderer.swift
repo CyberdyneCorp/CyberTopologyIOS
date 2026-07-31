@@ -71,6 +71,11 @@ final class ViewportRenderer: NSObject {
     /// offset, and it carries its OWN buffer pool, so the overlay's
     /// per-frame upload invariant is untouched.
     let editMeshFillPath: GhostRenderPath
+    /// Painted Target region (openspec add-painted-region-retopo): the extent the
+    /// next auto-retopology will solve. Its OWN ghost-pipeline instance, following
+    /// the established pattern — sharing a channel with the proposal ghost or the
+    /// hover hint would make one feed clear the other.
+    let regionPaintPath: GhostRenderPath
     /// Amber world-space guide-line overlay (add-guide-stroke-authoring).
     let guideLinePath: GuideLineRenderPath
     /// Checker texture preview on the 3D surface (6.3c). Off unless loaded.
@@ -103,6 +108,7 @@ final class ViewportRenderer: NSObject {
     var hasOverlay: Bool { overlayPath.hasGeometry }
     var hasGhost: Bool { ghostPath.hasGeometry }
     var hasGuideLines: Bool { guideLinePath.hasGeometry }
+    var hasRegionPaint: Bool { regionPaintPath.hasGeometry }
     var hasUVChecker: Bool { uvCheckerPath.hasGeometry }
 
     /// Loads (or clears) the checker preview from an EditMesh's UVs.
@@ -179,6 +185,21 @@ final class ViewportRenderer: NSObject {
         didSet { if ghostStyle != oldValue { invalidate() } }
     }
     /// Hover ghost-quad hint style (task 3.6).
+    /// Which element the hover FILL currently holds, because the two previews
+    /// that share this path belong on opposite sides of the committed EditMesh
+    /// fill: the create hint goes UNDER it (it is proposing geometry that does
+    /// not exist yet), the face highlight goes OVER it (it is pointing at
+    /// geometry that does). Encoded under, a face highlight is painted over by
+    /// the committed fill covering the very face it highlights — which is
+    /// exactly what "hovering a face doesn't highlight" looked like on device.
+    private(set) var hoverGhostElement: HoverRenderState.Element?
+
+    /// Whether the hover fill draws ABOVE the committed EditMesh fill.
+    var hoverFillDrawsAboveCommittedFill: Bool { hoverGhostElement == .face }
+
+    var regionPaintStyle = GhostStyle.regionPaint(sceneRadius: 1) {
+        didSet { if regionPaintStyle != oldValue { invalidate() } }
+    }
     var hoverGhostStyle = GhostStyle.hoverHint {
         didSet { if hoverGhostStyle != oldValue { invalidate() } }
     }
@@ -395,6 +416,10 @@ final class ViewportRenderer: NSObject {
             device: device, commandQueue: queue,
             preferPrivateStorage: pool.usesPrivateStorage
         )
+        let regionPaint = GhostRenderPath(
+            device: device, commandQueue: queue,
+            preferPrivateStorage: pool.usesPrivateStorage
+        )
         let guideLines = GuideLineRenderPath(
             device: device, commandQueue: queue,
             preferPrivateStorage: pool.usesPrivateStorage
@@ -406,7 +431,7 @@ final class ViewportRenderer: NSObject {
 
         guard
             let path, let overlay, let ghost, let hoverGhost, let subdivisionPreview,
-            let editMeshFill, let guideLines, let uvChecker,
+            let editMeshFill, let regionPaint, let guideLines, let uvChecker,
             let depth = device.makeDepthStencilState(descriptor: depthDescriptor)
         else { return nil }
 
@@ -420,6 +445,7 @@ final class ViewportRenderer: NSObject {
         self.hoverGhostPath = hoverGhost
         self.subdivisionPreviewPath = subdivisionPreview
         self.editMeshFillPath = editMeshFill
+        self.regionPaintPath = regionPaint
         self.guideLinePath = guideLines
         self.uvCheckerPath = uvChecker
         self.depthState = depth
@@ -897,14 +923,45 @@ final class ViewportRenderer: NSObject {
     /// dedicated hover ghost pipeline (transient arrays — always the
     /// pooled-copy path, never zero-copy), the loop/snap highlight through
     /// the overlay's hover pass. `.empty` clears both.
+    /// Shows the painted Target region as a translucent fill, or clears it when
+    /// `triangles` is empty. Positions/normals/indices are built by the caller
+    /// from the Target's own faces.
+    func setRegionPaint(positions: [Float], normals: [Float], indices: [UInt32]) {
+        guard !indices.isEmpty else {
+            regionPaintPath.clear()
+            invalidate()
+            return
+        }
+        regionPaintStyle = GhostStyle.regionPaint(sceneRadius: bounds.radius)
+        positions.withUnsafeBufferPointer { p in
+            normals.withUnsafeBufferPointer { n in
+                indices.withUnsafeBufferPointer { i in
+                    regionPaintPath.load(
+                        positions: p, normals: n, indices: i,
+                        hasUnifiedMemory: capabilities.hasUnifiedMemory,
+                        allowZeroCopy: false, logsSharingDecision: false
+                    )
+                }
+            }
+        }
+        invalidate()
+    }
+
     func setHoverPreview(_ state: HoverRenderState) {
+        hoverGhostElement = state.ghost == nil ? nil : state.element
         if let ghost = state.ghost {
             // Lift the hint along its camera-facing normal so it clears
             // the curved Target between its snapped corners (the flat quad
             // chord dips below convex surfaces; without the lift the whole
             // fill loses the depth test). Same mechanism and magnitude as
             // the task-2.4 debug preview.
-            hoverGhostStyle = GhostStyle.hoverHint(sceneRadius: bounds.radius)
+            // The fill channel serves two previews with opposite intents: the
+            // create hint invites (amber, pulsing), the face highlight states
+            // (pink, constant). The element decides which.
+            hoverGhostStyle =
+                state.element == .face
+                ? GhostStyle.faceHighlight(sceneRadius: bounds.radius)
+                : GhostStyle.hoverHint(sceneRadius: bounds.radius)
             ghost.positions.withUnsafeBufferPointer { positions in
                 ghost.normals.withUnsafeBufferPointer { normals in
                     ghost.indices.withUnsafeBufferPointer { indices in
@@ -924,7 +981,10 @@ final class ViewportRenderer: NSObject {
         }
         let highlight = state.highlight ?? HoverRenderState.Highlight()
         overlayPath.setHoverHighlight(
-            segments: highlight.segments, points: highlight.points
+            segments: highlight.segments, points: highlight.points,
+            color: state.element == .loop
+                ? OverlayUniformsFactory.hoverLoopColor
+                : OverlayUniformsFactory.hoverColor
         )
         invalidate()
     }
@@ -947,6 +1007,35 @@ final class ViewportRenderer: NSObject {
     /// drawable pixels back to points via `contentScale`, so pan tracking
     /// is 1:1 with the fingers at any resolution scale (spec scenario
     /// "Resolution downscale": gestures behave identically).
+    /// Two-finger twist: rolls the view about `pivot` (openspec
+    /// add-two-finger-roll), which is a WORLD point — the caller resolves it
+    /// once at gesture start so the pivot cannot crawl across the surface as
+    /// the scene turns beneath it.
+    func roll(byRadians angle: Float, about pivot: SIMD3<Float>) {
+        animation = nil
+        camera.roll(byRadians: angle, about: pivot)
+        invalidate()
+    }
+
+    /// World point to roll about for a twist centred at `point` (normalized
+    /// viewport): the surface under the fingers, or — when the ray misses
+    /// everything — the point on the focus plane there, which is what the
+    /// artist sees at that spot anyway.
+    func rollPivot(atNormalizedPoint point: SIMD2<Float>, snapper: SurfaceSnapper?) -> SIMD3<Float> {
+        guard let ray = cameraRay(atNormalizedPoint: point) else { return camera.focus }
+        if let snapper, let hit = snapper.raycast(origin: ray.origin, direction: ray.direction) {
+            return hit.point
+        }
+        // Focus-plane intersection: the plane through the focus, facing the
+        // camera. A miss (grazing ray) falls back to the focus itself.
+        let forward = camera.basis.forward
+        let denominator = simd_dot(ray.direction, forward)
+        guard abs(denominator) > 1e-6 else { return camera.focus }
+        let t = simd_dot(camera.focus - ray.origin, forward) / denominator
+        guard t.isFinite, t > 0 else { return camera.focus }
+        return ray.origin + ray.direction * t
+    }
+
     func pan(byPoints delta: SIMD2<Float>) {
         animation = nil
         let heightPoints = Float(max(viewportSize.height, 1)) / max(contentScale, 1e-3)
@@ -1068,14 +1157,26 @@ final class ViewportRenderer: NSObject {
         // through it. Applied here rather than baked into the style so the
         // occlusion slider moves surface and wire together, live, without
         // re-uploading geometry.
-        let surfaceBias = overlaySettings.occlusionBias
-        hoverGhostPath.encode(
-            into: encoder,
-            uniforms: GhostUniformsFactory.uniforms(
-                mvp: mvp, viewDirection: forward,
-                style: hoverGhostStyle.withDepthBias(surfaceBias), time: time
-            )
+        // ONE conversion per frame, feeding the wire, the fill, the ghosts and
+        // the guide lines: they must agree about visibility, or a face's
+        // interior is drawn where its outline is not (openspec
+        // fix-target-occlusion).
+        let surfaceBias = camera.depthBias(
+            forWorldOffset: overlaySettings.occlusionBias * bounds.radius, bounds: bounds
         )
+        let encodeHoverGhost = {
+            self.hoverGhostPath.encode(
+                into: encoder,
+                uniforms: GhostUniformsFactory.uniforms(
+                    mvp: mvp, viewDirection: forward,
+                    style: self.hoverGhostStyle.withDepthBias(surfaceBias), time: time
+                )
+            )
+        }
+        // The create hint belongs under the committed fill; a FACE highlight
+        // belongs over it, or the fill of the very face being highlighted paints
+        // straight over the highlight (`hoverGhostElement`).
+        if !hoverFillDrawsAboveCommittedFill { encodeHoverGhost() }
 
         // Committed EditMesh face fill: under its own wireframe (so the
         // wire always reads on top) but ABOVE proposals and the hover hint,
@@ -1087,13 +1188,27 @@ final class ViewportRenderer: NSObject {
                 style: editMeshFillStyle.withDepthBias(surfaceBias), time: time
             )
         )
+        // The painted region sits ON the Target, under the cage: it says where the
+        // solver may work, so it must not cover the geometry being judged.
+        regionPaintPath.encode(
+            into: encoder,
+            uniforms: GhostUniformsFactory.uniforms(
+                mvp: mvp, viewDirection: forward,
+                style: regionPaintStyle.withDepthBias(surfaceBias), time: time
+            )
+        )
+        // ...and the hovered face on top of it (depth compare is `lessEqual`
+        // with no depth write, so the later draw at equal depth wins).
+        if hoverFillDrawsAboveCommittedFill { encodeHoverGhost() }
 
         // EditMesh wireframe renders after the Target so its depth-tested
         // and x-ray passes see the full Target depth buffer.
+        var resolvedOverlaySettings = overlaySettings
+        resolvedOverlaySettings.resolvedDepthBias = surfaceBias
         overlayPath.encode(
             into: encoder,
             mvp: mvp,
-            settings: overlaySettings,
+            settings: resolvedOverlaySettings,
             // The pass's own attachment is the only reliable render-target
             // size: it is the drawable on the plain path, the reduced
             // scene texture under MetalFX, and the requested size for an
