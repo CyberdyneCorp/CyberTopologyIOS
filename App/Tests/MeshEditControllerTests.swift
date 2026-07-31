@@ -378,6 +378,51 @@ struct MeshEditControllerTests {
         #expect(harness.bundle.payloads[object.payloadFile] == payloadBefore)
     }
 
+    /// REPORTED FROM DEVICE: "why can't I Relax this part of the bunny ears?" —
+    /// the stroke ran, journaled nothing, and said nothing, so the tool looked
+    /// broken (openspec fix-faceless-cage-vertices).
+    ///
+    /// A lone quad is the smallest honest case: every one of its vertices has
+    /// valence 2, which the engine auto-pins as a grid corner, so there is
+    /// genuinely nothing to relax and the artist deserves to be told.
+    @Test func aRelaxThatChangesNothingSaysSo() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        try harness.bundle.addObject(
+            name: "cage", role: .editMesh,
+            mesh: try meshFromOBJ("v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf 1 2 3 4\n")
+        )
+        harness.sync()
+
+        let brush = harness.screenPoint(of: SIMD3(0.5, 0.5, 0))
+        harness.stroke(verb: .relax, through: [brush, brush])
+
+        #expect(harness.bundle.journal.depth == 0, "nothing moved, so nothing journaled")
+        // Read through the PRODUCTION channel the banner shows, rather than
+        // replacing the callback the coordinator wired.
+        #expect(
+            harness.coordinator.inputModel.cameraToolStatus
+                == MeshEditController.relaxChangedNothing,
+            "the stroke must explain itself instead of looking broken"
+        )
+    }
+
+    /// …and a relax that DOES move something stays quiet.
+    @Test func aRelaxThatWorksIsNotAnnounced() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness)
+        try addPerturbedGridEditMesh(to: harness)
+
+        let brush = harness.screenPoint(of: SIMD3(1, 1, 0))
+        harness.stroke(verb: .relax, through: [brush, harness.screenPoint(of: SIMD3(1.3, 0.8, 0))])
+
+        #expect(harness.bundle.journal.depth == 1)
+        #expect(
+            harness.coordinator.inputModel.cameraToolStatus
+                != MeshEditController.relaxChangedNothing
+        )
+    }
+
     // MARK: - Move (geodesic falloff)
 
     /// Surface scope: the drag starts in a FACE INTERIOR, away from every vertex

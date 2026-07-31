@@ -308,12 +308,24 @@ public struct EngineRemeshSolver: WeaveSolving {
             )
         }
         guard let ghostMesh else { return nil }  // cancelled
+        // Face-less vertices out. MEASURED on the bunny: a 1108-face cage came
+        // back with 91 vertices belonging to no face, 41% of them in the ears.
+        // They are un-relaxable (the engine's Relax needs a one-ring, so it skips
+        // them silently), un-editable, and they inflate the cage's vertex count.
+        // Here, BEFORE symmetry and before the ghost reports any id, because the
+        // rebuild renumbers — the prescribed-boundary region path deliberately
+        // does NOT prune for exactly that reason: its interface vertices and
+        // solved-face ids name that handle. A region patch loses its face-less
+        // vertices anyway, on accept, since the merge goes through `append`.
+        // A failed rebuild falls back to the unpruned cage: clutter is better than
+        // losing the solve.
+        let cage = (try? ghostMesh.prunedOfFacelessVertices())?.mesh ?? ghostMesh
         // Symmetry: clip the fresh cage to the working domain and replicate it, so the
         // output is symmetric about every enabled plane AND every radial sector.
         if let symmetry = constraints.symmetry, symmetry.isEnabled, symmetry.isActive {
-            try Self.makeSymmetric(ghostMesh, settings: symmetry)
+            try Self.makeSymmetric(cage, settings: symmetry)
         }
-        return SolverGhost(mesh: ghostMesh, addedFaces: ghostMesh.liveFaceIDs())
+        return SolverGhost(mesh: cage, addedFaces: cage.liveFaceIDs())
     }
 
     /// Builds world-space orientation guide samples from the flow constraints:
