@@ -52,6 +52,20 @@
 - [x] 7.2 Regression tests: `theSolveDomainIsCarvedBeforeSerializing` (what crosses is the carve,
       budget scaled) and `faceIDsDoNotSurviveAPayloadRoundTrip` (the trap, stated once).
 
+## 8. Device fix: output was quad-DOMINANT, not quads
+
+- [x] 8.1 `EngineRemeshSolver` asks for pure quads. The engine defaults
+      `pureQuads = false` and the app inherited it: measured on a carved bunny patch,
+      242 of 441 faces were TRIANGLES and 35 were n-gons — the slivers reported as bad
+      quality. Set on the whole-mesh remesh path, NOT on `SolverParameters`, because the
+      engine refuses pureQuads for a prescribed-boundary region solve and those solves
+      share the presets.
+- [x] 8.2 Measured trade-off, recorded so the density presets are understood: pure mode
+      cannot go as coarse as a low target asks (125 -> 1372 quads), because removing a
+      triangle means splitting. The overshoot shrinks as the target rises (1500 -> 3130)
+      and it was no slower (1.15 s vs 3.85 s for quad-dominant).
+- [x] 8.3 `regionSolveReturnsPureQuads` guards it: zero triangles, zero n-gons.
+
 ## 6. Device verification
 
 - [x] 6.1 Ran on iPad Air 13-inch (M3): 1185 tests, passed.
