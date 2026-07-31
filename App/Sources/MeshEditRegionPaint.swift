@@ -148,6 +148,79 @@ extension MeshEditController {
         paintRedoStack.removeAll()
     }
 
+    /// Box selection: adds every visible Target face inside the drag box to the
+    /// region — or removes them when the brush is erasing, which makes the same
+    /// gesture a DESELECT box.
+    ///
+    /// Occluded faces are excluded: a raycast confirms each candidate is the first
+    /// thing the camera sees at its centroid, so a box over the flank does not also
+    /// take the far wall behind it. That costs one raycast per candidate, which is a
+    /// one-shot price at stroke end rather than per sample.
+    func commitRegionBoxSelection(
+        _ stroke: ToolStroke, first: StrokeSample, last: StrokeSample
+    ) {
+        let context = stroke.context
+        onRegionBoxChanged?(nil)
+        let box = SelectionBox(origin: point(of: first), corner: point(of: last))
+        guard box.isMeaningful,
+            let snapper = context.snapper,
+            let target = regionTargetProvider?(),
+            let project = context.project,
+            let forward = context.camera?.basis.forward
+        else { return }
+
+        // Candidates: centroid inside the box, in front of the camera, facing it.
+        // `context.project` is the inverse of the ray the rest of the app casts, so a
+        // face the box claims is a face the artist saw inside it.
+        var candidates: [RegionBoxSelection.Candidate] = []
+        for face in target.liveFaceIDs() {
+            guard let centroid = target.faceCentroid(face),
+                let screen = project(centroid), box.contains(screen)
+            else { continue }
+            let ring = target.faceVertices(face).compactMap { target.vertexPosition($0) }
+            guard ring.count >= 3 else { continue }
+            let cross = simd_cross(ring[1] - ring[0], ring[2] - ring[0])
+            guard simd_length(cross) > .ulpOfOne else { continue }
+            candidates.append(
+                RegionBoxSelection.Candidate(
+                    face: face, screen: screen, isInFront: true,
+                    facingDot: simd_dot(simd_normalize(cross), forward)
+                )
+            )
+        }
+        let facing = RegionBoxSelection.faces(in: box, from: candidates)
+        guard !facing.isEmpty else { return }
+
+        // VISIBLE only: the first thing the camera sees at the centroid must be this
+        // face. Without it a box over the flank also takes the far wall behind it —
+        // and a solve domain wrapping both walls of a shape is not what the drag
+        // said. One raycast per candidate, paid once at stroke end.
+        var visible: [UInt32] = []
+        for face in facing {
+            guard let centroid = target.faceCentroid(face),
+                let screen = project(centroid),
+                let ray = context.ray(screen),
+                let hit = snapper.raycast(origin: ray.origin, direction: ray.direction)
+            else { continue }
+            if hit.face == face { visible.append(face) }
+        }
+        guard !visible.isEmpty else { return }
+
+        beginPaintStrokeHistory()
+        if paintErases {
+            paintedRegion.remove(visible)
+        } else {
+            paintedRegion.add(visible)
+        }
+        onPaintedRegionChanged?(paintedRegion.faces)
+    }
+
+    /// Publishes the live drag box so the viewport can draw it.
+    func regionBoxDragged(_ stroke: ToolStroke, first: StrokeSample, current: StrokeSample) {
+        let box = SelectionBox(origin: point(of: first), corner: point(of: current))
+        onRegionBoxChanged?(box.isMeaningful ? box : nil)
+    }
+
     /// The region the next auto-retopology should solve: the painted faces, or
     /// the whole Target when nothing is painted.
     var solveRegion: SolveRegion {

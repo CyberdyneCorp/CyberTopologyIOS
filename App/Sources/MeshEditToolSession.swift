@@ -47,6 +47,10 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
     /// add-painted-region-retopo). Paints the Target, not the cage: it names
     /// where the solver may work.
     case paintRegion
+    /// Select a region of the TARGET with a drag BOX (openspec
+    /// add-box-region-selection). Feeds the same region the brush does — a box is
+    /// for "this whole flank", which is a dozen brush strokes otherwise.
+    case selectRegionBox
     /// Weave Fill (add-weave-region-selection): fills BARE TARGET with quads that
     /// meet the existing cage's open boundary exactly. A TAP proposes the next patch
     /// outward from the nearest free edge; a PAINT stroke says how far to fill. The
@@ -69,7 +73,7 @@ enum RetopoTool: String, CaseIterable, Equatable, Sendable {
             return true
         case .buildQuad, .buildTriangle, .mergePair, .pathDistribute,
             .surfaceCut, .drawStrip, .pinFlip, .freezeFlip, .seamFlip, .guide, .weaveFill,
-            .paintRegion:
+            .paintRegion, .selectRegionBox:
             // Weave Fill is stroke-driven: the camera never manipulates the
             // proposal, the fill point and painted extent do.
             return false
@@ -162,6 +166,8 @@ extension MeshEditController {
             // Painted live during the stroke; the last sample lands here so a TAP
             // (which produces no moves) still paints.
             paintRegionSample(last, in: stroke.context)
+        case .selectRegionBox:
+            commitRegionBoxSelection(stroke, first: first, last: last)
         }
     }
 
@@ -537,7 +543,7 @@ extension MeshEditController {
             probeFreezeFlip(vertices: vertices, context: context)
         case .seamFlip:
             probeSeamFlip(vertices: vertices, context: context)
-        case .guide, .paintRegion:
+        case .guide, .paintRegion, .selectRegionBox:
             break  // capture-only tools have no screenshot probe
         }
         return lastCommit != nil

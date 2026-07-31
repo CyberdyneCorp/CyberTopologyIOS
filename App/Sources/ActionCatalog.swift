@@ -510,6 +510,20 @@ extension EditorAction {
                     + "somewhat higher.",
                 demoFrames: ["paintbrush.pointed", "square.grid.3x3", "checkmark.circle"]
             )
+        case .selectRegionBox:
+            GalleryEntry(
+                title: "Select region box",
+                symbol: "rectangle.dashed",
+                gesture: "Tool — drag a box over the part to retopologize",
+                notes: "Adds every visible Target face inside the box to the "
+                    + "region the next Auto-Retopo will solve — the same region "
+                    + "the brush paints, so you can box a flank and then tidy its "
+                    + "edge with the brush. Faces turned away from you, and faces "
+                    + "hidden behind the surface, are left out: a box over one "
+                    + "side should not also take the far wall. Double-tap the "
+                    + "pencil to make it a DESELECT box.",
+                demoFrames: ["rectangle.dashed", "square.grid.3x3", "checkmark.circle"]
+            )
         case .clearPaintedRegion:
             GalleryEntry(
                 title: "Clear painted region",

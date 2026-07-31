@@ -86,6 +86,7 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
     /// add-painted-region-retopo: paint a region of the TARGET, then Auto-Retopo
     /// solves only that region and merges the patch into the cage.
     case paintRegion
+    case selectRegionBox
     case clearPaintedRegion
     /// add-uv-seam-authoring: Seam Flip arms the seam tool; clearSeams sews every seam.
     case seamFlip
@@ -190,6 +191,7 @@ enum EditorAction: String, CaseIterable, Codable, Equatable, Sendable {
         case .seamFlip: .seamFlip
         case .weaveFill: .weaveFill
         case .paintRegion: .paintRegion
+        case .selectRegionBox: .selectRegionBox
         default: nil
         }
     }

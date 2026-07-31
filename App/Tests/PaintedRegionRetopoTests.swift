@@ -596,4 +596,77 @@ struct PaintedRegionRetopoTests {
         #expect(first == expected)
         #expect(second == expected, "the second call must come from the cache")
     }
+
+    // MARK: - Box selection (openspec add-box-region-selection)
+
+    @Test func theBoxSelectsFacesInsideItThatFaceTheCamera() {
+        let box = SelectionBox(origin: SIMD2(0.2, 0.2), corner: SIMD2(0.8, 0.8))
+        let candidates = [
+            // Inside, facing the camera: selected.
+            RegionBoxSelection.Candidate(face: 1, screen: SIMD2(0.5, 0.5), isInFront: true, facingDot: -0.9),
+            // Inside but turned AWAY: a box over one side must not take the far wall.
+            RegionBoxSelection.Candidate(face: 2, screen: SIMD2(0.5, 0.5), isInFront: true, facingDot: 0.9),
+            // Outside the box.
+            RegionBoxSelection.Candidate(face: 3, screen: SIMD2(0.9, 0.5), isInFront: true, facingDot: -0.9),
+            // BEHIND the camera: projects to a mirrored point that can land inside.
+            RegionBoxSelection.Candidate(face: 4, screen: SIMD2(0.5, 0.5), isInFront: false, facingDot: -0.9),
+        ]
+
+        #expect(RegionBoxSelection.faces(in: box, from: candidates) == [1])
+    }
+
+    /// Sorted, because the carve list feeds a solve whose determinism was hard won.
+    @Test func theSelectionIsOrdered() {
+        let box = SelectionBox(origin: .zero, corner: SIMD2(1, 1))
+        let candidates = [9, 3, 7].map {
+            RegionBoxSelection.Candidate(
+                face: UInt32($0), screen: SIMD2(0.5, 0.5), isInFront: true, facingDot: -1
+            )
+        }
+        #expect(RegionBoxSelection.faces(in: box, from: candidates) == [3, 7, 9])
+    }
+
+    /// A tap is the brush's job: a box of nearly zero area would select whatever
+    /// happened to be under it.
+    @Test func aTapSizedBoxSelectsNothing() {
+        let tap = SelectionBox(origin: SIMD2(0.5, 0.5), corner: SIMD2(0.502, 0.501))
+        #expect(!tap.isMeaningful)
+        let candidate = RegionBoxSelection.Candidate(
+            face: 1, screen: SIMD2(0.5, 0.5), isInFront: true, facingDot: -1
+        )
+        #expect(RegionBoxSelection.faces(in: tap, from: [candidate]).isEmpty)
+    }
+
+    @Test func theBoxIsDirectionAgnostic() {
+        // Dragged up-left instead of down-right: the same rectangle.
+        let forward = SelectionBox(origin: SIMD2(0.2, 0.3), corner: SIMD2(0.7, 0.8))
+        let backward = SelectionBox(origin: SIMD2(0.7, 0.8), corner: SIMD2(0.2, 0.3))
+        #expect(forward.minimum == backward.minimum)
+        #expect(forward.maximum == backward.maximum)
+        #expect(backward.contains(SIMD2(0.5, 0.5)))
+    }
+
+    @Test func projectionReportsPointsBehindTheCamera() {
+        // A trivial view-projection: identity, so w = 1 and the point is in front.
+        var identity = [Float](repeating: 0, count: 16)
+        identity[0] = 1; identity[5] = 1; identity[10] = 1; identity[15] = 1
+        let front = RegionBoxSelection.project(SIMD3(0, 0, 0), viewProjection: identity)
+        #expect(front.isInFront)
+        #expect(abs(front.screen.x - 0.5) < 1e-6 && abs(front.screen.y - 0.5) < 1e-6)
+
+        // w driven negative: behind the camera, and reported as such rather than
+        // silently projecting to a mirrored screen point inside the box.
+        var flipped = identity
+        flipped[15] = -1
+        #expect(!RegionBoxSelection.project(SIMD3(0, 0, 0), viewProjection: flipped).isInFront)
+        // A degenerate matrix cannot crash the selection.
+        #expect(!RegionBoxSelection.project(.zero, viewProjection: []).isInFront)
+    }
+
+    /// The box feeds the SAME region the brush paints, and is undoable the same way.
+    @Test func theBoxToolIsReachableAndSharesTheRegion() {
+        #expect(EditorAction.selectRegionBox.tool == .selectRegionBox)
+        #expect(!EditorAction.selectRegionBox.gallery.notes.isEmpty)
+        #expect(!RetopoTool.selectRegionBox.isCameraManipulator)
+    }
 }

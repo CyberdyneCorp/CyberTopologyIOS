@@ -263,6 +263,19 @@ struct MetalViewport: UIViewRepresentable {
         private var paintFaceCache = RegionPaintFaceCache()
         private var paintTargetMesh: Mesh?
 
+        /// The Target used by region tools, deserialized at most once per identity.
+        func cachedRegionTarget() -> Mesh? {
+            guard let bundle = bundleProvider?(),
+                let object = bundle.manifest.objects.first(where: { $0.role == .target })
+            else { return nil }
+            let key = "\(object.payloadFile)#\(object.revision ?? 0)"
+            if paintFaceCache.key != key {
+                paintFaceCache.prepare(key: key)
+                paintTargetMesh = try? bundle.mesh(for: object)
+            }
+            return paintTargetMesh
+        }
+
         /// Rebuilds the painted-extent fill without re-reading the Target.
         ///
         /// The Target is deserialized at most once per identity: it is only ever the
@@ -274,16 +287,7 @@ struct MetalViewport: UIViewRepresentable {
                 renderer.setRegionPaint(positions: [], normals: [], indices: [])
                 return
             }
-            guard let bundle = bundleProvider?(),
-                let object = bundle.manifest.objects.first(where: { $0.role == .target })
-            else { return }
-            // Payload identity, so a reimported or edited Target invalidates itself.
-            let key = "\(object.payloadFile)#\(object.revision ?? 0)"
-            if paintFaceCache.key != key {
-                paintFaceCache.prepare(key: key)
-                paintTargetMesh = try? bundle.mesh(for: object)
-            }
-            guard let target = paintTargetMesh else { return }
+            guard let target = cachedRegionTarget() else { return }
             let fill = RegionPaintGeometry.fill(faces: faces) { face in
                 paintFaceCache.corners(of: face) { id in
                     target.faceVertices(id).compactMap { target.vertexPosition($0) }
@@ -604,6 +608,15 @@ struct MetalViewport: UIViewRepresentable {
             }
             meshEditor.onPaintedRegionChanged = { [weak self] faces in
                 self?.updateRegionPaintFill(faces: faces)
+            }
+            // The CACHED Target: box selection walks every face, so reading it from
+            // the document here would repeat the deserialization that made painting
+            // lag (see `RegionPaintFaceCache`).
+            meshEditor.regionTargetProvider = { [weak self] in
+                self?.cachedRegionTarget()
+            }
+            meshEditor.onRegionBoxChanged = { [weak self] box in
+                self?.inputModel.regionSelectionBoxChanged(box)
             }
             meshEditor.onMoveScopeChanged = { [weak self] scope in
                 self?.inputModel.moveScopeChanged(scope)
