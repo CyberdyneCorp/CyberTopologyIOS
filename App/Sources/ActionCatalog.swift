@@ -504,7 +504,10 @@ extension EditorAction {
                     + "without being welded, so join it with Merge Pair or a "
                     + "vertex drag when you want it sealed. The paint clears "
                     + "each time you run, so a stale area never shapes the next "
-                    + "solve.",
+                    + "solve. The face count is a request rather than a promise at "
+                    + "the coarse end: the cage is all quads, and removing a "
+                    + "triangle means splitting, so a very low count comes back "
+                    + "somewhat higher.",
                 demoFrames: ["paintbrush.pointed", "square.grid.3x3", "checkmark.circle"]
             )
         case .clearPaintedRegion:
