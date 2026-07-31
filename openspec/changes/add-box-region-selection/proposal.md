@@ -20,10 +20,13 @@ dozen brush strokes and one drag — and the strokes have to be careful, because
 - **The box is drawn while dragging** — a marquee with no visible rectangle is a drag into
   the void.
 
-Non-goals: no lasso (a freeform outline is what the brush already is); no "select through" to
-take hidden faces (see below); the region stays transient and cleared when a solve runs.
+- **A see-through mode**, toggled by a pencil double-tap while the box is armed: it takes
+  the far wall too, because a thin feature like an ear is one thing to retopologize.
 
-## Design decision — visible faces only
+Non-goals: no lasso (a freeform outline is what the brush already is); the region stays
+transient and cleared when a solve runs.
+
+## Design decision — visible by default, see-through on request
 
 A box takes faces that are inside it, turned toward the camera, AND first-hit by a ray at
 their centroid. Two filters, because they catch different things:
@@ -33,9 +36,17 @@ their centroid. Two filters, because they catch different things:
 - **First-hit** excludes faces hidden behind other geometry — an ear in front of the body,
   say — which a normal test cannot see.
 
-The alternative, selecting everything the box covers in depth, would carve a solve domain
-wrapping both walls of a shape, which is not what the drag said. It costs one raycast per
-candidate, paid once at stroke end rather than per sample.
+Taking everything the box covers in depth by DEFAULT would carve a domain wrapping both
+walls of a shape, which is usually not what the drag said. But sometimes it is exactly what
+it said — asked on device: *"on the bunny ears we want to select both the front and back"* —
+so see-through is a mode rather than an absence. It skips both filters, which also makes it
+the cheaper path: the raycast is what visible-only pays for, once per drag at stroke end.
+
+The gesture that toggles it is already spoken for: with the brush armed, a double-tap
+switches to erase. Making it tool-dependent is the resolution — each region tool has its own
+most-wanted switch, and the brush's erase and the box's see-through are both reachable
+without a second gesture to learn. The consequence, stated plainly: a DESELECT box now needs
+erase mode set from the brush.
 
 ## Capabilities
 

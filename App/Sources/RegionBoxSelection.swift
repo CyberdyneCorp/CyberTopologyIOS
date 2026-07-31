@@ -47,17 +47,25 @@ enum RegionBoxSelection {
         let facingDot: Float
     }
 
-    /// Faces inside `box` that face the camera.
+    /// Faces inside `box`, by default only those facing the camera.
     ///
-    /// Back faces are excluded because a box drawn over the bunny's flank should
-    /// take the flank, not the flank plus the far wall behind it — the region carves
-    /// a solve domain, and a domain wrapping both walls of a shape is not what the
-    /// drag said. Occlusion by OTHER geometry is settled by the caller with a
-    /// raycast; a normal test cannot see a wall in between.
-    static func faces(in box: SelectionBox, from candidates: [Candidate]) -> [UInt32] {
+    /// Back faces are excluded because a box drawn over the bunny's flank should take
+    /// the flank, not the flank plus the far wall behind it. Occlusion by OTHER
+    /// geometry is settled by the caller with a raycast; a normal test cannot see a
+    /// wall in between.
+    ///
+    /// `seesThrough` takes BOTH sides — for a thin feature like an ear, front and
+    /// back are one thing to retopologize and boxing them separately means finding a
+    /// camera angle for each. Behind-camera candidates are still excluded either way:
+    /// a point behind the lens projects to a mirrored position that can land inside
+    /// the box, which is not a selection, it is an artefact.
+    static func faces(
+        in box: SelectionBox, from candidates: [Candidate], seesThrough: Bool = false
+    ) -> [UInt32] {
         guard box.isMeaningful else { return [] }
         return candidates.filter { candidate in
-            candidate.isInFront && candidate.facingDot < 0 && box.contains(candidate.screen)
+            guard candidate.isInFront, box.contains(candidate.screen) else { return false }
+            return seesThrough || candidate.facingDot < 0
         }
         // Sorted so the same drag always produces the same carve list, which the
         // solve's determinism depends on.

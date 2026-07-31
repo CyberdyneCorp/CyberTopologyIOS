@@ -618,6 +618,9 @@ struct MetalViewport: UIViewRepresentable {
             meshEditor.onRegionBoxChanged = { [weak self] box in
                 self?.inputModel.regionSelectionBoxChanged(box)
             }
+            meshEditor.onRegionSelectionModeChanged = { [weak self] seesThrough in
+                self?.inputModel.regionSelectionModeChanged(seesThrough: seesThrough)
+            }
             meshEditor.onMoveScopeChanged = { [weak self] scope in
                 self?.inputModel.moveScopeChanged(scope)
             }
@@ -1480,8 +1483,14 @@ extension MetalViewport.Coordinator: UIPencilInteractionDelegate {
     /// armed there is nothing to erase, so the tap is left to whatever else wants
     /// it rather than silently swallowed.
     func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
-        guard inputModel.activeTool == .paintRegion else { return }
-        meshEditor.paintErases.toggle()
+        switch PencilTapAction.forTool(inputModel.activeTool) {
+        case .toggleErase:
+            meshEditor.paintErases.toggle()
+        case .toggleSeeThrough:
+            meshEditor.regionSelectionSeesThrough.toggle()
+        case .none:
+            break
+        }
     }
 
     /// Squeeze completed: open/dismiss the radial quick-verb palette at

@@ -190,6 +190,10 @@ final class MeshEditController {
     var paintRedoStack: [PaintedRegion] = []
     /// Backing store for `paintErases` (the property has a willSet-style hook).
     var paintErasesStorage = false
+    /// Backing store for `regionSelectionSeesThrough`.
+    var regionSeesThroughStorage = false
+    /// Box selection switched between visible-only and see-through.
+    var onRegionSelectionModeChanged: ((Bool) -> Void)?
     /// The paint brush switched between painting and erasing.
     var onPaintModeChanged: ((Bool) -> Void)?
     /// The live box-selection rectangle, or nil when none is being dragged.

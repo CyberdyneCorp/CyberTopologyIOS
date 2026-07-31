@@ -106,16 +106,7 @@ final class ViewportInputModel {
 
     func paintModeChanged(erasing: Bool) {
         paintErasing = erasing
-        paintModeHint = erasing ? "Erase region" : "Paint region"
-        // The announcement is transient: it says what just changed, and the cursor
-        // colour carries the state from then on.
-        let token = UUID()
-        paintModeHintToken = token
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(2))
-            guard let self, self.paintModeHintToken == token else { return }
-            self.paintModeHint = nil
-        }
+        flashPaintModeHint(erasing ? "Erase region" : "Paint region")
     }
 
     /// The live box-selection rectangle in normalized viewport coordinates, or nil
@@ -127,8 +118,33 @@ final class ViewportInputModel {
         regionSelectionBox = box
     }
 
+    /// Whether the box reaches through the surface. Named in the chip and reflected
+    /// in the marquee's colour, because a mode with no visible state is a trap: the
+    /// tool looks identical either way.
+    private(set) var regionSelectionSeesThrough = false
+
+    func regionSelectionModeChanged(seesThrough: Bool) {
+        regionSelectionSeesThrough = seesThrough
+        flashPaintModeHint(seesThrough ? "Select through" : "Select visible")
+    }
+
     private(set) var paintModeHint: String?
     @ObservationIgnored private var paintModeHintToken: UUID?
+
+    /// Announces a region-mode switch, transiently: it says what just changed, and
+    /// the cursor colour or marquee tint carries the state from then on. The token
+    /// means a second switch inside the window replaces the first rather than having
+    /// its timer clear the newer message.
+    private func flashPaintModeHint(_ message: String) {
+        paintModeHint = message
+        let token = UUID()
+        paintModeHintToken = token
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, self.paintModeHintToken == token else { return }
+            self.paintModeHint = nil
+        }
+    }
 
     /// What the chip slot shows during a drag.
     ///

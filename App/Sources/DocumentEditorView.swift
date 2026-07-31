@@ -513,9 +513,12 @@ struct DocumentEditorView: View {
                 if let box = inputModel.regionSelectionBox {
                     let low = box.minimum
                     let size = box.size
+                    // Amber while it reaches through the surface: the marquee is the
+                    // only place that mode is visible during the drag.
+                    let tint: Color = inputModel.regionSelectionSeesThrough ? .orange : .teal
                     Rectangle()
-                        .strokeBorder(.teal, style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
-                        .background(Color.teal.opacity(0.12))
+                        .strokeBorder(tint, style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                        .background(tint.opacity(0.12))
                         .frame(
                             width: CGFloat(size.x) * geometry.size.width,
                             height: CGFloat(size.y) * geometry.size.height

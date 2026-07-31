@@ -63,6 +63,17 @@ extension MeshEditController {
         return offsets
     }()
 
+    /// Whether box selection reaches THROUGH the surface, taking faces on the far
+    /// side too. Toggled by a pencil double-tap while the box tool is armed.
+    var regionSelectionSeesThrough: Bool {
+        get { regionSeesThroughStorage }
+        set {
+            guard regionSeesThroughStorage != newValue else { return }
+            regionSeesThroughStorage = newValue
+            onRegionSelectionModeChanged?(newValue)
+        }
+    }
+
     /// Whether the paint brush ERASES instead of painting. Toggled by a Pencil
     /// double-tap while the tool is armed — the same gesture other apps use to swap
     /// to an eraser, so it needs no on-screen control.
@@ -188,21 +199,31 @@ extension MeshEditController {
                 )
             )
         }
-        let facing = RegionBoxSelection.faces(in: box, from: candidates)
+        let seesThrough = regionSelectionSeesThrough
+        let facing = RegionBoxSelection.faces(
+            in: box, from: candidates, seesThrough: seesThrough
+        )
         guard !facing.isEmpty else { return }
 
-        // VISIBLE only: the first thing the camera sees at the centroid must be this
-        // face. Without it a box over the flank also takes the far wall behind it —
-        // and a solve domain wrapping both walls of a shape is not what the drag
-        // said. One raycast per candidate, paid once at stroke end.
-        var visible: [UInt32] = []
-        for face in facing {
-            guard let centroid = target.faceCentroid(face),
-                let screen = project(centroid),
-                let ray = context.ray(screen),
-                let hit = snapper.raycast(origin: ray.origin, direction: ray.direction)
-            else { continue }
-            if hit.face == face { visible.append(face) }
+        // VISIBLE only, unless the box sees through: the first thing the camera sees
+        // at the centroid must be this face. Without it a box over the flank also
+        // takes the far wall behind it. One raycast per candidate, paid once at
+        // stroke end — and skipped entirely in see-through mode, where being hidden
+        // is precisely the point.
+        let visible: [UInt32]
+        if seesThrough {
+            visible = facing
+        } else {
+            var firstHit: [UInt32] = []
+            for face in facing {
+                guard let centroid = target.faceCentroid(face),
+                    let screen = project(centroid),
+                    let ray = context.ray(screen),
+                    let hit = snapper.raycast(origin: ray.origin, direction: ray.direction)
+                else { continue }
+                if hit.face == face { firstHit.append(face) }
+            }
+            visible = firstHit
         }
         guard !visible.isEmpty else { return }
 
@@ -285,6 +306,28 @@ enum RegionPaintGeometry {
             }
         }
         return (positions, normals, indices)
+    }
+}
+
+/// What a pencil double-tap does, which depends on the armed tool.
+///
+/// The gesture is the one other apps use to reach an eraser, and each region tool has
+/// its own most-wanted switch: the brush needs to stop adding and start removing, a
+/// box needs to reach the far side of a thin feature. Binding it per tool gives each
+/// the meaning that matters there instead of one compromise.
+enum PencilTapAction: Equatable {
+    case toggleErase
+    case toggleSeeThrough
+    /// No region tool armed: the tap is left for whatever else wants it rather than
+    /// being silently swallowed.
+    case none
+
+    static func forTool(_ tool: RetopoTool?) -> PencilTapAction {
+        switch tool {
+        case .paintRegion: return .toggleErase
+        case .selectRegionBox: return .toggleSeeThrough
+        default: return .none
+        }
     }
 }
 
