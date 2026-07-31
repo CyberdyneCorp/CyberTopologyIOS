@@ -23,7 +23,6 @@ struct DocumentEditorView: View {
     @State private var showingSaveVersion = false
     @State private var showingViewportSettings = false
     @State private var showingCustomRetopo = false
-    @State private var customFaceCount = ""
     @State private var versionName = ""
     @State private var importRequest = FileImportRequest()
     @State private var statusMessage: String?
@@ -181,19 +180,23 @@ struct DocumentEditorView: View {
         } message: {
             Text("Creates a named copy alongside the original document.")
         }
-        .alert("Auto-Retopo Face Count", isPresented: $showingCustomRetopo) {
-            TextField("Target quad count", text: $customFaceCount)
-                .keyboardType(.numberPad)
-                .accessibilityIdentifier("auto-retopo-custom-field")
-            Button("Retopologize") {
-                if let n = Int(customFaceCount), n > 0 {
-                    inputModel.requestAutoRetopo(density: .targetingQuads(n))
-                }
-            }
-            .accessibilityIdentifier("auto-retopo-custom-run")
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(retopoBudgetMessage)
+        // Face-count entry with its own keypad and Half/Double
+        // (openspec improve-region-paint-ux). A sheet rather than an alert: an
+        // alert can host a TextField and buttons and nothing else, and the system
+        // number pad it summons floats OVER the dialog, covering the very line
+        // that says what is reachable.
+        .sheet(isPresented: $showingCustomRetopo) {
+            RetopoFaceCountView(
+                initial: retopoInitialCount,
+                ceiling: retopoCeiling,
+                availability: retopoBudgetMessage,
+                onRun: { count in
+                    showingCustomRetopo = false
+                    inputModel.requestAutoRetopo(density: .targetingQuads(count))
+                },
+                onCancel: { showingCustomRetopo = false }
+            )
+            .presentationDetents([.height(560)])
         }
         .fileImporter(
             isPresented: $importRequest.isPresented,
@@ -296,17 +299,7 @@ struct DocumentEditorView: View {
                 Button("Half") { runAutoRetopo(factor: 0.5) }
                     .accessibilityIdentifier("auto-retopo-half")
                 Divider()
-                Button("Custom…") {
-                    // Pre-filled with a REACHABLE number: for a painted region the
-                    // whole Target's count sits above the ceiling the solve clamps to.
-                    let painted = inputModel.meshEditor?.paintedRegion.count ?? 0
-                    customFaceCount = String(
-                        painted > 0
-                            ? min(targetFaceCount ?? 1000, max(4, painted * 4))
-                            : (targetFaceCount ?? 1000)
-                    )
-                    showingCustomRetopo = true
-                }
+                Button("Custom…") { showingCustomRetopo = true }
                 .accessibilityIdentifier("auto-retopo-custom")
             } label: {
                 Label("Auto-Retopo", systemImage: "square.grid.3x3.square")
@@ -1166,6 +1159,20 @@ struct DocumentEditorView: View {
             + "Painted: \(painted.formatted()) Target faces, up to "
             + "\(ceiling.formatted()) quads. A very low count comes back higher: the "
             + "cage is all quads, and removing a triangle means splitting."
+    }
+
+    /// Most quads this solve can use: four per source triangle for a painted region
+    /// (the solve's own clamp), or the engine's ceiling for a whole Target.
+    private var retopoCeiling: Int {
+        let painted = inputModel.meshEditor?.paintedRegion.count ?? 0
+        guard painted > 0 else { return 2_000_000 }
+        return max(RetopoFaceCountModel.minimum, painted * 4)
+    }
+
+    /// What the keypad starts on: the Target's count for a whole solve, or a value
+    /// inside the region's ceiling.
+    private var retopoInitialCount: Int {
+        min(targetFaceCount ?? 1000, retopoCeiling)
     }
 
     private func runAutoRetopo(factor: Double) {

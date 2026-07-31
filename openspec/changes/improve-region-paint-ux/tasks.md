@@ -26,6 +26,18 @@
 - [x] 3.2 Pre-fills a reachable number instead of the Target's count.
 - [x] 3.3 Says that a very low count comes back higher, since the cage is all quads.
 
+## 3a. The keypad and Half / Double
+
+- [x] 3a.1 `RetopoFaceCountModel` — a pure entry model: append/backspace/clear, halve,
+      double, and a runnable test. No SwiftUI, so every rule is unit-tested.
+- [x] 3a.2 `RetopoFaceCountView` — the value, Half / Double, a 3x4 keypad, Cancel /
+      Retopologize. Presented as a SHEET: an alert can host a TextField and buttons and
+      nothing else, and the system number pad floats OVER the dialog, covering the line that
+      says what is reachable (the reporter's screenshot showed exactly that).
+- [x] 3a.3 Halving floors at the solver's minimum; doubling caps at the ceiling; a digit that
+      would exceed the ceiling is IGNORED rather than accepted and rewritten.
+- [x] 3a.4 Retopologize is disabled below the solver's minimum.
+
 ## 4. Tests
 
 - [x] 4.1 Erase removes faces and preserves the remaining order; erasing an unpainted face
@@ -35,6 +47,8 @@
       nothing.
 - [x] 4.4 The cursor outranks snap/loop/face/ghost previews when all are available.
 - [x] 4.5 The cursor carries its own render element and is lines rather than a fill.
+- [x] 4.6 Keypad: typing builds the count and stops at the ceiling; backspace and clear;
+      halve/double bounds; the initial value is clamped into range; running needs the floor.
 
 ## 5. Device verification
 

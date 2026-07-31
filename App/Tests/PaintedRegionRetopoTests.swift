@@ -385,4 +385,71 @@ struct PaintedRegionRetopoTests {
         #expect(state.highlight?.segments.isEmpty == false)
         #expect(state.ghost == nil, "a cursor is lines, not a fill")
     }
+
+    // MARK: - The face-count keypad (openspec improve-region-paint-ux)
+
+    @Test func typingBuildsTheCountAndStopsAtTheCeiling() {
+        var model = RetopoFaceCountModel(count: 0, ceiling: 500)
+        model.append(digit: 1)
+        model.append(digit: 2)
+        #expect(model.count == 12)
+        // 123 fits, 1234 does not — and the digit that would overflow is IGNORED
+        // rather than accepted then rewritten, which would silently change what the
+        // artist typed.
+        model.append(digit: 3)
+        #expect(model.count == 123)
+        model.append(digit: 4)
+        #expect(model.count == 123)
+    }
+
+    @Test func backspaceAndClear() {
+        var model = RetopoFaceCountModel(count: 456, ceiling: 5000)
+        model.backspace()
+        #expect(model.count == 45)
+        model.clear()
+        #expect(model.count == 0)
+        #expect(model.display.isEmpty, "an empty field shows its placeholder, not a 0")
+        // Backspacing an empty field is harmless.
+        model.backspace()
+        #expect(model.count == 0)
+    }
+
+    @Test func halveAndDoubleRespectTheirBounds() {
+        var model = RetopoFaceCountModel(count: 100, ceiling: 150)
+        model.double()
+        #expect(model.count == 150, "double is capped at the ceiling")
+        model.halve()
+        #expect(model.count == 75)
+        // Halving cannot go below the solver's floor…
+        for _ in 0..<10 { model.halve() }
+        #expect(model.count == RetopoFaceCountModel.minimum)
+        // …and doubling from the floor still climbs.
+        model.double()
+        #expect(model.count == RetopoFaceCountModel.minimum * 2)
+    }
+
+    @Test func theInitialCountIsClampedIntoRange() {
+        // A whole-Target count handed to a painted region's ceiling.
+        let clamped = RetopoFaceCountModel(count: 69_451, ceiling: 532)
+        #expect(clamped.count == 532)
+        // And a ceiling below the floor cannot make the field unusable.
+        let tiny = RetopoFaceCountModel(count: 1, ceiling: 1)
+        #expect(tiny.ceiling == RetopoFaceCountModel.minimum)
+    }
+
+    @Test func runningNeedsAtLeastTheFloor() {
+        var model = RetopoFaceCountModel(count: 0, ceiling: 500)
+        #expect(!model.isRunnable, "an empty field cannot run a solve")
+        model.append(digit: 3)
+        #expect(!model.isRunnable, "3 quads is below the solver's floor")
+        model.append(digit: 0)
+        #expect(model.count == 30)
+        #expect(model.isRunnable)
+    }
+
+    @Test func theDisplayIsGrouped() {
+        let model = RetopoFaceCountModel(count: 69_451, ceiling: 2_000_000)
+        // Grouped for readability at a glance — 69,451 rather than 69451.
+        #expect(model.display.contains { !$0.isNumber })
+    }
 }

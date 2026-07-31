@@ -72,3 +72,35 @@ an impossible answer is worse than one that says nothing.
 #### Scenario: The pre-filled value is reachable
 - **WHEN** the prompt is shown with a region painted
 - **THEN** the pre-filled count SHALL NOT exceed the ceiling
+
+### Requirement: The face count is entered with a keypad, and can be halved or doubled
+
+The custom face-count prompt SHALL provide its own numeric keypad and Half / Double controls,
+rather than relying on the system keyboard.
+
+Halving SHALL never go below the solver's minimum and doubling SHALL never exceed the
+available ceiling. A digit that would exceed the ceiling SHALL be ignored rather than
+accepted and then rewritten. The prompt SHALL refuse to run below the solver's minimum.
+
+Rationale: the value is always a number, so a text keyboard is the wrong instrument — and
+the system number pad floats OVER the dialog, covering the line that states what is
+reachable. Half and Double are how a density is actually chosen (relative to what you have),
+and an alert cannot host them. Silently rewriting a typed number is worse than declining the
+keystroke, because the ceiling is on screen beside the field.
+
+#### Scenario: Typing a count
+- **WHEN** the user types digits
+- **THEN** the count SHALL be built from them
+- **AND** a digit that would exceed the ceiling SHALL be ignored
+
+#### Scenario: Halving and doubling
+- **WHEN** the user halves or doubles the count repeatedly
+- **THEN** it SHALL stay between the solver's minimum and the available ceiling
+
+#### Scenario: Below the minimum
+- **WHEN** the count is below the solver's minimum
+- **THEN** the prompt SHALL NOT run a solve
+
+#### Scenario: The dialog is not covered
+- **WHEN** the prompt is shown
+- **THEN** the statement of what is available SHALL remain visible while entering a count
