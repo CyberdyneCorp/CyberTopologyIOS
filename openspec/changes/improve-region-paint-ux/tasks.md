@@ -56,6 +56,26 @@
       is never persisted, and a command mutating nothing in the bundle would break the
       journal's replay contract.
 
+## 3c. Paint responsiveness
+
+Reported from device: "I paint and the faces are selected few seconds later."
+
+- [x] 3c.1 The extent no longer refetches the TARGET per sample. It was calling
+      `bundle.mesh(for:)`, which DESERIALIZES the whole mesh from payload bytes — on a
+      69 451-face Target at pencil sample rates, ~120 full mesh rebuilds a second. The
+      Target is fixed while painting (it is only ever the surface), so it is deserialized
+      once per payload identity.
+- [x] 3c.2 `RegionPaintFaceCache` — each face's corners are fetched from the engine ONCE
+      instead of `faceVertices` plus three or four `vertexPosition` calls per painted face
+      per sample, for geometry that had not moved.
+- [x] 3c.3 Keyed by payload file + revision, so a reimported or edited Target invalidates
+      itself rather than drawing the old shape.
+- [ ] 3c.4 NOT done, pending a device verdict: the fill is still ASSEMBLED over all painted
+      faces and re-uploaded per sample (pure Swift plus one buffer upload). If painting still
+      is not instant, the next steps are appending only new faces' triangles and coalescing
+      the upload to one per displayed frame. Deferred rather than guessed at, since the
+      deserialization above was orders of magnitude larger than either.
+
 ## 4. Tests
 
 - [x] 4.1 Erase removes faces and preserves the remaining order; erasing an unpainted face
@@ -65,6 +85,9 @@
       nothing.
 - [x] 4.4 The cursor outranks snap/loop/face/ghost previews when all are available.
 - [x] 4.5 The cursor carries its own render element and is lines rather than a fill.
+- [x] 4.6b Cache: each face is fetched ONCE however many rebuilds occur, a new Target
+      identity invalidates it, and it returns the geometry it fetched rather than merely
+      skipping work.
 - [x] 4.6a Paint undo: one stroke per step, redo reapplies, a new stroke forks the branch,
       clearing drops the history, an ERASE stroke is undoable, and the stack is bounded.
 - [x] 4.6 Keypad: typing builds the count and stops at the ceiling; backspace and clear;
