@@ -43,7 +43,10 @@ struct RegionRetopoOpsTests {
         let all = target.liveFaceIDs().sorted()
         let painted = Array(all.prefix(5))
 
-        let carved = try EngineRemeshSolver.carved(target, to: .faces(painted)).mesh
+        // `dilating: 0` — this asserts which faces the carve SELECTS; the shipped
+        // default grows the region by two rings to smooth its border (see
+        // `regionDilationRings`), which is covered separately.
+        let carved = try EngineRemeshSolver.carved(target, to: .faces(painted), dilating: 0).mesh
 
         #expect(carved.faceCount == 5)
         #expect(Set(carved.liveFaceIDs()) == Set(painted), "ids are preserved by the duplicate")
@@ -82,7 +85,9 @@ struct RegionRetopoOpsTests {
         let painted = target.liveFaceIDs().sorted().prefix(3)
         let stale = UInt32(target.vertexCapacity + 500)  // certainly not a live face id
 
-        let carved = try EngineRemeshSolver.carved(target, to: .faces(Array(painted) + [stale])).mesh
+        let carved = try EngineRemeshSolver.carved(
+            target, to: .faces(Array(painted) + [stale]), dilating: 0
+        ).mesh
 
         #expect(carved.faceCount == 3)
     }
@@ -249,6 +254,69 @@ struct RegionRetopoOpsTests {
         let a = try first.mesh.payloadData()
         let b = try second.mesh.payloadData()
         #expect(a == b)
+    }
+
+    /// BORDER: growing the region before carving gives the patch a smoother
+    /// perimeter than the raw painted set does.
+    ///
+    /// Asserted RELATIVELY — dilated versus raw on the same patch — because the
+    /// absolute numbers depend on the patch and the Target's density, while the
+    /// improvement holds across every patch measured (see `regionDilationRings`).
+    @Test("a grown region gives a smoother patch border", .timeLimit(.minutes(3)))
+    func regionDilationSmoothsTheBorder() async throws {
+        let target = try Mesh.loadOBJ(at: MeshFixtureCorpus.stanfordBunnyURL())
+        _ = try target.subdivide()
+        let ids = target.liveFaceIDs().sorted()
+        let seed = try #require(target.faceCentroid(ids[ids.count / 3]))
+        let centroids = ids.compactMap { target.faceCentroid($0) }
+        let lo = centroids.reduce(SIMD3<Float>(repeating: .greatestFiniteMagnitude)) { simd_min($0, $1) }
+        let hi = centroids.reduce(SIMD3<Float>(repeating: -.greatestFiniteMagnitude)) { simd_max($0, $1) }
+        let radius = simd_length(hi - lo) * 0.12
+        let painted = ids.filter { face in
+            (target.faceCentroid(face)).map { simd_distance($0, seed) < radius } ?? false
+        }
+
+        func patch(dilating rings: Int) throws -> (boundary: Int, worst: Float) {
+            let carve = try EngineRemeshSolver.carved(
+                target, to: .faces(painted), dilating: rings
+            )
+            var params = EngineRemeshSolver.regionParameters(
+                SolverParameters.targetingQuads(500).remesh, carve: carve
+            )
+            params.pureQuads = true
+            let out = try #require(try carve.mesh.remeshed(parameters: params))
+            var boundary = 0
+            for id in UInt32(0)..<UInt32(out.edgeCapacity) where out.isBoundaryEdge(id) == true {
+                boundary += 1
+            }
+            var worst: Float = 0
+            for face in out.liveFaceIDs() {
+                let ring = out.faceVertices(face).compactMap { out.vertexPosition($0) }
+                guard ring.count >= 3 else { continue }
+                var short = Float.greatestFiniteMagnitude, long: Float = 0
+                for index in 0..<ring.count {
+                    let d = simd_distance(ring[index], ring[(index + 1) % ring.count])
+                    short = min(short, d)
+                    long = max(long, d)
+                }
+                if short > 1e-9 { worst = max(worst, long / short) }
+            }
+            return (boundary, worst)
+        }
+
+        let raw = try patch(dilating: 0)
+        let grown = try patch(dilating: EngineRemeshSolver.regionDilationRings)
+
+        #expect(
+            grown.boundary < raw.boundary,
+            "perimeter did not get smoother: \(grown.boundary) vs \(raw.boundary) edges"
+        )
+        #expect(
+            grown.worst < raw.worst,
+            "worst face got worse: \(grown.worst):1 vs \(raw.worst):1"
+        )
+        // And no degenerate faces, which a closing produced (277 294:1).
+        #expect(grown.worst < 100, "degenerate face at \(grown.worst):1")
     }
 
     // MARK: - Merging the patch

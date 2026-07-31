@@ -403,13 +403,56 @@ public struct EngineRemeshSolver: WeaveSolving {
         return out
     }
 
+    /// How far a painted region grows before it is carved, in face rings.
+    ///
+    /// A painted set's border zigzags at the TARGET's triangle scale, and the
+    /// remesher honours it — that is the ring of teeth reported from device.
+    /// Growing the region first gives it a fuller, smoother outline to follow.
+    ///
+    /// Measured across three patches of a 14 904-face Target (mean of worst
+    /// face aspect ratio, share of faces over 4:1, boundary edge count), after the
+    /// carve was made deterministic — before that, none of these numbers were
+    /// reproducible:
+    ///
+    /// | rings | worst | spikes | boundary |
+    /// |---|---|---|---|
+    /// | 0 | 24.5 | 1.9% | 157 |
+    /// | 1 | 17.8 | 2.3% | 141 |
+    /// | 2 | **11.9** | **1.4%** | **126** |
+    ///
+    /// Two rings wins on all three. A morphological CLOSING (dilate then erode) was
+    /// measured too and rejected: erosion produced degenerate faces — 277 294:1 —
+    /// presumably by pinching the region into slivers.
+    ///
+    /// The cost, accepted deliberately: the patch may extend up to two triangle
+    /// rings beyond what was painted. On a dense Target that is a hair's breadth,
+    /// and it forgives painting slightly inside the area you meant.
+    public static let regionDilationRings = 2
+
+    /// How much bigger than the painted set the grown domain may get.
+    ///
+    /// A ring is a fixed number of TRIANGLES, not a fixed distance, so its cost
+    /// depends entirely on the Target's density. Measured: on a 14 904-face Target
+    /// two rings grew a 1331-face patch to 1869 (1.40x, a hair's breadth), while on
+    /// the 4968-face fixture the same two rings took 400 faces to 3220 — 65% of the
+    /// model. Growing has to stop before the patch stops being the painted patch.
+    ///
+    /// So dilation is self-limiting: it keeps the last ring that stays inside this
+    /// factor. Dense Targets get the full smoothing margin; coarse ones get little
+    /// or none, which is right — their border already zigzags at quad scale.
+    public static let regionDilationGrowthLimit: Float = 1.5
+
     /// `faces` plus every face sharing a vertex with one, `rings` times.
-    public static func dilated(_ faces: Set<UInt32>, in mesh: Mesh, rings: Int) -> Set<UInt32> {
-        guard rings > 0 else { return faces }
+    public static func dilated(
+        _ faces: Set<UInt32>, in mesh: Mesh, rings: Int,
+        growthLimit: Float = EngineRemeshSolver.regionDilationGrowthLimit
+    ) -> Set<UInt32> {
+        guard rings > 0, !faces.isEmpty else { return faces }
         var byVertex: [UInt32: [UInt32]] = [:]
         for face in mesh.liveFaceIDs() {
             for vertex in mesh.faceVertices(face) { byVertex[vertex, default: []].append(face) }
         }
+        let ceiling = Int((Float(faces.count) * growthLimit).rounded())
         var out = faces
         for _ in 0..<rings {
             var next = out
@@ -418,13 +461,16 @@ public struct EngineRemeshSolver: WeaveSolving {
                     for neighbour in byVertex[vertex] ?? [] { next.insert(neighbour) }
                 }
             }
+            // Keep the last ring that stays within the growth limit.
+            guard next.count <= ceiling else { break }
             out = next
         }
         return out
     }
 
     public static func carved(
-        _ source: Mesh, to region: SolveRegion, dilating rings: Int = 0
+        _ source: Mesh, to region: SolveRegion,
+        dilating rings: Int = EngineRemeshSolver.regionDilationRings
     ) throws -> Carve {
         guard case .faces(let faces) = region else { return Carve(mesh: source, share: 1) }
         let live = Set(source.liveFaceIDs())

@@ -112,9 +112,23 @@ honours it.
       single sample of a distribution, not a measurement — including 10.2's 25:1 / 38 spikes
       and 10.3's "dilation halves the spikes". Guarded now by `regionSolveIsDeterministic`
       (byte-identical payloads) and `carveIsDeterministic`.
-- [ ] 10.6 STILL OPEN: with the pipeline stable, the border measures worst 20.5:1 with 16
-      of 611 faces over 4:1. That is now a repeatable number, so dilation (and any other
-      remedy) can finally be evaluated honestly — the earlier attempt could not be.
+- [x] 10.6 FIXED with the reliable metric. The painted region grows by up to two face
+      rings before the carve, so the remesher follows a fuller outline instead of a
+      triangle-scale sawtooth. Measured across THREE patches of a 14 904-face Target
+      (means): worst face aspect 24.5 -> 11.9, faces over 4:1 1.9% -> 1.4%, boundary edge
+      count 157 -> 126. Two rings beat one on all three metrics.
+- [x] 10.7 A morphological CLOSING was measured and rejected: erosion produced degenerate
+      faces (277 294:1), presumably by pinching the region into slivers.
+- [x] 10.8 Dilation is SELF-LIMITING (`regionDilationGrowthLimit` 1.5x). A ring is a fixed
+      number of triangles, not a fixed distance: two rings grew a dense Target's patch by
+      1.40x but took the coarse fixture's 400-face patch to 3220 — 65% of the model. It now
+      keeps the last ring that stays inside the limit, so dense Targets get the full margin
+      and coarse ones get little or none, which is right since their border already zigzags
+      at quad scale.
+- [x] 10.9 `regionDilationSmoothsTheBorder` guards it RELATIVELY — dilated versus raw on the
+      same patch, fewer boundary edges and a better worst face — because the absolute
+      numbers depend on the patch and the Target's density. Plus a hard ceiling (< 100:1) so
+      a degenerate face like the closing's cannot slip back in.
 
 ## 6. Device verification
 
