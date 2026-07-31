@@ -1,4 +1,5 @@
 import CyberKit
+import CyberKitTesting
 import Foundation
 import Testing
 import simd
@@ -102,6 +103,67 @@ struct PaintedRegionRetopoTests {
         )
         #expect(fill.indices.isEmpty)
         #expect(fill.positions.isEmpty)
+    }
+
+    // MARK: - The solve domain crosses the thread boundary as GEOMETRY
+
+    /// REPORTED FROM DEVICE: the painted extent drew correctly and "I ask to
+    /// retopologize and nothing happens".
+    ///
+    /// The cause: face ids were being sent off-main to be carved there, but the
+    /// mesh crosses that boundary as `payloadData()`, which round-trips through OBJ
+    /// and RENUMBERS every element. The ids then named arbitrary faces of the
+    /// deserialized mesh — or nothing, which the solve swallowed as a silent nil.
+    /// So the carve happens on the LIVE mesh and only geometry crosses.
+    @Test func theSolveDomainIsCarvedBeforeSerializing() throws {
+        let target = try Mesh.loadOBJ(at: MeshFixtureCorpus.stanfordBunnyURL())
+        let painted = Array(target.liveFaceIDs().sorted().prefix(400))
+
+        let prepared = try MetalViewport.Coordinator.prepare(
+            target: target, region: .faces(painted), params: .medium
+        )
+
+        // What crosses is the CARVE, not the whole Target…
+        let domain = try Mesh(payloadData: prepared.payload)
+        #expect(domain.faceCount == 400)
+        #expect(target.faceCount > 400, "the Target itself is never carved")
+        // …and the budget followed the painted share, so a patch is not asked for a
+        // whole model's worth of quads.
+        #expect(
+            abs(prepared.share - Float(400) / Float(target.faceCount)) < 1e-5,
+            "share \(prepared.share) should be 400 of \(target.faceCount) faces"
+        )
+        #expect(prepared.params.remesh.targetQuads < SolverParameters.medium.remesh.targetQuads)
+        #expect(prepared.params.remesh.targetQuads >= 4, "never zero quads")
+    }
+
+    @Test func aWholeMeshSolveIsPreparedUnchanged() throws {
+        let target = try Mesh.loadOBJ(at: UITestSupport.writeSeedOBJ())
+        let prepared = try MetalViewport.Coordinator.prepare(
+            target: target, region: .wholeMesh, params: .medium
+        )
+        #expect(prepared.share == 1)
+        #expect(prepared.params.remesh.targetQuads == SolverParameters.medium.remesh.targetQuads)
+        #expect(try Mesh(payloadData: prepared.payload).faceCount == target.faceCount)
+    }
+
+    /// The trap itself, stated once so nobody re-introduces it: ids do not survive
+    /// the payload round trip.
+    @Test func faceIDsDoNotSurviveAPayloadRoundTrip() throws {
+        let mesh = try Mesh.loadOBJ(at: UITestSupport.writeSeedDomeGridOBJ())
+        // Delete a MIDDLE face so the live ids are genuinely SPARSE — deleting the
+        // last one leaves 0..n-1 dense, and the renumbering is then invisible.
+        let doomed = try #require(mesh.liveFaceIDs().sorted().dropFirst(2).first)
+        try mesh.deleteFaces([doomed])
+        let sparse = Set(mesh.liveFaceIDs())
+
+        let roundTripped = try Mesh(payloadData: try mesh.payloadData())
+
+        #expect(roundTripped.faceCount == mesh.faceCount)
+        #expect(
+            Set(roundTripped.liveFaceIDs()) != sparse,
+            "ids survived the round trip — then carving off-main would have been safe"
+        )
     }
 
     // MARK: - Merging on accept

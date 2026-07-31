@@ -43,6 +43,15 @@
 - [x] 5.5 No paint ⇒ whole-mesh solve, unchanged.
 - [x] 5.6 The mask clears after a run and is absent after reopen.
 
+## 7. Device fix: nothing happened on run
+
+- [x] 7.1 Face ids were crossing the `payloadData()` boundary, which renumbers every element, so
+      the off-main carve matched arbitrary faces or none — and the failure was swallowed as a
+      silent nil. The carve now runs on the LIVE mesh in `prepare(target:region:params:)`; only
+      geometry crosses, and a carve failure is logged (design D1).
+- [x] 7.2 Regression tests: `theSolveDomainIsCarvedBeforeSerializing` (what crosses is the carve,
+      budget scaled) and `faceIDsDoNotSurviveAPayloadRoundTrip` (the trap, stated once).
+
 ## 6. Device verification
 
 - [x] 6.1 Ran on iPad Air 13-inch (M3): 1185 tests, passed.

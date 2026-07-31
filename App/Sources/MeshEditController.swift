@@ -28,7 +28,7 @@ import simd
 /// is camera unprojection, which belongs to the shell-owned camera.
 @MainActor
 final class MeshEditController {
-    private static let log = Logger(
+    static let log = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "CyberTopology", category: "mesh-edit"
     )
 
