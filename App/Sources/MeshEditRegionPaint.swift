@@ -181,15 +181,13 @@ enum RegionPaintGeometry {
     /// pipeline. Faces whose ring is degenerate or unreadable are skipped rather
     /// than emitted malformed — a stale id after a Target reload is ordinary.
     static func fill(
-        faces: [UInt32],
-        ring: (UInt32) -> [UInt32],
-        position: (UInt32) -> SIMD3<Float>?
+        faces: [UInt32], corners cornersOf: (UInt32) -> [SIMD3<Float>]
     ) -> (positions: [Float], normals: [Float], indices: [UInt32]) {
         var positions: [Float] = []
         var normals: [Float] = []
         var indices: [UInt32] = []
         for face in faces {
-            let corners = ring(face).compactMap { position($0) }
+            let corners = cornersOf(face)
             guard corners.count >= 3 else { continue }
             // The face's own plane normal, from the first non-degenerate triple.
             var plane: SIMD3<Float>?
@@ -214,5 +212,45 @@ enum RegionPaintGeometry {
             }
         }
         return (positions, normals, indices)
+    }
+}
+
+/// Per-face corner positions for the painted-extent fill, cached.
+///
+/// WHY THIS EXISTS. The extent is rebuilt on every paint sample, and it used to
+/// fetch the Target by calling `bundle.mesh(for:)` — which DESERIALIZES the whole
+/// mesh from its payload bytes. On a 69 451-face Target at pencil sample rates that
+/// is ~120 full mesh rebuilds a second, which is the "faces appear seconds later"
+/// reported from device. On top of it, every painted face cost a `faceVertices` plus
+/// three or four `vertexPosition` calls into the engine, on every sample, for faces
+/// whose geometry had not moved since the last one.
+///
+/// The Target is fixed while painting — it is only ever the surface — so both are
+/// cacheable. Keyed by payload identity so a reimported or edited Target invalidates
+/// itself rather than drawing the old shape.
+struct RegionPaintFaceCache {
+    private(set) var key: String?
+    private var corners: [UInt32: [SIMD3<Float>]] = [:]
+    /// How many times the cache had to ask the engine — asserted in tests, since a
+    /// cache that silently stops hitting is the bug it exists to prevent.
+    private(set) var fetches = 0
+
+    /// Drops everything when the Target changes identity.
+    mutating func prepare(key: String) {
+        guard key != self.key else { return }
+        self.key = key
+        corners.removeAll()
+        fetches = 0
+    }
+
+    /// Corners of `face`, fetching once and remembering.
+    mutating func corners(
+        of face: UInt32, fetch: (UInt32) -> [SIMD3<Float>]
+    ) -> [SIMD3<Float>] {
+        if let cached = corners[face] { return cached }
+        fetches += 1
+        let fetched = fetch(face)
+        corners[face] = fetched
+        return fetched
     }
 }

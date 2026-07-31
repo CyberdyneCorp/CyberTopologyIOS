@@ -258,6 +258,42 @@ struct MetalViewport: UIViewRepresentable {
         var twoFingerRollEnabled = true
         /// Twist that must be exceeded before a roll begins, in radians (~7°).
         static let rollThreshold: Float = 0.12
+        /// Target geometry for the painted extent, cached across paint samples
+        /// (see `RegionPaintFaceCache`).
+        private var paintFaceCache = RegionPaintFaceCache()
+        private var paintTargetMesh: Mesh?
+
+        /// Rebuilds the painted-extent fill without re-reading the Target.
+        ///
+        /// The Target is deserialized at most once per identity: it is only ever the
+        /// surface, so it cannot change under a paint stroke, and reloading it per
+        /// sample was what made painting lag by seconds on a 69 451-face model.
+        func updateRegionPaintFill(faces: [UInt32]) {
+            guard let renderer else { return }
+            guard !faces.isEmpty else {
+                renderer.setRegionPaint(positions: [], normals: [], indices: [])
+                return
+            }
+            guard let bundle = bundleProvider?(),
+                let object = bundle.manifest.objects.first(where: { $0.role == .target })
+            else { return }
+            // Payload identity, so a reimported or edited Target invalidates itself.
+            let key = "\(object.payloadFile)#\(object.revision ?? 0)"
+            if paintFaceCache.key != key {
+                paintFaceCache.prepare(key: key)
+                paintTargetMesh = try? bundle.mesh(for: object)
+            }
+            guard let target = paintTargetMesh else { return }
+            let fill = RegionPaintGeometry.fill(faces: faces) { face in
+                paintFaceCache.corners(of: face) { id in
+                    target.faceVertices(id).compactMap { target.vertexPosition($0) }
+                }
+            }
+            renderer.setRegionPaint(
+                positions: fill.positions, normals: fill.normals, indices: fill.indices
+            )
+        }
+
         /// Pivot for the live twist, resolved ONCE at gesture begin: re-casting
         /// it per frame lets the pivot crawl across the surface as the scene
         /// turns beneath it, feeding its own motion (openspec
@@ -567,19 +603,7 @@ struct MetalViewport: UIViewRepresentable {
                 self?.inputModel.paintModeChanged(erasing: erases)
             }
             meshEditor.onPaintedRegionChanged = { [weak self] faces in
-                guard let self, let renderer = self.renderer else { return }
-                guard !faces.isEmpty, let target = self.currentTargetMesh() else {
-                    renderer.setRegionPaint(positions: [], normals: [], indices: [])
-                    return
-                }
-                let fill = RegionPaintGeometry.fill(
-                    faces: faces,
-                    ring: { target.faceVertices($0) },
-                    position: { target.vertexPosition($0) }
-                )
-                renderer.setRegionPaint(
-                    positions: fill.positions, normals: fill.normals, indices: fill.indices
-                )
+                self?.updateRegionPaintFill(faces: faces)
             }
             meshEditor.onMoveScopeChanged = { [weak self] scope in
                 self?.inputModel.moveScopeChanged(scope)

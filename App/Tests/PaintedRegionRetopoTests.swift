@@ -81,9 +81,9 @@ struct PaintedRegionRetopoTests {
         ]
         let rings: [UInt32: [UInt32]] = [10: [0, 1, 2, 3], 11: [1, 4, 5, 2]]
 
-        let fill = RegionPaintGeometry.fill(
-            faces: [10, 11], ring: { rings[$0] ?? [] }, position: { corners[$0] }
-        )
+        let fill = RegionPaintGeometry.fill(faces: [10, 11]) { face in
+            (rings[face] ?? []).compactMap { corners[$0] }
+        }
 
         // Two quads → two triangles each.
         #expect(fill.indices.count == 12)
@@ -98,9 +98,9 @@ struct PaintedRegionRetopoTests {
             0: SIMD3(0, 0, 0), 1: SIMD3(1, 0, 0), 2: SIMD3(2, 0, 0),
         ]
         // A collinear ring encloses no area; an unknown face has no ring at all.
-        let fill = RegionPaintGeometry.fill(
-            faces: [10, 99], ring: { $0 == 10 ? [0, 1, 2] : [] }, position: { corners[$0] }
-        )
+        let fill = RegionPaintGeometry.fill(faces: [10, 99]) { face in
+            (face == 10 ? [0, 1, 2] : []).compactMap { corners[$0] }
+        }
         #expect(fill.indices.isEmpty)
         #expect(fill.positions.isEmpty)
     }
@@ -541,5 +541,59 @@ struct PaintedRegionRetopoTests {
         // Bounded rather than unbounded: the mask is transient, and a long session
         // should not accumulate history nobody asked for.
         #expect(controller.paintUndoStack.count <= MeshEditController.paintHistoryLimit)
+    }
+
+    // MARK: - Paint responsiveness (openspec improve-region-paint-ux)
+
+    /// REPORTED FROM DEVICE: "I paint and the faces are selected few seconds later."
+    ///
+    /// The extent is rebuilt on every paint sample, and each rebuild asked the engine
+    /// for the geometry of EVERY painted face — for faces that had not moved since
+    /// the previous sample. Worse, it fetched the Target through `bundle.mesh(for:)`,
+    /// which deserializes the whole mesh from payload bytes: ~120 rebuilds of a
+    /// 69 451-face model per second of stroking.
+    @Test func eachFaceIsFetchedOnceHoweverManyRebuilds() {
+        var cache = RegionPaintFaceCache()
+        cache.prepare(key: "target#1")
+        let corners = [SIMD3<Float>(0, 0, 0), SIMD3(1, 0, 0), SIMD3(1, 1, 0)]
+
+        // Ten rebuilds over a growing region, as a stroke would produce.
+        for painted in 1...10 {
+            for face in 0..<UInt32(painted) {
+                _ = cache.corners(of: face) { _ in corners }
+            }
+        }
+
+        // Ten faces ever seen, so ten fetches — not the 55 the loop performed.
+        #expect(cache.fetches == 10)
+    }
+
+    @Test func aNewTargetInvalidatesTheCache() {
+        var cache = RegionPaintFaceCache()
+        cache.prepare(key: "target#1")
+        _ = cache.corners(of: 1) { _ in [SIMD3(0, 0, 0)] }
+        #expect(cache.fetches == 1)
+
+        // Same key: still cached.
+        cache.prepare(key: "target#1")
+        _ = cache.corners(of: 1) { _ in [SIMD3(0, 0, 0)] }
+        #expect(cache.fetches == 1)
+
+        // A reimported or edited Target must NOT keep drawing the old shape.
+        cache.prepare(key: "target#2")
+        _ = cache.corners(of: 1) { _ in [SIMD3(9, 9, 9)] }
+        #expect(cache.fetches == 1, "the counter resets with the cache")
+        #expect(cache.key == "target#2")
+    }
+
+    /// The cache must return the geometry it was given, not merely avoid work.
+    @Test func theCacheReturnsWhatItFetched() {
+        var cache = RegionPaintFaceCache()
+        cache.prepare(key: "t")
+        let expected = [SIMD3<Float>(1, 2, 3), SIMD3(4, 5, 6), SIMD3(7, 8, 9)]
+        let first = cache.corners(of: 7) { _ in expected }
+        let second = cache.corners(of: 7) { _ in [] }
+        #expect(first == expected)
+        #expect(second == expected, "the second call must come from the cache")
     }
 }
