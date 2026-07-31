@@ -250,21 +250,19 @@ struct DocumentEditorView: View {
         }
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
-                document.undoLast()
-                journal.handle(.documentEdited)
+                undo()
             } label: {
                 Label("Undo", systemImage: "arrow.uturn.backward")
             }
-            .disabled(!document.canUndo)
+            .disabled(!canUndoAnything)
             .accessibilityIdentifier("undo")
 
             Button {
-                document.redoLast()
-                journal.handle(.documentEdited)
+                redo()
             } label: {
                 Label("Redo", systemImage: "arrow.uturn.forward")
             }
-            .disabled(!document.canRedo)
+            .disabled(!canRedoAnything)
             .accessibilityIdentifier("redo")
 
             Menu {
@@ -487,14 +485,8 @@ struct DocumentEditorView: View {
             resolutionScale: resolutionScale,
             subdivisionPreviewLevel: subdivisionPreviewLevel,
             snapHapticsEnabled: snapHapticsEnabled,
-            onUndo: {
-                document.undoLast()
-                journal.handle(.documentEdited)
-            },
-            onRedo: {
-                document.redoLast()
-                journal.handle(.documentEdited)
-            },
+            onUndo: { undo() },
+            onRedo: { redo() },
             onCommit: { command in
                 // Verb layer (task 3.3): every mesh mutation is journaled.
                 document.perform(command)
@@ -1173,6 +1165,35 @@ struct DocumentEditorView: View {
     /// inside the region's ceiling.
     private var retopoInitialCount: Int {
         min(targetFaceCount ?? 1000, retopoCeiling)
+    }
+
+    /// Undo, with PAINT first (openspec improve-region-paint-ux).
+    ///
+    /// A paint stroke is not a document command — the mask is viewport state that is
+    /// never persisted, and journaling something that mutates nothing in the bundle
+    /// would break the journal's replay contract. So paint keeps its own history and
+    /// undo consumes that first, falling through to the document when there is no
+    /// paint left to step back through. Undo therefore means "the last thing I did",
+    /// which is what it looked like from the artist's seat either way.
+    private func undo() {
+        if inputModel.meshEditor?.undoPaint() == true { return }
+        document.undoLast()
+        journal.handle(.documentEdited)
+    }
+
+    private func redo() {
+        if inputModel.meshEditor?.redoPaint() == true { return }
+        document.redoLast()
+        journal.handle(.documentEdited)
+    }
+
+    /// Whether anything — paint or document — can be stepped back.
+    private var canUndoAnything: Bool {
+        document.canUndo || (inputModel.meshEditor?.canUndoPaint ?? false)
+    }
+
+    private var canRedoAnything: Bool {
+        document.canRedo || (inputModel.meshEditor?.canRedoPaint ?? false)
     }
 
     private func runAutoRetopo(factor: Double) {

@@ -452,4 +452,94 @@ struct PaintedRegionRetopoTests {
         // Grouped for readability at a glance — 69,451 rather than 69451.
         #expect(model.display.contains { !$0.isNumber })
     }
+
+    // MARK: - Live painting and paint undo (openspec improve-region-paint-ux)
+
+    /// One paint STROKE is one undo step, however many samples it covered.
+    @Test func undoStepsBackOneStrokeAtATime() {
+        let controller = MeshEditController()
+        #expect(!controller.canUndoPaint)
+
+        controller.beginPaintStrokeHistory()
+        controller.paintedRegion.add([1, 2])
+        controller.beginPaintStrokeHistory()
+        controller.paintedRegion.add([3, 4])
+
+        #expect(controller.canUndoPaint)
+        #expect(controller.undoPaint())
+        #expect(controller.paintedRegion.faces == [1, 2], "the second stroke came off")
+        #expect(controller.undoPaint())
+        #expect(controller.paintedRegion.isEmpty, "the first stroke came off")
+        // Nothing left: the caller falls through to the DOCUMENT's undo.
+        #expect(!controller.undoPaint())
+        #expect(!controller.canUndoPaint)
+    }
+
+    @Test func redoReappliesAnUndonePaintStroke() {
+        let controller = MeshEditController()
+        controller.beginPaintStrokeHistory()
+        controller.paintedRegion.add([7, 8])
+
+        #expect(controller.undoPaint())
+        #expect(controller.paintedRegion.isEmpty)
+        #expect(controller.canRedoPaint)
+        #expect(controller.redoPaint())
+        #expect(controller.paintedRegion.faces == [7, 8])
+        #expect(!controller.redoPaint())
+    }
+
+    /// A new stroke forks the history: redo cannot resurrect a branch the artist
+    /// painted over.
+    @Test func aNewStrokeDropsTheRedoBranch() {
+        let controller = MeshEditController()
+        controller.beginPaintStrokeHistory()
+        controller.paintedRegion.add([1])
+        #expect(controller.undoPaint())
+        #expect(controller.canRedoPaint)
+
+        controller.beginPaintStrokeHistory()
+        controller.paintedRegion.add([2])
+
+        #expect(!controller.canRedoPaint)
+    }
+
+    /// Clearing (which a solve does) drops the history too: those strokes described
+    /// a mask that no longer exists, and stepping back into it would resurrect an
+    /// extent the solve already consumed.
+    @Test func clearingDropsThePaintHistory() {
+        let controller = MeshEditController()
+        controller.beginPaintStrokeHistory()
+        controller.paintedRegion.add([1, 2])
+
+        controller.clearPaintedRegion()
+
+        #expect(controller.paintedRegion.isEmpty)
+        #expect(!controller.canUndoPaint)
+        #expect(!controller.canRedoPaint)
+    }
+
+    /// Undo also covers an ERASE stroke, since it is a paint stroke too.
+    @Test func undoRestoresWhatAnEraseRemoved() {
+        let controller = MeshEditController()
+        controller.beginPaintStrokeHistory()
+        controller.paintedRegion.add([1, 2, 3])
+        controller.paintErases = true
+        controller.beginPaintStrokeHistory()
+        controller.paintedRegion.remove([2])
+        #expect(controller.paintedRegion.faces == [1, 3])
+
+        #expect(controller.undoPaint())
+        #expect(controller.paintedRegion.faces == [1, 2, 3])
+    }
+
+    @Test func thePaintHistoryIsBounded() {
+        let controller = MeshEditController()
+        for index in 0...(MeshEditController.paintHistoryLimit + 10) {
+            controller.beginPaintStrokeHistory()
+            controller.paintedRegion.add([UInt32(index)])
+        }
+        // Bounded rather than unbounded: the mask is transient, and a long session
+        // should not accumulate history nobody asked for.
+        #expect(controller.paintUndoStack.count <= MeshEditController.paintHistoryLimit)
+    }
 }
