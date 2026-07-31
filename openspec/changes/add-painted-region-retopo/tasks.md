@@ -86,9 +86,27 @@ Measured on a 440-face painted region of the bunny, quad areas as p90/p10:
       main actor and hands the boundary a whole mesh, so the solver can no longer tell).
 - [x] 9.5 `regionPatchIsEvenAndOpen` guards spread < 6x, an open boundary, and a
       patch-sized face count; `aTinyRegionCapsTheRequestedCount` guards the cap.
-- [ ] 9.6 Boundary smoothing (morphological closing of the painted face set) was measured
-      and NOT adopted: once adaptivity and hole filling were right it changed the spread
-      from 2.9x to 3.2x. Left undone deliberately rather than carried as dead code.
+## 10. OPEN: the patch BORDER is still spiky
+
+Device verdict after 9: the interior grid is good, the perimeter is a ring of long thin
+faces. The painted set's border zigzags at the TARGET's triangle scale and the remesher
+honours it.
+
+- [x] 10.1 Reproduced. It needs a DENSE Target: on the 4 968-face fixture the metric reads
+      0 slivers, and the defect only appears once subdivided to 14 904 f (device: 69 451).
+      The earlier dismissal of boundary smoothing was measured with an INTERIOR metric
+      (quad-area spread), which cannot see this.
+- [x] 10.2 Metric that sees it: per-face aspect ratio (longest over shortest edge). As
+      shipped: worst 25:1, 38 of ~590 faces over 4:1.
+- [x] 10.3 Measured in isolation, dilating the painted set by one ring halves the spikes
+      (38 -> 14) and cuts the worst to 12:1; a closing (dilate 2, erode 2) gives 10.8:1
+      with 19 spikes.
+- [ ] 10.4 NOT SHIPPED. Wiring the same one-ring dilation into `carved` measured WORSE
+      through the solver (38.8:1) than the isolated probe predicted (11.9:1), and that
+      discrepancy is unexplained. Shipping a change whose benefit cannot be demonstrated
+      would be worse than leaving the defect visible. Reverted; the numbers above are the
+      starting point for the next attempt, which should first explain why the two paths
+      disagree.
 
 ## 6. Device verification
 
