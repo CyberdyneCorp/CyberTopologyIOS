@@ -615,6 +615,52 @@ struct PaintedRegionRetopoTests {
         #expect(RegionBoxSelection.faces(in: box, from: candidates) == [1])
     }
 
+    /// See-through mode takes BOTH walls of a thin feature — an ear is one thing to
+    /// retopologize, and boxing each side means finding a camera angle for each.
+    @Test func aSeeThroughBoxTakesTheFarSideToo() {
+        let box = SelectionBox(origin: SIMD2(0.2, 0.2), corner: SIMD2(0.8, 0.8))
+        let near = RegionBoxSelection.Candidate(
+            face: 1, screen: SIMD2(0.5, 0.5), isInFront: true, facingDot: -0.9
+        )
+        let far = RegionBoxSelection.Candidate(
+            face: 2, screen: SIMD2(0.5, 0.5), isInFront: true, facingDot: 0.9
+        )
+        // BEHIND the camera stays excluded even here: a mirrored projection landing
+        // inside the box is an artefact, not a face the artist boxed.
+        let behind = RegionBoxSelection.Candidate(
+            face: 3, screen: SIMD2(0.5, 0.5), isInFront: false, facingDot: 0.9
+        )
+        let outside = RegionBoxSelection.Candidate(
+            face: 4, screen: SIMD2(0.95, 0.5), isInFront: true, facingDot: 0.9
+        )
+        let all = [near, far, behind, outside]
+
+        #expect(RegionBoxSelection.faces(in: box, from: all, seesThrough: true) == [1, 2])
+        #expect(RegionBoxSelection.faces(in: box, from: all, seesThrough: false) == [1])
+    }
+
+    /// The pencil double-tap means different things per tool, because each region
+    /// tool has its own most-wanted switch: the brush needs an eraser, a box needs
+    /// the far side.
+    @Test func theDoubleTapMeansWhateverTheArmedToolNeeds() {
+        #expect(PencilTapAction.forTool(.paintRegion) == .toggleErase)
+        #expect(PencilTapAction.forTool(.selectRegionBox) == .toggleSeeThrough)
+        // No region tool armed: the tap is left alone rather than silently changing
+        // a mode the artist cannot see.
+        #expect(PencilTapAction.forTool(.transformVertices) == PencilTapAction.none)
+        #expect(PencilTapAction.forTool(nil) == PencilTapAction.none)
+    }
+
+    @Test @MainActor func theModeSwitchIsAnnouncedAndTinted() {
+        let model = ViewportInputModel()
+        model.regionSelectionModeChanged(seesThrough: true)
+        #expect(model.regionSelectionSeesThrough)
+        #expect(model.paintModeHint == "Select through")
+        model.regionSelectionModeChanged(seesThrough: false)
+        #expect(!model.regionSelectionSeesThrough)
+        #expect(model.paintModeHint == "Select visible")
+    }
+
     /// Sorted, because the carve list feeds a solve whose determinism was hard won.
     @Test func theSelectionIsOrdered() {
         let box = SelectionBox(origin: .zero, corner: SIMD2(1, 1))

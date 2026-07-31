@@ -55,3 +55,51 @@ the point: box a flank, then tidy its edge with the brush.
 #### Scenario: A deselect box
 - **WHEN** the brush is erasing and the user drags a box over painted faces
 - **THEN** those faces SHALL be removed from the region
+
+### Requirement: A see-through box takes both sides
+
+The system SHALL provide a see-through box mode that selects faces on the FAR side of the
+surface as well as the near side, SHALL exclude faces behind the camera even in that mode,
+and SHALL make the mode visible while it is active.
+
+Rationale: a thin feature — an ear — is ONE thing to retopologize, and a visible-only box
+takes one wall at a time, so covering both means finding a camera angle for each and running
+two solves on halves of the same feature. A face behind the camera is still excluded: it
+projects to a mirrored position that can land inside the box, which is an artefact rather
+than something the artist boxed.
+
+#### Scenario: Both walls of a thin feature
+- **WHEN** a see-through box covers an ear
+- **THEN** faces on both the near and far sides SHALL be selected
+
+#### Scenario: Behind the camera stays out
+- **WHEN** a see-through box's rectangle covers the mirrored projection of a face behind the camera
+- **THEN** that face SHALL NOT be selected
+
+#### Scenario: The mode is visible
+- **WHEN** see-through selection is active
+- **THEN** the mode SHALL be announced and the rectangle SHALL be drawn distinctly from a
+  visible-only box
+
+### Requirement: A pencil double-tap switches what the armed region tool most needs
+
+A pencil double-tap SHALL toggle erase while the brush is armed and SHALL toggle see-through
+while the box is armed, and SHALL do nothing while no region tool is armed.
+
+Rationale: the double-tap is the gesture artists already reach for, and each region tool has
+a different most-wanted switch — the brush needs to stop adding and start removing, a box
+needs the far side of a thin feature. Binding it per tool gives each the switch that matters
+there instead of one compromise. Doing nothing when no region tool is armed keeps it from
+silently changing a mode with nothing on screen to show it.
+
+#### Scenario: The brush
+- **WHEN** the brush is armed and the pencil is double-tapped
+- **THEN** erase mode SHALL toggle
+
+#### Scenario: The box
+- **WHEN** the box is armed and the pencil is double-tapped
+- **THEN** see-through mode SHALL toggle
+
+#### Scenario: Neither
+- **WHEN** no region tool is armed and the pencil is double-tapped
+- **THEN** no region mode SHALL change
