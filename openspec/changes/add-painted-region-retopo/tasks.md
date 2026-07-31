@@ -101,12 +101,20 @@ honours it.
 - [x] 10.3 Measured in isolation, dilating the painted set by one ring halves the spikes
       (38 -> 14) and cuts the worst to 12:1; a closing (dilate 2, erode 2) gives 10.8:1
       with 19 spikes.
-- [ ] 10.4 NOT SHIPPED. Wiring the same one-ring dilation into `carved` measured WORSE
-      through the solver (38.8:1) than the isolated probe predicted (11.9:1), and that
-      discrepancy is unexplained. Shipping a change whose benefit cannot be demonstrated
-      would be worse than leaving the defect visible. Reverted; the numbers above are the
-      starting point for the next attempt, which should first explain why the two paths
-      disagree.
+- [x] 10.4 The discrepancy is EXPLAINED, and it was a real bug: the region solve was
+      NON-DETERMINISTIC. Three solves of one painted region returned 649, 631 and 603
+      faces, one containing a 434 996:1 degenerate face. The remesher is deterministic —
+      the CARVE was not. `deleteFaces` is order-sensitive (it compacts ids and prunes
+      isolated vertices as it goes) and was handed `Array(Set)`, whose iteration order is
+      arbitrary. Sorting the deletion list fixes it: three runs now agree exactly
+      (611 f, worst 20.5, 16 spikes).
+- [x] 10.5 Every quality number measured against this path BEFORE the sort was therefore a
+      single sample of a distribution, not a measurement — including 10.2's 25:1 / 38 spikes
+      and 10.3's "dilation halves the spikes". Guarded now by `regionSolveIsDeterministic`
+      (byte-identical payloads) and `carveIsDeterministic`.
+- [ ] 10.6 STILL OPEN: with the pipeline stable, the border measures worst 20.5:1 with 16
+      of 611 faces over 4:1. That is now a repeatable number, so dilation (and any other
+      remedy) can finally be evaluated honestly — the earlier attempt could not be.
 
 ## 6. Device verification
 

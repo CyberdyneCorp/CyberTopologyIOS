@@ -403,7 +403,29 @@ public struct EngineRemeshSolver: WeaveSolving {
         return out
     }
 
-    public static func carved(_ source: Mesh, to region: SolveRegion) throws -> Carve {
+    /// `faces` plus every face sharing a vertex with one, `rings` times.
+    public static func dilated(_ faces: Set<UInt32>, in mesh: Mesh, rings: Int) -> Set<UInt32> {
+        guard rings > 0 else { return faces }
+        var byVertex: [UInt32: [UInt32]] = [:]
+        for face in mesh.liveFaceIDs() {
+            for vertex in mesh.faceVertices(face) { byVertex[vertex, default: []].append(face) }
+        }
+        var out = faces
+        for _ in 0..<rings {
+            var next = out
+            for face in out {
+                for vertex in mesh.faceVertices(face) {
+                    for neighbour in byVertex[vertex] ?? [] { next.insert(neighbour) }
+                }
+            }
+            out = next
+        }
+        return out
+    }
+
+    public static func carved(
+        _ source: Mesh, to region: SolveRegion, dilating rings: Int = 0
+    ) throws -> Carve {
         guard case .faces(let faces) = region else { return Carve(mesh: source, share: 1) }
         let live = Set(source.liveFaceIDs())
         let keep = Set(faces).intersection(live)
@@ -418,9 +440,17 @@ public struct EngineRemeshSolver: WeaveSolving {
                 message: "the region names every face — run a whole-mesh solve instead"
             )
         }
+        let grown = Self.dilated(keep, in: source, rings: rings)
+        let domain = grown.count < live.count ? grown : keep
         let carved = try source.duplicated()
-        try carved.deleteFaces(Array(live.subtracting(keep)))
-        return Carve(mesh: carved, share: Float(keep.count) / Float(live.count))
+        // SORTED. `deleteFaces` is order-sensitive — it compacts ids and cleans up
+        // isolated vertices as it goes — so handing it a Set's arbitrary iteration
+        // order made the carve, and therefore the whole solve, unstable: the same
+        // painted region came back as 649, 631 and 603 faces on three runs, once with
+        // a 434 996:1 degenerate face. The remesher itself is deterministic; feeding
+        // it a differently-ordered mesh is what varied.
+        try carved.deleteFaces(live.subtracting(domain).sorted())
+        return Carve(mesh: carved, share: Float(domain.count) / Float(live.count))
     }
 
     private static func edgeScale(for density: DensityField, base: Float) -> Float {
