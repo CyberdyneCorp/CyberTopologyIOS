@@ -271,6 +271,13 @@ final class ViewportInputModel {
         return true
     }
 
+    /// Whether accepting the pending proposal MERGES it into the existing cage
+    /// (a painted-region patch) rather than replacing the cage (a whole-Target
+    /// solve). The banner says which, because the two are not undoable in the same
+    /// way from the artist's point of view: one adds to hand-authored topology,
+    /// the other discards it.
+    var autoRetopoGhostMerges = false
+
     /// Accepts the proposed ghost as the EditMesh (one undoable step).
     @discardableResult
     func acceptAutoRetopo() -> Bool { acceptAutoRetopoHandler?() ?? false }

@@ -236,6 +236,23 @@ struct PaintedRegionRetopoTests {
         #expect(MetalViewport.Coordinator.mergeCommand(patch, into: bundle) == nil)
     }
 
+    /// The banner must say what Accept will DO. Before painted regions it always
+    /// said "replace the EditMesh", which for a region patch told the artist their
+    /// hand-authored topology was about to be discarded when it is appended to.
+    @Test func theBannerSaysWhetherAcceptMergesOrReplaces() {
+        #expect(
+            AutoRetopoBannerView.status(merges: true).localizedCaseInsensitiveContains("merge")
+        )
+        #expect(
+            AutoRetopoBannerView.status(merges: false)
+                .localizedCaseInsensitiveContains("replace")
+        )
+        #expect(
+            AutoRetopoBannerView.status(merges: true)
+                != AutoRetopoBannerView.status(merges: false)
+        )
+    }
+
     /// The paint tool is reachable: it maps to a tool and carries help text.
     @Test func thePaintToolIsReachable() {
         #expect(EditorAction.paintRegion.tool == .paintRegion)

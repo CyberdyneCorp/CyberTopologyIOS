@@ -8,9 +8,19 @@ import SwiftUI
 struct AutoRetopoBannerView: View {
     let model: ViewportInputModel
 
+    /// What Accept will do, stated plainly. A painted-region patch is APPENDED to
+    /// the cage; a whole-Target solve REPLACES it. Saying "replace" for both — as
+    /// this did before painted regions existed — told the artist their
+    /// hand-authored topology was about to be discarded when it was not.
+    static func status(merges: Bool) -> String {
+        merges
+            ? "Region proposal — accept to merge into the EditMesh"
+            : "Auto-Retopo proposal — accept to replace the EditMesh"
+    }
+
     var body: some View {
         VStack(spacing: 8) {
-            Text("Auto-Retopo proposal — accept to replace the EditMesh")
+            Text(Self.status(merges: model.autoRetopoGhostMerges))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("auto-retopo-status")

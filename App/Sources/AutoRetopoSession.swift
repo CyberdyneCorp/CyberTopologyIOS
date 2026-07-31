@@ -228,6 +228,11 @@ extension MetalViewport.Coordinator {
     /// proposal IS an Auto-Retopo proposal as far as presentation goes.
     func syncAutoRetopoGhostState() {
         inputModel.autoRetopoGhostPending = autoRetopoGhost != nil
+        // A region patch merges into the cage; only a whole-Target solve replaces
+        // it. And it merges only when there IS a cage — otherwise it becomes one.
+        inputModel.autoRetopoGhostMerges =
+            autoRetopoGhost != nil && autoRetopoGhostIsRegional
+            && (bundleProvider?().manifest.objects.contains { $0.role == .editMesh } ?? false)
         // The notice belongs to the pending ghost. Clearing it HERE rather than
         // at each call site means every teardown path — accept, discard,
         // replace, a failed solve — drops it together with the ghost, so a

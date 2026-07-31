@@ -32,6 +32,9 @@
       otherwise.
 - [x] 4.2 Accept merges into the existing EditMesh, or creates it when absent; one journal entry.
 - [x] 4.3 Action Gallery entry + toolbar slot.
+- [x] 4.4 The Accept/Discard banner says which it will do — "merge into" for a region
+      patch, "replace" for a whole-Target solve. It said "replace" for both, which told the
+      artist their hand-authored topology was about to be discarded when it is appended to.
 
 ## 5. Tests
 
