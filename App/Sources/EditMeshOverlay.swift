@@ -118,6 +118,12 @@ enum OverlayUniformsFactory {
     /// fill by FORM first — a thin bright line against a broad low-alpha
     /// region — so the pair survives being hard to tell apart by hue.
     static let hoverLoopColor = SIMD3<Float>(1.0, 0.25, 0.2)
+    /// Paint brush cursor: the same teal the painted extent is filled with, so the
+    /// ring and what it leaves behind read as one thing. Erase mode swaps to red —
+    /// the cursor states the MODE, which is otherwise invisible (the tool is armed
+    /// either way).
+    static let brushColor = SIMD3<Float>(0.25, 0.85, 0.8)
+    static let brushEraseColor = SIMD3<Float>(1.0, 0.35, 0.3)
     /// Pin-marker color (task 4.3, docs/COZYBLANKET_REFERENCE §4.1: pins
     /// render as yellow circles). Saturated yellow — deliberately the
     /// hover family, since both mean "this element is special right now",

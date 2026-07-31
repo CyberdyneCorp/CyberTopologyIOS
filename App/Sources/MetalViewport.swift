@@ -554,6 +554,18 @@ struct MetalViewport: UIViewRepresentable {
             // in the same slot (openspec add-context-aware-move).
             // The painted extent, drawn from the TARGET's faces so it lies exactly
             // on the surface the solver will work over.
+            // The brush cursor exists only while the paint tool is armed, and its
+            // radius is the same number the stroke paints with.
+            hoverPreview.paintBrushRadiusProvider = { [weak self] in
+                guard let self, self.inputModel.activeTool == .paintRegion else { return nil }
+                return MeshEditController.brushWorldRadius(
+                    sceneRadius: self.renderer?.bounds.radius ?? 1
+                )
+            }
+            meshEditor.onPaintModeChanged = { [weak self] erases in
+                self?.renderer?.brushErases = erases
+                self?.inputModel.paintModeChanged(erasing: erases)
+            }
             meshEditor.onPaintedRegionChanged = { [weak self] faces in
                 guard let self, let renderer = self.renderer else { return }
                 guard !faces.isEmpty, let target = self.currentTargetMesh() else {
@@ -1423,6 +1435,18 @@ extension MetalViewport.Coordinator: UIGestureRecognizerDelegate {
 // MARK: - Pencil Pro squeeze (task 3.7)
 
 extension MetalViewport.Coordinator: UIPencilInteractionDelegate {
+    /// Pencil DOUBLE-TAP: swap the Paint Region brush between painting and
+    /// erasing, and back (openspec improve-region-paint-ux).
+    ///
+    /// Only while that tool is armed. The gesture is the one other apps use to
+    /// reach an eraser, so it needs no on-screen control — and when the tool is not
+    /// armed there is nothing to erase, so the tap is left to whatever else wants
+    /// it rather than silently swallowed.
+    func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
+        guard inputModel.activeTool == .paintRegion else { return }
+        meshEditor.paintErases.toggle()
+    }
+
     /// Squeeze completed: open/dismiss the radial quick-verb palette at
     /// the pen tip (spec: "Pencil Pro squeeze SHALL open a radial Action
     /// Gallery at the pen tip"; the minimal five-verb ring — the full

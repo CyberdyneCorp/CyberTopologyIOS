@@ -193,7 +193,7 @@ struct DocumentEditorView: View {
             .accessibilityIdentifier("auto-retopo-custom-run")
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The number of quads the retopologized cage should aim for.")
+            Text(retopoBudgetMessage)
         }
         .fileImporter(
             isPresented: $importRequest.isPresented,
@@ -297,7 +297,14 @@ struct DocumentEditorView: View {
                     .accessibilityIdentifier("auto-retopo-half")
                 Divider()
                 Button("Custom…") {
-                    customFaceCount = String(targetFaceCount ?? 1000)
+                    // Pre-filled with a REACHABLE number: for a painted region the
+                    // whole Target's count sits above the ceiling the solve clamps to.
+                    let painted = inputModel.meshEditor?.paintedRegion.count ?? 0
+                    customFaceCount = String(
+                        painted > 0
+                            ? min(targetFaceCount ?? 1000, max(4, painted * 4))
+                            : (targetFaceCount ?? 1000)
+                    )
                     showingCustomRetopo = true
                 }
                 .accessibilityIdentifier("auto-retopo-custom")
@@ -1138,6 +1145,29 @@ struct DocumentEditorView: View {
     /// Runs Auto-Retopo at a quad budget `factor` × the Target's face count
     /// (Same = 1, Double = 2, Half = 0.5). Falls back to the Medium default
     /// when the Target has no recorded face count.
+    /// What the custom face-count prompt says, including what is actually
+    /// AVAILABLE (openspec improve-region-paint-ux).
+    ///
+    /// It used to state only what the number meant, pre-filled with the Target's
+    /// face count — which for a painted region sits far above the ceiling the solve
+    /// clamps to, so the artist typed a number that could not happen and got
+    /// something else. It now names the domain, its ceiling, and the fact that an
+    /// all-quad cage cannot go arbitrarily coarse.
+    private var retopoBudgetMessage: String {
+        let painted = inputModel.meshEditor?.paintedRegion.count ?? 0
+        guard painted > 0 else {
+            let faces = targetFaceCount ?? 0
+            return "The number of quads the retopologized cage should aim for. "
+                + "Whole Target: \(faces.formatted()) faces."
+        }
+        // Four quads per source triangle — the solve's own ceiling.
+        let ceiling = max(4, painted * 4)
+        return "The number of quads the painted region should aim for. "
+            + "Painted: \(painted.formatted()) Target faces, up to "
+            + "\(ceiling.formatted()) quads. A very low count comes back higher: the "
+            + "cage is all quads, and removing a triangle means splitting."
+    }
+
     private func runAutoRetopo(factor: Double) {
         guard let faces = targetFaceCount, faces > 0 else {
             inputModel.requestAutoRetopo()

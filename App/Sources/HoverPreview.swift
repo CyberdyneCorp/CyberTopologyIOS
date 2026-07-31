@@ -40,6 +40,10 @@ protocol HoverPreviewQuerying {
     /// of the loop through the edge under the point, boundary edges
     /// included. nil when no edge claims the point.
     func slideLoop(at point: SIMD2<Float>) -> [UInt32]?
+    /// The paint brush footprint at the hover point — centre and world radius —
+    /// when the Paint Region tool is armed. nil for every other tool, so the
+    /// brush cursor appears exactly when it means something.
+    func brushRing(at point: SIMD2<Float>) -> (centre: SIMD3<Float>, radius: Float)?
     /// Ring positions of the face under the hover point, when a drag there
     /// would carry the SURFACE (no vertex or edge claims it). nil when the
     /// point is not over a face.
@@ -70,6 +74,9 @@ struct HoverPreviewState: Equatable {
         /// Face under the pointer: the ring a surface drag would stretch
         /// (openspec add-hover-scope-highlight).
         case faceHighlight(corners: [SIMD3<Float>])
+        /// The paint brush footprint, as a cursor ring on the surface (openspec
+        /// improve-region-paint-ux).
+        case brushRing(centre: SIMD3<Float>, radius: Float)
     }
 
     private(set) var isHovering = false
@@ -86,7 +93,12 @@ struct HoverPreviewState: Equatable {
     ) -> Bool {
         isHovering = true
         let resolved: Preview?
-        if let snap = queries.snapTargetVertex(at: point) {
+        // The brush ring wins outright: while a paint tool is armed it is the
+        // CURSOR, and showing what a Move drag would grab instead would be
+        // answering a question the artist is not asking.
+        if let brush = queries.brushRing(at: point) {
+            resolved = .brushRing(centre: brush.centre, radius: brush.radius)
+        } else if let snap = queries.snapTargetVertex(at: point) {
             resolved = .snapTarget(snap)
         } else if let loop = queries.slideLoop(at: point) {
             resolved = .loopHighlight(edges: loop)
@@ -151,6 +163,7 @@ struct HoverRenderState: Equatable {
         case loop
         case face
         case createHint
+        case brush
     }
 
     var ghost: GhostQuad?
@@ -204,6 +217,11 @@ enum HoverPreviewGeometry {
                 return .empty
             }
             return HoverRenderState(ghost: fill, element: .face)
+        case .brushRing(let centre, let radius):
+            let ring = brushRing(centre: centre, radius: radius, facing: viewDirection)
+            return HoverRenderState(
+                highlight: ring.isEmpty ? nil : ring, element: .brush
+            )
         }
     }
 
@@ -284,6 +302,40 @@ enum HoverPreviewGeometry {
         )
     }
 
+    /// A closed circle of line segments around `centre`, in the plane facing the
+    /// camera — the paint brush cursor.
+    ///
+    /// Screen-facing rather than surface-tangent on purpose: the ring's job is to
+    /// say how wide the brush is, and a ring laid on a curved surface foreshortens
+    /// into something narrower than the brush actually covers.
+    static func brushRing(
+        centre: SIMD3<Float>, radius: Float, facing viewDirection: SIMD3<Float>?,
+        segments: Int = 32
+    ) -> Highlight {
+        guard radius > 0, segments >= 3 else { return Highlight() }
+        // Any two axes perpendicular to the view direction span the screen plane.
+        let forward = viewDirection.map { simd_length($0) > 0 ? simd_normalize($0) : SIMD3(0, 0, 1) }
+            ?? SIMD3(0, 0, 1)
+        let reference: SIMD3<Float> =
+            abs(forward.y) < 0.9 ? SIMD3(0, 1, 0) : SIMD3(1, 0, 0)
+        let right = simd_normalize(simd_cross(forward, reference))
+        let up = simd_cross(right, forward)
+        var points: [SIMD3<Float>] = []
+        points.reserveCapacity(segments)
+        for step in 0..<segments {
+            let angle = Float(step) / Float(segments) * 2 * .pi
+            points.append(centre + (right * cos(angle) + up * sin(angle)) * radius)
+        }
+        var segmentsOut: [Float] = []
+        segmentsOut.reserveCapacity(segments * 6)
+        for index in 0..<points.count {
+            let a = points[index]
+            let b = points[(index + 1) % points.count]
+            segmentsOut.append(contentsOf: [a.x, a.y, a.z, b.x, b.y, b.z])
+        }
+        return Highlight(segments: segmentsOut)
+    }
+
     /// Line-list vertices for the loop edges (one segment per live edge).
     static func loopHighlight(
         edges: [UInt32],
@@ -319,6 +371,9 @@ struct EngineHoverQueries: HoverPreviewQuerying {
     let edgeRadius: Float
     /// Ghost-quad half extent in normalized viewport units.
     let ghostHalfExtent: Float
+    /// World radius of the paint brush while the Paint Region tool is armed; nil
+    /// for every other tool.
+    let paintBrushRadius: Float?
 
     /// What a Move drag started here would carry (openspec
     /// add-hover-scope-highlight, design D1).
@@ -355,6 +410,11 @@ struct EngineHoverQueries: HoverPreviewQuerying {
         // A loop that cannot be walked still has the picked edge itself, which
         // is exactly what the drag would move.
         return loop.isEmpty ? [edge] : loop
+    }
+
+    func brushRing(at point: SIMD2<Float>) -> (centre: SIMD3<Float>, radius: Float)? {
+        guard let radius = paintBrushRadius, let hit = surfaceHit(at: point) else { return nil }
+        return (hit.point, radius)
     }
 
     func faceUnderPoint(at point: SIMD2<Float>) -> [SIMD3<Float>]? {
@@ -443,6 +503,10 @@ final class HoverPreviewController {
     /// that already resolves to `.loopHighlight`, so the inspector and the
     /// highlight always describe the same loop.
     var onLoopInfoChanged: ((LoopInfoChipState.Info?) -> Void)?
+    /// World radius of the paint brush while the Paint Region tool is armed, nil
+    /// otherwise (installed by the coordinator). A closure rather than a stored
+    /// value so arming or disarming the tool needs no notification.
+    var paintBrushRadiusProvider: (() -> Float?)?
     /// Measures the loop under a point (installed by the coordinator as
     /// `MeshEditController.loopInfo(at:in:)`; nil = no inspector).
     var loopInfoProvider: ((SIMD2<Float>, MeshEditController.Context) -> LoopInfoChipState.Info?)?
@@ -466,7 +530,8 @@ final class HoverPreviewController {
             context: context,
             vertexRadius: radiusBase * Self.vertexRadiusFraction,
             edgeRadius: radiusBase * Self.edgeRadiusFraction,
-            ghostHalfExtent: Self.ghostHalfExtent
+            ghostHalfExtent: Self.ghostHalfExtent,
+            paintBrushRadius: paintBrushRadiusProvider?()
         )
         if state.hoverChanged(at: point, queries: queries) {
             publish(context: context, at: point)
