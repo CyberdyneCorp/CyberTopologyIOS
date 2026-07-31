@@ -957,9 +957,23 @@ final class MeshEditController {
         emitSnapEffects(snapFeedback.dragUpdated(candidate: candidate))
     }
 
+    /// Why a relax stroke that changed nothing changed nothing (openspec
+    /// fix-faceless-cage-vertices).
+    ///
+    /// Relax slides vertices along the surface toward their one-ring centroid, so
+    /// two kinds of vertex are immovable by construction: one with NO faces (no
+    /// ring to smooth toward — a solver leftover) and one whose correction points
+    /// straight along its own normal, which is every vertex at a tip. Saying so
+    /// beats a tool that looks broken: measured, 130 passes over a bunny's ear tip
+    /// moved zero vertices and reported nothing at all.
+    static let relaxChangedNothing =
+        "Relax changed nothing here — it only evens out spacing, so a vertex with "
+        + "no faces, or one at a tip, stays put"
+
     private func commit(_ finished: Session) {
         guard finished.mutated else {
             emitSnapEffects(snapFeedback.strokeEnded(committed: false))
+            if finished.verb == .relax { onCameraToolStatus?(Self.relaxChangedNothing) }
             return
         }
         // Merge-snap finalization (task 3.7): a snap candidate held at stroke
@@ -997,6 +1011,12 @@ final class MeshEditController {
         // the verb differ on every scoped drag, merge or no merge.
         let snapCommitted = merged && lastCommit != nil
         emitSnapEffects(snapFeedback.strokeEnded(committed: snapCommitted))
+        // A relax that ran but journaled nothing serialized identically to the
+        // before-state (`MeshEditTransaction.command` returns nil), which means
+        // every vertex under the brush was immovable.
+        if finished.verb == .relax, lastCommit == nil {
+            onCameraToolStatus?(Self.relaxChangedNothing)
+        }
     }
 
     /// The single journaling epilogue for every path that mutated the LIVE
