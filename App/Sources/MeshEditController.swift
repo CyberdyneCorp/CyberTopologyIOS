@@ -190,6 +190,9 @@ final class MeshEditController {
     var paintRedoStack: [PaintedRegion] = []
     /// Backing store for `paintErases` (the property has a willSet-style hook).
     var paintErasesStorage = false
+    /// Backing store for `pendingStatusNote`.
+    var pendingStatusNoteStorage: String?
+
     /// The selected quad patch — EditMesh face ids a batch command will act on
     /// (openspec add-patch-selection-scope). Empty means the whole cage, which is
     /// the behaviour every batch command had before there was a selection.

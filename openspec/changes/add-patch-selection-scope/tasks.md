@@ -28,6 +28,11 @@
 - [x] 3.2 Triangulate scopes by building the triangles before deleting the quads.
 - [x] 3.3 The four Clear commands scope to annotations inside the selection.
 - [x] 3.4 Subdivide / Subdivide + Reproject / Halve stay whole-cage and say so.
+- [x] 3.4a REPORTED FROM DEVICE: the note was OVERWRITTEN by the command's own report, so
+      a declining Halve showed only its refusal and the ignored selection went unmentioned.
+      The note now travels with whatever the command reports.
+- [x] 3.4b The all-quad refusal names the offending faces by count. The rule alone does not
+      locate a handful of triangles in a 315-face cage.
 - [x] 3.5 The selection's size is announced when it changes, so a command's reach is known
       before it runs.
 

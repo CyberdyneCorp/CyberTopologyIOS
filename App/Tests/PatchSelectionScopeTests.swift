@@ -188,4 +188,56 @@ struct PatchSelectionScopeTests {
         #expect(MeshEditController.wholeCageOnly(.halve).contains("hanging half-loop"))
         #expect(MeshEditController.wholeCageOnly(.subdivide).contains("n-gons"))
     }
+
+    /// REPORTED FROM DEVICE: a patch was selected, Halve declined, and the only
+    /// thing on screen was the all-quad refusal — so the artist could not tell
+    /// that the selection had been ignored too. The note must travel WITH
+    /// whatever the command reports, not be overwritten by it.
+    @Test func theSelectionNoticeIsNotOverwrittenByTheCommandsOwnReport() throws {
+        let controller = MeshEditController()
+        let cage = try grid(3)
+        controller.contextProvider = { self.context(cage) }
+        var statuses: [String] = []
+        controller.onCameraToolStatus = { statuses.append($0) }
+
+        controller.pendingStatusNoteStorage = MeshEditController.wholeCageOnly(.halve)
+        controller.reportStatus("Halve needs an all-quad cage")
+
+        #expect(statuses.count == 1, "one message, not two: \(statuses)")
+        let combined = try #require(statuses.first)
+        #expect(combined.contains("hanging half-loop"), "the note survived")
+        #expect(combined.contains("all-quad cage"), "…and so did the refusal")
+    }
+
+    /// A note no command consumed is still owed to the artist.
+    @Test func anUnconsumedNoticeIsStillReported() {
+        let controller = MeshEditController()
+        var statuses: [String] = []
+        controller.onCameraToolStatus = { statuses.append($0) }
+
+        controller.pendingStatusNoteStorage = "whole cage"
+        controller.flushPendingStatusNote()
+        controller.flushPendingStatusNote()
+
+        #expect(statuses == ["whole cage"], "flushed once, not twice")
+    }
+
+    /// The refusal names WHAT is in the way. "Needs an all-quad cage" states the
+    /// rule but not the state, on a cage whose offending faces are a handful
+    /// somewhere in 315.
+    @Test func theHalveRefusalCountsWhatIsInTheWay() throws {
+        // A grid with one quad fan-triangulated into it.
+        let cage = try grid(3)
+        try MeshEditController.triangulate([cage.liveFaceIDs().sorted()[0]], in: cage)
+
+        let message = MeshEditController.halveRefusal(.notQuadOnly, in: cage)
+
+        #expect(message.contains("2 triangles"), "the count, not just the rule: \(message)")
+        #expect(message.contains("all-quad cage"))
+        // A failure that is not about face kinds keeps its own wording.
+        #expect(
+            MeshEditController.halveRefusal(.oddCellCount, in: cage)
+                == MeshEditController.halveRefusal(.oddCellCount)
+        )
+    }
 }
