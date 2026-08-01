@@ -627,8 +627,15 @@ struct MetalViewport: UIViewRepresentable {
                 self?.inputModel.regionSelectionModeChanged(seesThrough: seesThrough)
             }
             meshEditor.onSelectedPatchChanged = { [weak self] faces in
-                self?.updatePatchSelectionFill(faces: faces)
-                self?.inputModel.selectedPatchChanged(count: faces.count)
+                guard let self else { return }
+                self.updatePatchSelectionFill(faces: faces)
+                // Whether Halve will scope depends on the SELECTION, not only on the
+                // command, so the panel needs to know now — its badge is read before
+                // the command runs.
+                let isIsland =
+                    !faces.isEmpty
+                    && (self.recognizerEditMesh?.isSelfContainedIsland(faces) ?? false)
+                self.inputModel.selectedPatchChanged(count: faces.count, isIsland: isIsland)
             }
             meshEditor.onMoveScopeChanged = { [weak self] scope in
                 self?.inputModel.moveScopeChanged(scope)

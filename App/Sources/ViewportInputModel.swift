@@ -133,7 +133,12 @@ final class ViewportInputModel {
     /// a command's reach is visible BEFORE it runs rather than after.
     private(set) var selectedPatchCount = 0
 
-    func selectedPatchChanged(count: Int) {
+    /// Whether the selection is a self-contained island — which is what decides
+    /// whether Halve scopes to it (openspec add-island-scoped-halve).
+    private(set) var selectedPatchIsIsland = false
+
+    func selectedPatchChanged(count: Int, isIsland: Bool = false) {
+        selectedPatchIsIsland = isIsland
         guard selectedPatchCount != count else { return }
         selectedPatchCount = count
         flashPaintModeHint(

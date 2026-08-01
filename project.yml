@@ -156,6 +156,8 @@ targets:
       # Worth the device slot specifically because its bug was an ID-SPACE one —
       # the kind that only shows on an edited cage, which is what device use is.
       - path: CyberKit/Tests/CyberKitTests/HalveDensityOpsTests.swift
+      # Halving one island of a cage: public API + inline OBJ fixtures.
+      - path: CyberKit/Tests/CyberKitTests/HalveIslandOpsTests.swift
       # Rigid multi-vertex move (add-context-aware-move): the op behind a
       # loop-scope Move drag. On device because the drag it serves is a device
       # gesture, and its re-snap onto the Target is what keeps a moved loop on
