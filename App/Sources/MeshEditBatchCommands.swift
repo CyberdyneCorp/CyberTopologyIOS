@@ -238,8 +238,13 @@ extension MeshEditController {
         // past the boundary. They run on the whole cage and SAY so, because a
         // selection silently ignored is worse than one honestly declined.
         if !selectedPatch.isEmpty, !command.scopesToSelection {
-            onCameraToolStatus?(Self.wholeCageOnly(command))
+            pendingStatusNote = Self.wholeCageOnly(command)
         }
+        // Whatever the command reports, the note travels WITH it. Reported
+        // separately, the note was overwritten before it could be read: a halve
+        // that declined showed only the refusal, so the artist could not tell
+        // their selection had been ignored too.
+        defer { flushPendingStatusNote() }
         switch command {
         case .clearLoopTags:
             guard let edges = scopedEdges() else { return clearAllLoopTags() }
@@ -268,9 +273,7 @@ extension MeshEditController {
                 let report = try mesh.snapAllToTarget(
                     context.snapper, pinned: self.holdingEverythingOutside(mesh, context)
                 )
-                self.onCameraToolStatus?(
-                    Self.snapAllStatus(report)
-                )
+                self.reportStatus(Self.snapAllStatus(report))
             }
         case .relaxAll:
             return runBatchMeshEdit(command) { mesh, context in
@@ -291,13 +294,13 @@ extension MeshEditController {
             return runBatchMeshEdit(command) { mesh, _ in
                 do {
                     let report = try mesh.halveDensity()
-                    self.onCameraToolStatus?(
+                    self.reportStatus(
                         "Halved: \(report.facesBefore) quads -> \(report.facesAfter)"
                     )
                 } catch let failure as Mesh.HalveDensityFailure {
                     // A refusal is an ANSWER, not a crash: say which rule declined
                     // and rethrow so the transaction is discarded byte-clean.
-                    self.onCameraToolStatus?(Self.halveRefusal(failure))
+                    self.reportStatus(Self.halveRefusal(failure, in: mesh))
                     throw failure
                 }
             }
@@ -382,6 +385,48 @@ extension MeshEditController {
             return "\(command.title) runs on the whole cage: subdividing one patch "
                 + "would leave n-gons where it meets its neighbours"
         }
+    }
+
+    /// A note that must survive whatever the command reports next, so the two
+    /// arrive as one message instead of the second replacing the first.
+    private var pendingStatusNote: String? {
+        get { pendingStatusNoteStorage }
+        set { pendingStatusNoteStorage = newValue }
+    }
+
+    func reportStatus(_ message: String) {
+        if let note = pendingStatusNote {
+            pendingStatusNote = nil
+            onCameraToolStatus?("\(note). \(message)")
+        } else {
+            onCameraToolStatus?(message)
+        }
+    }
+
+    /// Emits a note no command consumed — a command that scoped away silently
+    /// still owes the artist an explanation.
+    func flushPendingStatusNote() {
+        guard let note = pendingStatusNote else { return }
+        pendingStatusNote = nil
+        onCameraToolStatus?(note)
+    }
+
+    /// Why a halve declined, NAMING what is in the way.
+    ///
+    /// "Needs an all-quad cage" told the artist the rule but not the state, on a
+    /// 315-face cage where the offending faces are a handful somewhere in the
+    /// middle. The counts turn it into something actionable.
+    static func halveRefusal(_ failure: Mesh.HalveDensityFailure, in mesh: Mesh) -> String {
+        guard case .notQuadOnly = failure, let stats = try? mesh.stats() else {
+            return halveRefusal(failure)
+        }
+        var offenders: [String] = []
+        if stats.triangles > 0 { offenders.append("\(stats.triangles) triangles") }
+        if stats.other > 0 { offenders.append("\(stats.other) n-gons") }
+        guard !offenders.isEmpty else { return halveRefusal(failure) }
+        return "Halve needs an all-quad cage — this one has "
+            + offenders.joined(separator: " and ")
+            + " (a triangle or n-gon has no loops to halve)"
     }
 
     /// Why a halve declined, in the artist's terms — the panel shows this instead
