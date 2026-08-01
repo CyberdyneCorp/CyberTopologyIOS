@@ -294,9 +294,7 @@ extension MeshEditController {
             return runBatchMeshEdit(command) { mesh, _ in
                 do {
                     let report = try mesh.halveDensity()
-                    self.reportStatus(
-                        "Halved: \(report.facesBefore) quads -> \(report.facesAfter)"
-                    )
+                    self.reportStatus(Self.halveStatus(report))
                 } catch let failure as Mesh.HalveDensityFailure {
                     // A refusal is an ANSWER, not a crash: say which rule declined
                     // and rethrow so the transaction is discarded byte-clean.
@@ -392,6 +390,16 @@ extension MeshEditController {
             return "\(command.title) runs on the whole cage: subdividing one patch "
                 + "would leave n-gons where it meets its neighbours"
         }
+    }
+
+    /// What a halve did, including the case where only ONE grid direction could
+    /// be halved — the artist should not have to work out why the count did not
+    /// quarter.
+    static func halveStatus(_ report: Mesh.HalvedDensity) -> String {
+        let base = "Halved: \(report.facesBefore) quads -> \(report.facesAfter)"
+        guard report.directionsHalved == 1 else { return base }
+        return base + " (one direction only — the other has an odd number of quads "
+            + "across, so its last loop is the boundary)"
     }
 
     /// Faces that are not quads — what a Halve refusal points at.

@@ -36,6 +36,23 @@ struct HalveDensityOpsTests {
         return try mesh(fromOBJ: lines.joined(separator: "\n"))
     }
 
+    /// A `cols` x `rows` quad grid — the rectangular case, where the two grid
+    /// directions can disagree about whether they can be halved.
+    private func grid(cols: Int, rows: Int) throws -> Mesh {
+        var lines: [String] = []
+        let stride = cols + 1
+        for y in 0...rows {
+            for x in 0...cols { lines.append("v \(x) \(y) 0") }
+        }
+        for y in 0..<rows {
+            for x in 0..<cols {
+                let a = y * stride + x + 1  // 1-based OBJ
+                lines.append("f \(a) \(a + 1) \(a + stride + 1) \(a + stride)")
+            }
+        }
+        return try mesh(fromOBJ: lines.joined(separator: "\n"))
+    }
+
     private func positions(of mesh: Mesh) -> [SIMD3<Float>] {
         mesh.liveVertexIDs().compactMap { mesh.vertexPosition($0) }
     }
@@ -228,6 +245,36 @@ struct HalveDensityOpsTests {
         #expect(throws: Mesh.HalveDensityFailure.oddCellCount) { try m.halveDensity() }
         #expect(m.faceCount == faces)
         #expect(m.vertexCount == vertices, "not even a partial halving may land")
+    }
+
+    /// REPORTED FROM DEVICE on a 5 x 6 patch (30 faces, 42 vertices): Halve
+    /// refused outright, though the 6 direction halves perfectly well and only
+    /// the 5 cannot. Each direction is judged on its own merits now.
+    @Test("a grid with ONE odd direction halves the other one")
+    func aMixedSpanHalvesWhatItCan() throws {
+        let m = try grid(cols: 5, rows: 6)
+        #expect(m.faceCount == 30, "the reported cage")
+        #expect(m.vertexCount == 42)
+        let before = Set(positions(of: m).map { "\($0.x),\($0.y),\($0.z)" })
+
+        let report = try m.halveDensity()
+
+        #expect(report.directionsHalved == 1, "the even direction only")
+        #expect(m.faceCount == 15, "5 x 6 -> 5 x 3, not refused: \(m.faceCount)")
+        #expect(try m.stats().quads == m.faceCount, "still quad-only")
+        // The silhouette does not move: halving dissolves loops, it never invents
+        // a position.
+        let after = Set(positions(of: m).map { "\($0.x),\($0.y),\($0.z)" })
+        #expect(after.isSubset(of: before))
+    }
+
+    /// …and when BOTH directions are odd there is still nothing to do.
+    @Test("both directions odd is still refused")
+    func bothOddIsRefused() throws {
+        let m = try grid(cols: 3, rows: 5)
+        let faces = m.faceCount
+        #expect(throws: Mesh.HalveDensityFailure.oddCellCount) { try m.halveDensity() }
+        #expect(m.faceCount == faces, "not even a partial halving may land")
     }
 
     @Test("a single quad is refused: nothing to halve")
