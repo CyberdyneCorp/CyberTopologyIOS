@@ -28,6 +28,14 @@ extension Mesh {
         public let facesAfter: Int
         /// Loops dissolved, summed over both families.
         public let dissolvedLoops: Int
+        /// How many of the two grid directions were actually halved.
+        ///
+        /// A direction with an ODD number of quads across cannot be: its last
+        /// "every other" loop is the far boundary, so dissolving it would move the
+        /// silhouette. Halving the direction that CAN be halved is still worth
+        /// doing — reported from device on a 5 x 6 patch, where refusing both left
+        /// the artist with nothing — but the artist has to be told it was one.
+        public var directionsHalved: Int = 2
     }
 
     public enum HalveDensityFailure: Error, Equatable {
@@ -79,19 +87,39 @@ extension Mesh {
         let (seedA, seedB) = try adjacency.cornerSeeds(in: self)
         let ringA = adjacency.perpendicularRing(from: seedA)
         let ringB = adjacency.perpendicularRing(from: seedB)
-        try Self.requireEvenCells(ringA)
-        try Self.requireEvenCells(ringB)
+        // Each direction is judged ON ITS OWN. Requiring BOTH to be even refused a
+        // 5 x 6 patch outright — reported from device — when the 6 direction halves
+        // perfectly well and only the 5 cannot. Refuse only when NEITHER can.
+        try Self.requireEnoughCells(ringA)
+        try Self.requireEnoughCells(ringB)
+        // The cage has to be a RECTANGLE for "every other loop" to have an answer,
+        // and a rectangle is exactly a cage whose two spans multiply to its face
+        // count. An L-shape passes `requireGridRegular` — its extra faces meet at
+        // BOUNDARY vertices, which are regular at valence 3 — and used to be caught
+        // only by accident, because one of its spans happened to be odd. Judging
+        // each direction on its own merits removed that accident, so the real
+        // invariant is stated here instead.
+        guard (ringA.count - 1) * (ringB.count - 1) == facesBefore else {
+            throw HalveDensityFailure.notGridRegular
+        }
+        let canHalveA = Self.hasEvenCells(ringA)
+        let canHalveB = Self.hasEvenCells(ringB)
+        guard canHalveA || canHalveB else { throw HalveDensityFailure.oddCellCount }
 
         // Family B's ids will not survive family A's pass, so remember it by
         // DIRECTION and re-find it afterwards.
         let directionB = try adjacency.direction(of: seedB, in: self)
 
-        var dissolved = try halveFamily(ring: ringA)
-        adjacency = try QuadAdjacency(of: self)
-        let reseeded = try adjacency.boundaryEdge(mostParallelTo: directionB, in: self)
-        dissolved += try halveFamily(ring: adjacency.perpendicularRing(from: reseeded))
+        var dissolved = canHalveA ? try halveFamily(ring: ringA) : 0
+        if canHalveB {
+            // Rebuilt whether or not A ran, so there is ONE path through here.
+            adjacency = try QuadAdjacency(of: self)
+            let reseeded = try adjacency.boundaryEdge(mostParallelTo: directionB, in: self)
+            dissolved += try halveFamily(ring: adjacency.perpendicularRing(from: reseeded))
+        }
         return HalvedDensity(
-            facesBefore: facesBefore, facesAfter: faceCount, dissolvedLoops: dissolved
+            facesBefore: facesBefore, facesAfter: faceCount, dissolvedLoops: dissolved,
+            directionsHalved: (canHalveA ? 1 : 0) + (canHalveB ? 1 : 0)
         )
     }
 
@@ -143,10 +171,16 @@ extension Mesh {
 
     /// A family spans `ring.count - 1` quads (the ring is one loop per cell
     /// boundary, from one side of the patch to the other).
-    private static func requireEvenCells(_ ring: [UInt32]) throws {
-        let cells = ring.count - 1
-        guard cells >= 2 else { throw HalveDensityFailure.tooFewCells }
-        guard cells % 2 == 0 else { throw HalveDensityFailure.oddCellCount }
+    /// A direction has to have something to halve at all.
+    private static func requireEnoughCells(_ ring: [UInt32]) throws {
+        guard ring.count - 1 >= 2 else { throw HalveDensityFailure.tooFewCells }
+    }
+
+    /// Whether "every other loop" has an answer in this direction: with an ODD
+    /// number of cells the last odd loop IS the far boundary, so dissolving it
+    /// would move the silhouette.
+    private static func hasEvenCells(_ ring: [UInt32]) -> Bool {
+        (ring.count - 1) % 2 == 0
     }
 }
 
