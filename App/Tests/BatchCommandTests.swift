@@ -121,14 +121,18 @@ struct BatchCommandTests {
     }
 
     /// Flat Target at z = 0 spanning the cage.
-    private func addPlaneTarget(to harness: Harness) throws {
+    /// `halfSize` matters when a cage reaches past +/-5: snapping projects onto
+    /// the Target, so a vertex outside its extent is clamped to the nearest point
+    /// ON it, which reads as a spurious move.
+    private func addPlaneTarget(to harness: Harness, halfSize: Float = 5) throws {
+        let s = halfSize
         try harness.bundle.addObject(
             name: "target", role: .target,
             mesh: try meshFromOBJ("""
-            v -5 -5 0
-            v 5 -5 0
-            v 5 5 0
-            v -5 5 0
+            v \(-s) \(-s) 0
+            v \(s) \(-s) 0
+            v \(s) \(s) 0
+            v \(-s) \(s) 0
             f 1 2 3 4
             """)
         )
@@ -307,6 +311,101 @@ struct BatchCommandTests {
         #expect(try harness.payload() == before)
         harness.redo()
         #expect(try harness.payload() != before)
+    }
+
+    // MARK: - Scoping to a selected patch, through the REAL command path
+
+    /// A cage of TWO separate patches, so "the other one" is unambiguous.
+    private func addTwoPatches(to harness: Harness) throws {
+        var obj = ""
+        // Patch A: a 2x2 grid at the origin, with one vertex pulled off-grid so a
+        // relax has something to correct.
+        for row in 0...2 {
+            for col in 0...2 {
+                let x = (row == 1 && col == 1) ? 1.4 : Double(col)
+                obj += "v \(x) \(row) 0\n"
+            }
+        }
+        // Patch B: the same, far away.
+        for row in 0...2 {
+            for col in 0...2 {
+                let x = (row == 1 && col == 1) ? 11.4 : Double(col) + 10
+                obj += "v \(x) \(row) 0\n"
+            }
+        }
+        for base in [0, 9] {
+            for row in 0..<2 {
+                for col in 0..<2 {
+                    let a = base + row * 3 + col + 1
+                    obj += "f \(a) \(a + 1) \(a + 4) \(a + 3)\n"
+                }
+            }
+        }
+        try harness.bundle.addObject(
+            name: "cage", role: .editMesh, mesh: try meshFromOBJ(obj)
+        )
+        harness.sync()
+    }
+
+    /// REPORTED FROM DEVICE: "the batch operations are not taking the selection
+    /// into account". Halve genuinely does not — it is whole-cage by design — but
+    /// that left the question open for the commands that DO, which were only ever
+    /// tested through their helpers. This drives the real command path.
+    @Test func aScopedRelaxAllMovesOnlyTheSelectedPatch() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness, halfSize: 20)
+        try addTwoPatches(to: harness)
+        let mesh = try harness.editMesh()
+        // Select patch A only, through the same entry the double-tap uses.
+        let seed = try #require(mesh.liveFaceIDs().sorted().first)
+        harness.editor.togglePatch(containing: seed)
+        #expect(harness.editor.selectedPatch.count == 4, "one 2x2 patch")
+
+        // The off-grid vertex of the UNSELECTED patch must not move.
+        let outsideBefore = try vertexX(try harness.editMesh(), near: SIMD3(11.4, 1, 0))
+        let insideBefore = try vertexX(try harness.editMesh(), near: SIMD3(1.4, 1, 0))
+
+        #expect(harness.model.runBatchCommand(.relaxAll))
+
+        let after = try harness.editMesh()
+        #expect(
+            try vertexX(after, near: SIMD3(11.4, 1, 0)) == outsideBefore,
+            "the unselected patch must be untouched"
+        )
+        #expect(
+            try vertexX(after, near: SIMD3(1.4, 1, 0)) != insideBefore,
+            "…and the selected one must actually relax"
+        )
+    }
+
+    /// The same command with NOTHING selected still reaches the whole cage.
+    @Test func anUnscopedRelaxAllStillMovesEverything() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness, halfSize: 20)
+        try addTwoPatches(to: harness)
+        #expect(harness.editor.selectedPatch.isEmpty)
+        let outsideBefore = try vertexX(try harness.editMesh(), near: SIMD3(11.4, 1, 0))
+
+        #expect(harness.model.runBatchCommand(.relaxAll))
+
+        #expect(try vertexX(try harness.editMesh(), near: SIMD3(11.4, 1, 0)) != outsideBefore)
+    }
+
+    /// The selection has to SURVIVE the sheet being opened and the syncs that
+    /// come with it — a selection silently dropped before the command runs would
+    /// look exactly like a command that ignores it.
+    @Test func theSelectionSurvivesASyncThatChangesNoTopology() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness, halfSize: 20)
+        try addTwoPatches(to: harness)
+        let seed = try #require(try harness.editMesh().liveFaceIDs().sorted().first)
+        harness.editor.togglePatch(containing: seed)
+        let selected = harness.editor.selectedPatch
+
+        harness.sync()
+        harness.sync()
+
+        #expect(harness.editor.selectedPatch == selected, "no topology changed")
     }
 
     @Test func relaxAllJournalsOnceAndUndoesByteExactly() throws {

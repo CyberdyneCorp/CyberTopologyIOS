@@ -470,6 +470,12 @@ extension MeshEditController {
             "Too few quads across to halve"
         case .oddCellCount:
             "Halve needs an even number of quads across, or 'every other loop' has no answer"
+        case .notRectangular:
+            // REPORTED FROM DEVICE: two patches, one selected, and Halve declined.
+            // It declined for THIS reason, and said "a pole stops a loop partway
+            // across", which sent the artist looking for a pole that was not there.
+            "Halve needs ONE rectangular block of quads — this cage is more than "
+                + "one patch, or its outline is not a rectangle"
         case .strandedMidVertex:
             "Halve could not reduce this cage cleanly, so nothing changed"
         }
