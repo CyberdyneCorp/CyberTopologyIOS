@@ -62,6 +62,12 @@ extension Mesh {
         /// fold into. That means the loop bookkeeping is wrong, and continuing
         /// would leave an n-gon in a cage the caller believes is quad-only.
         case strandedMidVertex(UInt32)
+        /// The cage is quad-only and pole-free, but its faces do not form ONE
+        /// rectangular block — more than one patch, or an L-shaped outline. Kept
+        /// separate from `notGridRegular` because the artist's next move differs:
+        /// a pole has to be re-topologized away, while a second patch merely has
+        /// to be halved on its own.
+        case notRectangular
     }
 
     /// Halves the cage's quad density.
@@ -100,7 +106,7 @@ extension Mesh {
         // each direction on its own merits removed that accident, so the real
         // invariant is stated here instead.
         guard (ringA.count - 1) * (ringB.count - 1) == facesBefore else {
-            throw HalveDensityFailure.notGridRegular
+            throw HalveDensityFailure.notRectangular
         }
         let canHalveA = Self.hasEvenCells(ringA)
         let canHalveB = Self.hasEvenCells(ringB)

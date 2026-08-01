@@ -268,6 +268,34 @@ struct HalveDensityOpsTests {
         #expect(after.isSubset(of: before))
     }
 
+    /// REPORTED FROM DEVICE: a cage of TWO patches with one selected declined,
+    /// and blamed a pole that was not there. Two patches is its own refusal.
+    @Test("two separate patches are refused as not-a-rectangle, not as a pole")
+    func twoPatchesAreRefusedForTheRightReason() throws {
+        var lines: [String] = []
+        // Two 2x2 grids, far apart.
+        for base in [Float(0), 10] {
+            for y in 0...2 {
+                for x in 0...2 { lines.append("v \(Float(x) + base) \(y) 0") }
+            }
+        }
+        for patch in 0..<2 {
+            let offset = patch * 9
+            for y in 0..<2 {
+                for x in 0..<2 {
+                    let a = offset + y * 3 + x + 1
+                    lines.append("f \(a) \(a + 1) \(a + 4) \(a + 3)")
+                }
+            }
+        }
+        let m = try mesh(fromOBJ: lines.joined(separator: "\n"))
+        #expect(m.faceCount == 8)
+        let faces = m.faceCount
+
+        #expect(throws: Mesh.HalveDensityFailure.notRectangular) { try m.halveDensity() }
+        #expect(m.faceCount == faces, "a refusal leaves the cage untouched")
+    }
+
     /// …and when BOTH directions are odd there is still nothing to do.
     @Test("both directions odd is still refused")
     func bothOddIsRefused() throws {
