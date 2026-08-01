@@ -210,6 +210,23 @@ struct PatchSelectionScopeTests {
     }
 
     /// A note no command consumed is still owed to the artist.
+    /// "1 triangles" was on screen. One is singular.
+    @Test func theCountReadsAsEnglish() throws {
+        let cage = try grid(3)
+        let faces = cage.liveFaceIDs().sorted()
+        // Make exactly ONE non-quad: merge two quads into a 6-gon by rebuilding
+        // one face as a triangle is the simplest — triangulating a quad yields
+        // two, so delete one of them.
+        try MeshEditController.triangulate([faces[0]], in: cage)
+        let triangles = MeshEditController.nonQuadFaces(in: cage).sorted()
+        try cage.deleteFaces([triangles[0]])
+
+        let message = MeshEditController.halveRefusal(.notQuadOnly, in: cage)
+
+        #expect(message.contains("1 triangle,"), "singular: \(message)")
+        #expect(!message.contains("1 triangles"))
+    }
+
     @Test func anUnconsumedNoticeIsStillReported() {
         let controller = MeshEditController()
         var statuses: [String] = []
@@ -220,6 +237,31 @@ struct PatchSelectionScopeTests {
         controller.flushPendingStatusNote()
 
         #expect(statuses == ["whole cage"], "flushed once, not twice")
+    }
+
+    /// REPORTED FROM DEVICE: a patch was selected and the panel still read "Run
+    /// on the whole EditMesh", while Subdivide quietly took the whole cage. A
+    /// command's reach has to be visible BEFORE it runs, or a documented limit
+    /// reads as a broken selection.
+    @Test func thePanelNamesItsReach() {
+        #expect(BatchCommandsView.scopeHeader(selectedFaces: 0) == "Run on the whole EditMesh")
+        #expect(BatchCommandsView.scopeHeader(selectedFaces: 96) == "Run on 96 selected faces")
+        // One face is one face.
+        #expect(BatchCommandsView.scopeHeader(selectedFaces: 1) == "Run on 1 selected face")
+    }
+
+    /// ONE triangle in a 317-face cage is a needle, and a count does not locate
+    /// it — so the refusal SELECTS the offenders.
+    @Test func theRefusalPointsAtTheFacesInTheWay() throws {
+        let cage = try grid(3)
+        try MeshEditController.triangulate([cage.liveFaceIDs().sorted()[0]], in: cage)
+
+        let offenders = MeshEditController.nonQuadFaces(in: cage)
+
+        #expect(offenders.count == 2, "the two triangles the quad became")
+        #expect(offenders.allSatisfy { cage.faceVertices($0).count == 3 })
+        // …and an all-quad cage has nothing to point at.
+        #expect(MeshEditController.nonQuadFaces(in: try grid(2)).isEmpty)
     }
 
     /// The refusal names WHAT is in the way. "Needs an all-quad cage" states the
@@ -234,6 +276,7 @@ struct PatchSelectionScopeTests {
 
         #expect(message.contains("2 triangles"), "the count, not just the rule: \(message)")
         #expect(message.contains("all-quad cage"))
+        #expect(message.contains("now selected"), "and where to find them")
         // A failure that is not about face kinds keeps its own wording.
         #expect(
             MeshEditController.halveRefusal(.oddCellCount, in: cage)

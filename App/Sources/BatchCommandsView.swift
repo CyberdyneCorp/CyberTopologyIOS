@@ -50,7 +50,8 @@ struct BatchCommandsView: View {
                         commandRow(command)
                     }
                 } header: {
-                    Text("Run on the whole EditMesh")
+                    Text(Self.scopeHeader(selectedFaces: model.selectedPatchCount))
+                        .accessibilityIdentifier("batch-scope-header")
                 }
             }
             .navigationTitle("Batch Commands")
@@ -74,8 +75,22 @@ struct BatchCommandsView: View {
                     .frame(width: 24)
                     .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(command.title)
-                        .font(.body.weight(.medium))
+                    HStack(spacing: 6) {
+                        Text(command.title)
+                            .font(.body.weight(.medium))
+                        // A command that will ignore the selection says so HERE,
+                        // before it runs. Reported from device: a selected patch
+                        // and a Subdivide that quietly took the whole cage reads
+                        // as a broken selection, not as a documented limit.
+                        if ignoresSelection(command) {
+                            Text("whole cage")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(.quaternary, in: Capsule())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Text(command.notes)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -84,6 +99,17 @@ struct BatchCommandsView: View {
         }
         .disabled(!isEnabled(command))
         .accessibilityIdentifier("batch-\(command.rawValue)")
+    }
+
+    /// What the section header says: the reach every row in it has.
+    static func scopeHeader(selectedFaces: Int) -> String {
+        selectedFaces > 0
+            ? "Run on \(selectedFaces) selected \(selectedFaces == 1 ? "face" : "faces")"
+            : "Run on the whole EditMesh"
+    }
+
+    private func ignoresSelection(_ command: BatchCommand) -> Bool {
+        model.selectedPatchCount > 0 && !command.scopesToSelection
     }
 
     private func isEnabled(_ command: BatchCommand) -> Bool {
