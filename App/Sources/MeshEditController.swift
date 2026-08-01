@@ -190,6 +190,47 @@ final class MeshEditController {
     var paintRedoStack: [PaintedRegion] = []
     /// Backing store for `paintErases` (the property has a willSet-style hook).
     var paintErasesStorage = false
+    /// The selected quad patch — EditMesh face ids a batch command will act on
+    /// (openspec add-patch-selection-scope). Empty means the whole cage, which is
+    /// the behaviour every batch command had before there was a selection.
+    ///
+    /// Session state, never journaled: it says what to do NEXT, and face ids do
+    /// not survive the payload compaction a topology change goes through.
+    private(set) var selectedPatch: Set<UInt32> = []
+    /// The selection changed — the viewport redraws the gold fill.
+    var onSelectedPatchChanged: ((Set<UInt32>) -> Void)?
+
+    /// Adds the patch containing `face`, or REMOVES it when that face is already
+    /// selected. One gesture both ways, so a mistaken tap is undone by repeating
+    /// it rather than by hunting for a clear button.
+    func togglePatch(containing face: UInt32) {
+        guard let mesh = contextProvider?()?.editMesh else { return }
+        let patch = QuadPatch.faces(containing: face, in: mesh)
+        guard !patch.isEmpty else { return }
+        if selectedPatch.contains(face) {
+            selectedPatch.subtract(patch)
+        } else {
+            selectedPatch.formUnion(patch)
+        }
+        onSelectedPatchChanged?(selectedPatch)
+    }
+
+    func clearSelectedPatch() {
+        guard !selectedPatch.isEmpty else { return }
+        selectedPatch.removeAll()
+        onSelectedPatchChanged?(selectedPatch)
+    }
+
+    /// The selection's vertices, and everything else — what a scoped Snap or
+    /// Relax pins to hold the rest of the cage still.
+    func patchScope(in mesh: Mesh) -> (inside: Set<UInt32>, complement: [UInt32])? {
+        guard !selectedPatch.isEmpty else { return nil }
+        var inside: Set<UInt32> = []
+        for face in selectedPatch { inside.formUnion(mesh.faceVertices(face)) }
+        guard !inside.isEmpty else { return nil }
+        return (inside, mesh.liveVertexIDs().subtracting(inside).sorted())
+    }
+
     /// Backing store for `regionSelectionSeesThrough`.
     var regionSeesThroughStorage = false
     /// Box selection switched between visible-only and see-through.

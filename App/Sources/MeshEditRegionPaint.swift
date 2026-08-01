@@ -318,15 +318,17 @@ enum RegionPaintGeometry {
 enum PencilTapAction: Equatable {
     case toggleErase
     case toggleSeeThrough
-    /// No region tool armed: the tap is left for whatever else wants it rather than
-    /// being silently swallowed.
-    case none
+    /// No region tool armed: the tap selects the quad patch under the pencil
+    /// (openspec add-patch-selection-scope). A region tool's own switch wins,
+    /// because while one is armed the artist is working on the Target, and the
+    /// patch selection is about the cage.
+    case selectPatch
 
     static func forTool(_ tool: RetopoTool?) -> PencilTapAction {
         switch tool {
         case .paintRegion: return .toggleErase
         case .selectRegionBox: return .toggleSeeThrough
-        default: return .none
+        default: return .selectPatch
         }
     }
 }

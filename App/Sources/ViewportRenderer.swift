@@ -76,6 +76,8 @@ final class ViewportRenderer: NSObject {
     /// the established pattern — sharing a channel with the proposal ghost or the
     /// hover hint would make one feed clear the other.
     let regionPaintPath: GhostRenderPath
+    /// Gold fill over the selected quad patch (openspec add-patch-selection-scope).
+    let patchSelectionPath: GhostRenderPath
     /// Amber world-space guide-line overlay (add-guide-stroke-authoring).
     let guideLinePath: GuideLineRenderPath
     /// Checker texture preview on the 3D surface (6.3c). Off unless loaded.
@@ -109,6 +111,7 @@ final class ViewportRenderer: NSObject {
     var hasGhost: Bool { ghostPath.hasGeometry }
     var hasGuideLines: Bool { guideLinePath.hasGeometry }
     var hasRegionPaint: Bool { regionPaintPath.hasGeometry }
+    var hasPatchSelection: Bool { patchSelectionPath.hasGeometry }
     var hasUVChecker: Bool { uvCheckerPath.hasGeometry }
 
     /// Loads (or clears) the checker preview from an EditMesh's UVs.
@@ -204,6 +207,9 @@ final class ViewportRenderer: NSObject {
     }
     var regionPaintStyle = GhostStyle.regionPaint(sceneRadius: 1) {
         didSet { if regionPaintStyle != oldValue { invalidate() } }
+    }
+    var patchSelectionStyle = GhostStyle.patchSelection(sceneRadius: 1) {
+        didSet { if patchSelectionStyle != oldValue { invalidate() } }
     }
     var hoverGhostStyle = GhostStyle.hoverHint {
         didSet { if hoverGhostStyle != oldValue { invalidate() } }
@@ -425,6 +431,10 @@ final class ViewportRenderer: NSObject {
             device: device, commandQueue: queue,
             preferPrivateStorage: pool.usesPrivateStorage
         )
+        let patchSelection = GhostRenderPath(
+            device: device, commandQueue: queue,
+            preferPrivateStorage: pool.usesPrivateStorage
+        )
         let guideLines = GuideLineRenderPath(
             device: device, commandQueue: queue,
             preferPrivateStorage: pool.usesPrivateStorage
@@ -436,7 +446,7 @@ final class ViewportRenderer: NSObject {
 
         guard
             let path, let overlay, let ghost, let hoverGhost, let subdivisionPreview,
-            let editMeshFill, let regionPaint, let guideLines, let uvChecker,
+            let editMeshFill, let regionPaint, let patchSelection, let guideLines, let uvChecker,
             let depth = device.makeDepthStencilState(descriptor: depthDescriptor)
         else { return nil }
 
@@ -451,6 +461,7 @@ final class ViewportRenderer: NSObject {
         self.subdivisionPreviewPath = subdivisionPreview
         self.editMeshFillPath = editMeshFill
         self.regionPaintPath = regionPaint
+        self.patchSelectionPath = patchSelection
         self.guideLinePath = guideLines
         self.uvCheckerPath = uvChecker
         self.depthState = depth
@@ -931,6 +942,28 @@ final class ViewportRenderer: NSObject {
     /// Shows the painted Target region as a translucent fill, or clears it when
     /// `triangles` is empty. Positions/normals/indices are built by the caller
     /// from the Target's own faces.
+    /// Shows the selected quad patch as a gold fill, or clears it.
+    func setPatchSelection(positions: [Float], normals: [Float], indices: [UInt32]) {
+        guard !indices.isEmpty else {
+            patchSelectionPath.clear()
+            invalidate()
+            return
+        }
+        patchSelectionStyle = GhostStyle.patchSelection(sceneRadius: bounds.radius)
+        positions.withUnsafeBufferPointer { p in
+            normals.withUnsafeBufferPointer { n in
+                indices.withUnsafeBufferPointer { i in
+                    patchSelectionPath.load(
+                        positions: p, normals: n, indices: i,
+                        hasUnifiedMemory: capabilities.hasUnifiedMemory,
+                        allowZeroCopy: false, logsSharingDecision: false
+                    )
+                }
+            }
+        }
+        invalidate()
+    }
+
     func setRegionPaint(positions: [Float], normals: [Float], indices: [UInt32]) {
         guard !indices.isEmpty else {
             regionPaintPath.clear()
@@ -1207,6 +1240,16 @@ final class ViewportRenderer: NSObject {
             uniforms: GhostUniformsFactory.uniforms(
                 mvp: mvp, viewDirection: forward,
                 style: regionPaintStyle.withDepthBias(surfaceBias), time: time
+            )
+        )
+        // The selected patch sits on the CAGE, so it draws after the cage fill and
+        // after the region paint — it states what the next command will touch, and
+        // a mark you cannot see is not a mark.
+        patchSelectionPath.encode(
+            into: encoder,
+            uniforms: GhostUniformsFactory.uniforms(
+                mvp: mvp, viewDirection: forward,
+                style: patchSelectionStyle.withDepthBias(surfaceBias), time: time
             )
         )
         // ...and the hovered face on top of it (depth compare is `lessEqual`

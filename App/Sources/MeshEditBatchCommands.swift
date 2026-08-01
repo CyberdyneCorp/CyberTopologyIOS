@@ -106,6 +106,16 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
         }
     }
 
+    /// Whether a selected patch scopes this command (openspec
+    /// add-patch-selection-scope). The three that do not are the ones that cannot
+    /// be scoped without damaging the cage — see `wholeCageOnly`.
+    var scopesToSelection: Bool {
+        switch self {
+        case .subdivide, .subdivideAndReproject, .halve: false
+        default: true
+        }
+    }
+
     /// Commands that cannot run without an active Target to project onto.
     var requiresTarget: Bool {
         switch self {
@@ -223,19 +233,40 @@ extension MeshEditController {
     /// the undo stack entirely, which is what the panel disables itself on.
     @discardableResult
     func runBatchCommand(_ command: BatchCommand) -> Bool {
+        // Subdivide and Halve cannot scope to a patch without leaving non-quads
+        // where the patch meets its neighbours, or a half-dissolved loop hanging
+        // past the boundary. They run on the whole cage and SAY so, because a
+        // selection silently ignored is worse than one honestly declined.
+        if !selectedPatch.isEmpty, !command.scopesToSelection {
+            onCameraToolStatus?(Self.wholeCageOnly(command))
+        }
         switch command {
         case .clearLoopTags:
-            return clearAllLoopTags()
+            guard let edges = scopedEdges() else { return clearAllLoopTags() }
+            return applyAnnotationEditNow(verb: "batch.clearLoopTags") {
+                $0.clearingTags(on: edges)
+            }
         case .clearPins:
-            return clearAllPins()
+            guard let scope = selectionScope() else { return clearAllPins() }
+            return applyAnnotationEditNow(verb: "batch.clearPins") {
+                $0.clearingPins(on: scope.vertices)
+            }
         case .clearFrozen:
-            return clearAllFrozen()
+            guard !selectedPatch.isEmpty else { return clearAllFrozen() }
+            let faces = selectedPatch
+            return applyAnnotationEditNow(verb: "batch.clearFrozen") {
+                $0.clearingFrozen(on: faces)
+            }
         case .clearSeams:
-            return clearAllSeams()
+            guard let edges = scopedEdges() else { return clearAllSeams() }
+            let set = Set(edges)
+            return applyAnnotationEditNow(verb: "batch.clearSeams") {
+                $0.clearingSeams(on: set)
+            }
         case .snapAllToTarget:
             return runBatchMeshEdit(command) { mesh, context in
                 let report = try mesh.snapAllToTarget(
-                    context.snapper, pinned: context.annotations?.pinnedVertices ?? []
+                    context.snapper, pinned: self.holdingEverythingOutside(mesh, context)
                 )
                 self.onCameraToolStatus?(
                     Self.snapAllStatus(report)
@@ -244,7 +275,7 @@ extension MeshEditController {
         case .relaxAll:
             return runBatchMeshEdit(command) { mesh, context in
                 try mesh.relaxAll(
-                    pinned: context.annotations?.pinnedVertices ?? [],
+                    pinned: self.holdingEverythingOutside(mesh, context),
                     snapping: context.snapper
                 )
             }
@@ -272,8 +303,84 @@ extension MeshEditController {
             }
         case .triangulate:
             return runBatchMeshEdit(command) { mesh, _ in
-                try mesh.triangulate()
+                guard !self.selectedPatch.isEmpty else {
+                    try mesh.triangulate()
+                    return
+                }
+                try Self.triangulate(self.selectedPatch, in: mesh)
             }
+        }
+    }
+
+    /// Fan-triangulates just `faces`.
+    ///
+    /// Builds every triangle BEFORE deleting the faces they replace: adding a
+    /// face leaves existing ids alone, while deleting compacts them, so the other
+    /// order would invalidate the very ids this is working from. The deletion is
+    /// one sorted call for the same reason a region carve is — an unsorted list
+    /// made the solve non-deterministic once already.
+    static func triangulate(_ faces: Set<UInt32>, in mesh: Mesh) throws {
+        var doomed: [UInt32] = []
+        for face in faces.sorted() {
+            let ring = mesh.faceVertices(face)
+            guard ring.count > 3 else { continue }
+            for corner in 1..<(ring.count - 1) {
+                _ = try mesh.buildFace(ring: [
+                    .existing(ring[0]), .existing(ring[corner]), .existing(ring[corner + 1]),
+                ])
+            }
+            doomed.append(face)
+        }
+        guard !doomed.isEmpty else { return }
+        try mesh.deleteFaces(doomed.sorted())
+    }
+
+    /// The selection's vertices and the edges lying inside it.
+    ///
+    /// An edge counts as inside when BOTH its endpoints are: an edge with one end
+    /// outside is the patch's border, and clearing a tag there would change the
+    /// topology the artist can see beyond what they selected.
+    func selectionScope() -> (vertices: Set<UInt32>, mesh: Mesh)? {
+        guard !selectedPatch.isEmpty, let mesh = contextProvider?()?.editMesh else { return nil }
+        var vertices: Set<UInt32> = []
+        for face in selectedPatch { vertices.formUnion(mesh.faceVertices(face)) }
+        return vertices.isEmpty ? nil : (vertices, mesh)
+    }
+
+    /// Annotated edges lying inside the selection, or nil when nothing is
+    /// selected (so the caller falls back to the whole cage).
+    private func scopedEdges() -> [UInt32]? {
+        guard let scope = selectionScope(), let annotations = contextProvider?()?.annotations
+        else { return nil }
+        let candidates = Set(annotations.taggedEdges).union(annotations.seamEdges)
+        return candidates.filter { edge in
+            guard let ends = scope.mesh.edgeEndpoints(of: edge) else { return false }
+            return scope.vertices.contains(ends.0) && scope.vertices.contains(ends.1)
+        }
+    }
+
+    /// The pin set that confines a whole-mesh op to the selection: everything
+    /// OUTSIDE it, plus the artist's own pins.
+    ///
+    /// Scoping by pinning rather than by a new engine entry point, because the
+    /// engine already honours a pin set and the border behaviour that falls out
+    /// is the correct one — the patch smooths or snaps while the cage around it
+    /// holds still, which is what selecting a patch meant.
+    func holdingEverythingOutside(_ mesh: Mesh, _ context: Context) -> [UInt32] {
+        let authored = context.annotations?.pinnedVertices ?? []
+        guard let scope = selectionScope() else { return authored }
+        return mesh.liveVertexIDs().subtracting(scope.vertices).union(authored).sorted()
+    }
+
+    /// Why a command ignored the selection.
+    static func wholeCageOnly(_ command: BatchCommand) -> String {
+        switch command {
+        case .halve:
+            return "Halve runs on the whole cage: an edge loop does not stop at a "
+                + "patch boundary, so halving one partway leaves a hanging half-loop"
+        default:
+            return "\(command.title) runs on the whole cage: subdividing one patch "
+                + "would leave n-gons where it meets its neighbours"
         }
     }
 

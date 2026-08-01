@@ -645,10 +645,10 @@ struct PaintedRegionRetopoTests {
     @Test func theDoubleTapMeansWhateverTheArmedToolNeeds() {
         #expect(PencilTapAction.forTool(.paintRegion) == .toggleErase)
         #expect(PencilTapAction.forTool(.selectRegionBox) == .toggleSeeThrough)
-        // No region tool armed: the tap is left alone rather than silently changing
-        // a mode the artist cannot see.
-        #expect(PencilTapAction.forTool(.transformVertices) == PencilTapAction.none)
-        #expect(PencilTapAction.forTool(nil) == PencilTapAction.none)
+        // No region tool armed: the tap now selects the quad patch under the
+        // pencil (openspec add-patch-selection-scope) — covered there.
+        #expect(PencilTapAction.forTool(.transformVertices) == .selectPatch)
+        #expect(PencilTapAction.forTool(nil) == .selectPatch)
     }
 
     @Test @MainActor func theModeSwitchIsAnnouncedAndTinted() {
