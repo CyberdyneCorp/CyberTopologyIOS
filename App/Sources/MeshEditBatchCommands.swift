@@ -107,11 +107,16 @@ enum BatchCommand: String, CaseIterable, Identifiable, Equatable, Sendable {
     }
 
     /// Whether a selected patch scopes this command (openspec
-    /// add-patch-selection-scope). The three that do not are the ones that cannot
-    /// be scoped without damaging the cage — see `wholeCageOnly`.
+    /// add-patch-selection-scope).
+    ///
+    /// Halve is CONDITIONAL and so is not listed here: it scopes when the selection
+    /// is a self-contained island, whose loops cannot leave it, and runs whole-cage
+    /// otherwise (openspec add-island-scoped-halve). Ask
+    /// `MeshEditController.willScope` for the answer that accounts for that.
     var scopesToSelection: Bool {
         switch self {
-        case .subdivide, .subdivideAndReproject, .halve: false
+        case .subdivide, .subdivideAndReproject: false
+        case .halve: false
         default: true
         }
     }
@@ -237,7 +242,7 @@ extension MeshEditController {
         // where the patch meets its neighbours, or a half-dissolved loop hanging
         // past the boundary. They run on the whole cage and SAY so, because a
         // selection silently ignored is worse than one honestly declined.
-        if !selectedPatch.isEmpty, !command.scopesToSelection {
+        if !selectedPatch.isEmpty, !willScope(command) {
             pendingStatusNote = Self.wholeCageOnly(command)
         }
         // Whatever the command reports, the note travels WITH it. Reported
@@ -293,7 +298,12 @@ extension MeshEditController {
         case .halve:
             return runBatchMeshEdit(command) { mesh, _ in
                 do {
-                    let report = try mesh.halveDensity()
+                    // Scoped when the selection is an ISLAND: its loops cannot leave
+                    // it, so the reason Halve is otherwise whole-cage does not apply.
+                    let report =
+                        self.halveScopesToSelection(mesh)
+                        ? try mesh.halveDensity(limitedTo: self.selectedPatch)
+                        : try mesh.halveDensity()
                     self.reportStatus(Self.halveStatus(report))
                 } catch let failure as Mesh.HalveDensityFailure {
                     // A refusal is an ANSWER, not a crash: say which rule declined
@@ -384,8 +394,9 @@ extension MeshEditController {
     static func wholeCageOnly(_ command: BatchCommand) -> String {
         switch command {
         case .halve:
-            return "Halve runs on the whole cage: an edge loop does not stop at a "
-                + "patch boundary, so halving one partway leaves a hanging half-loop"
+            return "Halve ran on the whole cage: the selection is attached to the rest "
+                + "of it, and an edge loop does not stop at a patch boundary, so halving "
+                + "one partway leaves a hanging half-loop. A SEPARATE piece halves on its own"
         default:
             return "\(command.title) runs on the whole cage: subdividing one patch "
                 + "would leave n-gons where it meets its neighbours"
@@ -400,6 +411,26 @@ extension MeshEditController {
         guard report.directionsHalved == 1 else { return base }
         return base + " (one direction only — the other has an odd number of quads "
             + "across, so its last loop is the boundary)"
+    }
+
+    /// Whether Halve will act on the selection rather than the whole cage.
+    ///
+    /// An ISLAND is the case where the usual objection — an edge loop does not stop
+    /// at a patch boundary — does not apply, because nothing outside the selection
+    /// is attached to it, so no loop can leave. Reported from device: two patches,
+    /// one selected, "it should work only on the selected one".
+    func halveScopesToSelection(_ mesh: Mesh) -> Bool {
+        !selectedPatch.isEmpty && mesh.isSelfContainedIsland(selectedPatch)
+    }
+
+    /// Whether `command` will honour the current selection — which for Halve
+    /// depends on the SELECTION, not only on the command.
+    func willScope(_ command: BatchCommand) -> Bool {
+        guard !selectedPatch.isEmpty else { return false }
+        if command == .halve, let mesh = contextProvider?()?.editMesh {
+            return halveScopesToSelection(mesh)
+        }
+        return command.scopesToSelection
     }
 
     /// Faces that are not quads — what a Halve refusal points at.

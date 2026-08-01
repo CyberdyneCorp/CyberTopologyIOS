@@ -408,6 +408,83 @@ struct BatchCommandTests {
         #expect(harness.editor.selectedPatch == selected, "no topology changed")
     }
 
+    /// THE REPORTED CASE, through the real command path: two patches, one
+    /// selected, Halve. It used to run whole-cage and refuse; the selection is an
+    /// island, so it now halves exactly that.
+    @Test func halveScopesToASelectedIsland() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness, halfSize: 20)
+        try addTwoHalvablePatches(to: harness)
+        let mesh = try harness.editMesh()
+        #expect(mesh.faceCount == 32, "two 4x4 patches")
+        let seed = try #require(mesh.liveFaceIDs().sorted().first)
+        harness.editor.togglePatch(containing: seed)
+        #expect(harness.editor.selectedPatch.count == 16)
+
+        #expect(harness.model.runBatchCommand(.halve))
+
+        let after = try harness.editMesh()
+        #expect(after.faceCount == 4 + 16, "the selected patch halved, the other intact")
+        #expect(try after.stats().quads == after.faceCount, "still quad-only")
+        #expect(harness.bundle.journal.depth == 1, "one undoable step")
+    }
+
+    /// …and with NOTHING selected it is the whole cage, which for two patches is
+    /// not one rectangle, so it still refuses.
+    @Test func halveWithNoSelectionStillJudgesTheWholeCage() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness, halfSize: 20)
+        try addTwoHalvablePatches(to: harness)
+        let faces = try harness.editMesh().faceCount
+
+        #expect(!harness.model.runBatchCommand(.halve))
+        #expect(try harness.editMesh().faceCount == faces, "untouched")
+    }
+
+    /// A selection ATTACHED to the rest of the cage falls back to whole-cage, and
+    /// the artist is told which happened.
+    @Test func halveWithAnAttachedSelectionFallsBackToTheWholeCage() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness, halfSize: 20)
+        try addTwoHalvablePatches(to: harness)
+        let mesh = try harness.editMesh()
+        // Half of one patch: attached along its middle, so not an island.
+        harness.editor.selectFaces(Set(mesh.liveFaceIDs().sorted().prefix(8)))
+        #expect(!harness.editor.halveScopesToSelection(mesh))
+        #expect(!harness.editor.willScope(.halve))
+
+        // Whole cage: two patches are not one rectangle, so it refuses and the
+        // cage is untouched — the fallback is honest, not destructive.
+        let faces = mesh.faceCount
+        #expect(!harness.model.runBatchCommand(.halve))
+        #expect(try harness.editMesh().faceCount == faces)
+    }
+
+    /// Two separate 4x4 patches, each halvable on its own.
+    private func addTwoHalvablePatches(to harness: Harness) throws {
+        var lines: [String] = []
+        for patch in 0..<2 {
+            let offset = Double(patch) * 10
+            for y in 0...4 {
+                for x in 0...4 { lines.append("v \(Double(x) + offset) \(y) 0") }
+            }
+        }
+        for patch in 0..<2 {
+            let base = patch * 25
+            for y in 0..<4 {
+                for x in 0..<4 {
+                    let a = base + y * 5 + x + 1
+                    lines.append("f \(a) \(a + 1) \(a + 6) \(a + 5)")
+                }
+            }
+        }
+        try harness.bundle.addObject(
+            name: "cage", role: .editMesh,
+            mesh: try meshFromOBJ(lines.joined(separator: "\n"))
+        )
+        harness.sync()
+    }
+
     @Test func relaxAllJournalsOnceAndUndoesByteExactly() throws {
         let harness = try Harness()
         try addPlaneTarget(to: harness)
