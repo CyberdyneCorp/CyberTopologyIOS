@@ -95,7 +95,7 @@ struct HalveIslandOpsTests {
         let half = Set(cage.liveFaceIDs().sorted().prefix(8))
 
         #expect(!cage.isSelfContainedIsland(half))
-        #expect(throws: Mesh.IslandHalveFailure.notAnIsland) {
+        #expect(throws: Mesh.IslandFailure.notAnIsland) {
             try cage.halveDensity(limitedTo: half)
         }
         #expect(cage.faceCount == faces, "a refusal leaves the cage untouched")
@@ -139,10 +139,48 @@ struct HalveIslandOpsTests {
         #expect(cage.faceCount == faces, "and the cage is untouched")
     }
 
+    /// Subdividing an island is sound for the reason the whole-cage restriction
+    /// exists: a subdivided patch splits the edges it SHARES with its neighbours,
+    /// and an island shares none.
+    @Test("one island of a two-patch cage subdivides; the other is untouched")
+    func oneIslandSubdivides() throws {
+        let cage = try patches(count: 2, cells: 2)
+        #expect(cage.faceCount == 8, "two 2x2 patches")
+        let seed = try #require(cage.liveFaceIDs().sorted().first)
+        let selected = island(containing: seed, in: cage)
+        #expect(selected.count == 4)
+        let otherBefore = Set(
+            cage.liveVertexIDs().compactMap { cage.vertexPosition($0) }
+                .filter { $0.x > 5 }.map { "\($0.x),\($0.y)" }
+        )
+
+        try cage.subdivide(limitedTo: selected)
+
+        #expect(cage.faceCount == 16 + 4, "the island quadrupled, the other untouched")
+        #expect(try cage.stats().quads == cage.faceCount, "subdivision yields quads")
+        let otherAfter = Set(
+            cage.liveVertexIDs().compactMap { cage.vertexPosition($0) }
+                .filter { $0.x > 5 }.map { "\($0.x),\($0.y)" }
+        )
+        #expect(otherAfter == otherBefore, "the unselected patch must not move")
+    }
+
+    @Test("an attached selection cannot be subdivided alone either")
+    func anAttachedSelectionCannotSubdivide() throws {
+        let cage = try patches(count: 1, cells: 4)
+        let faces = cage.faceCount
+        let half = Set(cage.liveFaceIDs().sorted().prefix(8))
+
+        #expect(throws: Mesh.IslandFailure.notAnIsland) {
+            try cage.subdivide(limitedTo: half)
+        }
+        #expect(cage.faceCount == faces, "a refusal leaves the cage untouched")
+    }
+
     @Test("an empty selection is refused")
     func anEmptySelectionIsRefused() throws {
         let cage = try patches(count: 1, cells: 4)
-        #expect(throws: Mesh.IslandHalveFailure.emptySelection) {
+        #expect(throws: Mesh.IslandFailure.emptySelection) {
             try cage.halveDensity(limitedTo: [])
         }
     }
