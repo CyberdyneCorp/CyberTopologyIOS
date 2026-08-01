@@ -221,6 +221,12 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
         replacing(pinnedVertices: [])
     }
 
+    /// This state with only the pins on `vertices` cleared — a batch clear
+    /// scoped to a selected patch (openspec add-patch-selection-scope).
+    public func clearingPins(on vertices: Set<UInt32>) -> MeshAnnotations {
+        replacing(pinnedVertices: pinnedVertices.filter { !vertices.contains($0) })
+    }
+
     // MARK: - UV seams
 
     /// True when `edge` is a UV seam.
@@ -243,6 +249,11 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
 
     /// This state with every seam sewn.
     public func clearingAllSeams() -> MeshAnnotations { replacing(seamEdges: []) }
+
+    /// This state with only the seams on `edges` sewn.
+    public func clearingSeams(on edges: Set<UInt32>) -> MeshAnnotations {
+        replacing(seamEdges: seamEdges.filter { !edges.contains($0) })
+    }
 
     // MARK: - Frozen faces
 
@@ -267,6 +278,11 @@ public struct MeshAnnotations: Codable, Equatable, Sendable {
     /// This state with every face thawed.
     public func clearingAllFrozen() -> MeshAnnotations {
         replacing(frozenFaces: [])
+    }
+
+    /// This state with only `faces` thawed.
+    public func clearingFrozen(on faces: Set<UInt32>) -> MeshAnnotations {
+        replacing(frozenFaces: frozenFaces.filter { !faces.contains($0) })
     }
 
     // MARK: - Visibility

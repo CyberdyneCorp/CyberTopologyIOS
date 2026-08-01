@@ -112,6 +112,23 @@ struct GhostStyle: Equatable {
         return style
     }
 
+    /// Selected-PATCH fill (openspec add-patch-selection-scope): the quad patch
+    /// a batch command will act on.
+    ///
+    /// Gold, and NOT pulsing: a pulse asks a question ("accept this?"), while a
+    /// selection is a standing statement about what happens next. Denser than the
+    /// painted region because it marks the cage the artist is editing rather than
+    /// the Target underneath it.
+    static func patchSelection(sceneRadius: Float) -> GhostStyle {
+        var style = GhostStyle()
+        style.color = SIMD3(1.0, 0.78, 0.18)
+        style.baseAlpha = 0.45
+        style.pulseFloor = 1
+        style.rimStrength = 0.45
+        style.normalOffset = max(sceneRadius, 1e-6) * 0.005
+        return style
+    }
+
     /// Hovered-FACE fill (openspec add-hover-scope-highlight, design D3): the
     /// face a surface-scope Move drag would stretch.
     ///

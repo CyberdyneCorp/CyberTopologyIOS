@@ -262,6 +262,11 @@ struct MetalViewport: UIViewRepresentable {
         /// (see `RegionPaintFaceCache`).
         private var paintFaceCache = RegionPaintFaceCache()
         private var paintTargetMesh: Mesh?
+        /// Where the pencil last hovered, so a double-tap knows which patch it
+        /// means — the gesture itself carries no location.
+        private var lastHoverPoint: SIMD2<Float>?
+        /// Vertex/face counts the selection was taken against.
+        private var patchSelectionSignature: [Int]?
 
         /// The Target used by region tools, deserialized at most once per identity.
         func cachedRegionTarget() -> Mesh? {
@@ -621,6 +626,10 @@ struct MetalViewport: UIViewRepresentable {
             meshEditor.onRegionSelectionModeChanged = { [weak self] seesThrough in
                 self?.inputModel.regionSelectionModeChanged(seesThrough: seesThrough)
             }
+            meshEditor.onSelectedPatchChanged = { [weak self] faces in
+                self?.updatePatchSelectionFill(faces: faces)
+                self?.inputModel.selectedPatchChanged(count: faces.count)
+            }
             meshEditor.onMoveScopeChanged = { [weak self] scope in
                 self?.inputModel.moveScopeChanged(scope)
             }
@@ -765,10 +774,15 @@ struct MetalViewport: UIViewRepresentable {
                 // session is armed (task 4.2): the session's ghost preview
                 // owns the hover ghost channel for its duration.
                 if meshEditor.cameraSession == nil {
-                    hoverPreview.hoverChanged(at: SIMD2(
+                    let normalized = SIMD2(
                         Float(location.x / view.bounds.width),
                         Float(location.y / view.bounds.height)
-                    ))
+                    )
+                    // Remembered for the double-tap: the gesture carries no
+                    // location of its own, so the patch it selects is the one
+                    // the pencil was last over.
+                    lastHoverPoint = normalized
+                    hoverPreview.hoverChanged(at: normalized)
                 }
                 // Pencil Pro barrel roll (task 3.7): non-zero only on
                 // hardware that reports it; forwarded into the model's
@@ -856,6 +870,24 @@ struct MetalViewport: UIViewRepresentable {
             inputModel.setSceneBounds(
                 center: renderer.bounds.center, radius: renderer.bounds.radius
             )
+            dropPatchSelectionIfTopologyChanged()
+        }
+
+        /// Face ids are renumbered by the payload compaction every
+        /// topology-changing command goes through, so a selection that outlived
+        /// one would silently name different faces — the same trap that once made
+        /// region solves act on arbitrary geometry. Counts are the cheap witness:
+        /// they cannot change without the ids changing.
+        /// Reads the live mesh DIRECTLY rather than through the edit context: the
+        /// context provider re-syncs the document to build a fresh snapshot, so
+        /// asking it from inside a sync recurses until the stack runs out.
+        private func dropPatchSelectionIfTopologyChanged() {
+            let signature = recognizerEditMesh.map { [$0.vertexCount, $0.faceCount] }
+            defer { patchSelectionSignature = signature }
+            guard !meshEditor.selectedPatch.isEmpty, signature != patchSelectionSignature else {
+                return
+            }
+            meshEditor.clearSelectedPatch()
         }
 
         /// Mirrors the document's symmetry state (task 4.4) into the
@@ -1488,9 +1520,42 @@ extension MetalViewport.Coordinator: UIPencilInteractionDelegate {
             meshEditor.paintErases.toggle()
         case .toggleSeeThrough:
             meshEditor.regionSelectionSeesThrough.toggle()
-        case .none:
-            break
+        case .selectPatch:
+            selectPatchUnderPencil()
         }
+    }
+
+    /// Selects (or deselects) the quad patch under the last hover point.
+    ///
+    /// Resolved the same way the hover highlight resolves a face — Target hit,
+    /// then nearest cage face — so the patch taken is the one that was lit up
+    /// under the pencil. Unlike the hover's own face query this is NOT gated on
+    /// the move scope: a double-tap over a face means that face even when the
+    /// pencil is standing near one of its vertices.
+    func selectPatchUnderPencil() {
+        guard let point = lastHoverPoint, let context = meshEditor.contextProvider?(),
+            let mesh = context.editMesh,
+            let hit = meshEditor.surfacePoint(at: point, in: context),
+            let face = mesh.nearestFace(to: hit, maxDistance: context.sceneRadius)
+        else { return }
+        meshEditor.togglePatch(containing: face.face)
+    }
+
+    /// Rebuilds the gold fill over the selected patch.
+    func updatePatchSelectionFill(faces: Set<UInt32>) {
+        guard let renderer else { return }
+        // The live handle, not the edit context, for the same reason the drop
+        // rule reads it directly: this runs from a sync-adjacent callback.
+        guard !faces.isEmpty, let mesh = recognizerEditMesh else {
+            renderer.setPatchSelection(positions: [], normals: [], indices: [])
+            return
+        }
+        let fill = RegionPaintGeometry.fill(faces: faces.sorted()) { face in
+            mesh.faceVertices(face).compactMap { mesh.vertexPosition($0) }
+        }
+        renderer.setPatchSelection(
+            positions: fill.positions, normals: fill.normals, indices: fill.indices
+        )
     }
 
     /// Squeeze completed: open/dismiss the radial quick-verb palette at

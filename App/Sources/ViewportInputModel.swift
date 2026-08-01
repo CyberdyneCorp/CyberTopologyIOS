@@ -128,6 +128,19 @@ final class ViewportInputModel {
         flashPaintModeHint(seesThrough ? "Select through" : "Select visible")
     }
 
+    /// How many cage faces the selected patch holds, 0 for none (openspec
+    /// add-patch-selection-scope). The batch panel names the scope from this, so
+    /// a command's reach is visible BEFORE it runs rather than after.
+    private(set) var selectedPatchCount = 0
+
+    func selectedPatchChanged(count: Int) {
+        guard selectedPatchCount != count else { return }
+        selectedPatchCount = count
+        flashPaintModeHint(
+            count == 0 ? "Selection cleared" : "\(count) faces selected"
+        )
+    }
+
     private(set) var paintModeHint: String?
     @ObservationIgnored private var paintModeHintToken: UUID?
 

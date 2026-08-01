@@ -121,6 +121,8 @@ targets:
       # Face-less cage vertices (the un-relaxable ear tip): public API + inline
       # OBJ fixtures, so it runs on device too.
       - path: CyberKit/Tests/CyberKitTests/FacelessVertexPruneTests.swift
+      # Quad-patch finding (the double-tap selection): public API + inline OBJ.
+      - path: CyberKit/Tests/CyberKitTests/QuadPatchTests.swift
       # Weave solver session (Phase 5): public-API + inline fixtures, so it runs
       # on device too (the auto-remesh backend + determinism verified on iPad).
       - path: CyberKit/Tests/CyberKitTests/WeaveSolverTests.swift
