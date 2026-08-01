@@ -33,8 +33,13 @@
       The note now travels with whatever the command reports.
 - [x] 3.4b The all-quad refusal names the offending faces by count. The rule alone does not
       locate a handful of triangles in a 315-face cage.
-- [x] 3.5 The selection's size is announced when it changes, so a command's reach is known
-      before it runs.
+- [x] 3.5 The selection's size is announced when it changes.
+- [x] 3.5a REPORTED FROM DEVICE: the announcement was not enough — the panel still read
+      "Run on the whole EditMesh" with a patch selected, and Subdivide quietly took the
+      whole cage. The header now names the reach, and every command that will ignore the
+      selection carries a "whole cage" badge BEFORE it runs.
+- [x] 3.5b A Halve refusal SELECTS the faces in its way: one triangle in a 317-face cage is
+      a needle, and a count does not locate it. Also "1 triangles" was on screen.
 
 ## 4. Tests
 

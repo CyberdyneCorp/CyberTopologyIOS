@@ -301,6 +301,13 @@ extension MeshEditController {
                     // A refusal is an ANSWER, not a crash: say which rule declined
                     // and rethrow so the transaction is discarded byte-clean.
                     self.reportStatus(Self.halveRefusal(failure, in: mesh))
+                    // ONE triangle in a 317-face cage is a needle, and naming the
+                    // count does not locate it. Selecting the offenders puts them
+                    // on screen in gold — the selection is replaced because the
+                    // one being held was about to be ignored anyway.
+                    if case .notQuadOnly = failure {
+                        self.selectFaces(Self.nonQuadFaces(in: mesh))
+                    }
                     throw failure
                 }
             }
@@ -387,6 +394,11 @@ extension MeshEditController {
         }
     }
 
+    /// Faces that are not quads — what a Halve refusal points at.
+    static func nonQuadFaces(in mesh: Mesh) -> Set<UInt32> {
+        Set(mesh.liveFaceIDs().filter { mesh.faceVertices($0).count != 4 })
+    }
+
     /// A note that must survive whatever the command reports next, so the two
     /// arrive as one message instead of the second replacing the first.
     private var pendingStatusNote: String? {
@@ -421,12 +433,17 @@ extension MeshEditController {
             return halveRefusal(failure)
         }
         var offenders: [String] = []
-        if stats.triangles > 0 { offenders.append("\(stats.triangles) triangles") }
-        if stats.other > 0 { offenders.append("\(stats.other) n-gons") }
+        if stats.triangles > 0 {
+            offenders.append("\(stats.triangles) triangle\(stats.triangles == 1 ? "" : "s")")
+        }
+        if stats.other > 0 {
+            offenders.append("\(stats.other) n-gon\(stats.other == 1 ? "" : "s")")
+        }
         guard !offenders.isEmpty else { return halveRefusal(failure) }
         return "Halve needs an all-quad cage — this one has "
             + offenders.joined(separator: " and ")
-            + " (a triangle or n-gon has no loops to halve)"
+            + ", now selected so you can find "
+            + (stats.triangles + stats.other == 1 ? "it" : "them")
     }
 
     /// Why a halve declined, in the artist's terms — the panel shows this instead

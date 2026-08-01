@@ -218,6 +218,14 @@ final class MeshEditController {
         onSelectedPatchChanged?(selectedPatch)
     }
 
+    /// Replaces the selection outright — used to point at what a command found
+    /// in its way, which the artist would otherwise have to hunt for.
+    func selectFaces(_ faces: Set<UInt32>) {
+        guard selectedPatch != faces else { return }
+        selectedPatch = faces
+        onSelectedPatchChanged?(selectedPatch)
+    }
+
     func clearSelectedPatch() {
         guard !selectedPatch.isEmpty else { return }
         selectedPatch.removeAll()
