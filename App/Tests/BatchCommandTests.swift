@@ -429,6 +429,60 @@ struct BatchCommandTests {
         #expect(harness.bundle.journal.depth == 1, "one undoable step")
     }
 
+    /// THE REPORTED CASE for Subdivide: a 30-face patch selected next to another
+    /// patch, Subdivide, and BOTH grew. The selection is an island, so nothing
+    /// outside it shares an edge that could be left an n-gon.
+    @Test func subdivideScopesToASelectedIsland() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness, halfSize: 20)
+        try addTwoHalvablePatches(to: harness)
+        let mesh = try harness.editMesh()
+        #expect(mesh.faceCount == 32)
+        let seed = try #require(mesh.liveFaceIDs().sorted().first)
+        harness.editor.togglePatch(containing: seed)
+        #expect(harness.editor.selectedPatch.count == 16)
+
+        #expect(harness.model.runBatchCommand(.subdivide))
+
+        let after = try harness.editMesh()
+        #expect(after.faceCount == 64 + 16, "the island quadrupled, the other intact")
+        #expect(try after.stats().quads == after.faceCount)
+        #expect(harness.bundle.journal.depth == 1, "one undoable step")
+    }
+
+    /// The panel's badge has to agree with what will happen: an island scopes, so
+    /// no "whole cage" badge; an attached selection does not.
+    @Test func theBadgeFollowsTheSelectionNotJustTheCommand() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness, halfSize: 20)
+        try addTwoHalvablePatches(to: harness)
+        let mesh = try harness.editMesh()
+        let seed = try #require(mesh.liveFaceIDs().sorted().first)
+
+        harness.editor.togglePatch(containing: seed)
+        #expect(harness.editor.willScope(.subdivide), "an island scopes")
+        #expect(harness.editor.willScope(.halve))
+        #expect(harness.model.selectedPatchIsIsland, "and the panel is told")
+
+        harness.editor.selectFaces(Set(mesh.liveFaceIDs().sorted().prefix(8)))
+        #expect(!harness.editor.willScope(.subdivide), "an attached selection does not")
+        #expect(!harness.model.selectedPatchIsIsland)
+    }
+
+    /// An attached selection still subdivides the whole cage — the objection
+    /// stands there — and says so.
+    @Test func subdivideWithAnAttachedSelectionFallsBackToTheWholeCage() throws {
+        let harness = try Harness()
+        try addPlaneTarget(to: harness, halfSize: 20)
+        try addTwoHalvablePatches(to: harness)
+        let mesh = try harness.editMesh()
+        harness.editor.selectFaces(Set(mesh.liveFaceIDs().sorted().prefix(8)))
+
+        #expect(harness.model.runBatchCommand(.subdivide))
+
+        #expect(try harness.editMesh().faceCount == 32 * 4, "the whole cage")
+    }
+
     /// …and with NOTHING selected it is the whole cage, which for two patches is
     /// not one rectangle, so it still refuses.
     @Test func halveWithNoSelectionStillJudgesTheWholeCage() throws {
@@ -450,7 +504,7 @@ struct BatchCommandTests {
         let mesh = try harness.editMesh()
         // Half of one patch: attached along its middle, so not an island.
         harness.editor.selectFaces(Set(mesh.liveFaceIDs().sorted().prefix(8)))
-        #expect(!harness.editor.halveScopesToSelection(mesh))
+        #expect(!harness.editor.islandScopes(mesh))
         #expect(!harness.editor.willScope(.halve))
 
         // Whole cage: two patches are not one rectangle, so it refuses and the

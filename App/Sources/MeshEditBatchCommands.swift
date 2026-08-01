@@ -289,11 +289,23 @@ extension MeshEditController {
             }
         case .subdivide:
             return runBatchMeshEdit(command) { mesh, _ in
-                try mesh.subdivide()
+                // Scoped when the selection is an ISLAND: it shares no edge with
+                // anything, so nothing outside it can be left an n-gon.
+                if self.islandScopes(mesh) {
+                    try mesh.subdivide(limitedTo: self.selectedPatch)
+                } else {
+                    try mesh.subdivide()
+                }
             }
         case .subdivideAndReproject:
             return runBatchMeshEdit(command) { mesh, context in
-                try mesh.subdivide(reprojectingOnto: context.snapper)
+                if self.islandScopes(mesh) {
+                    try mesh.subdivide(
+                        limitedTo: self.selectedPatch, reprojectingOnto: context.snapper
+                    )
+                } else {
+                    try mesh.subdivide(reprojectingOnto: context.snapper)
+                }
             }
         case .halve:
             return runBatchMeshEdit(command) { mesh, _ in
@@ -301,7 +313,7 @@ extension MeshEditController {
                     // Scoped when the selection is an ISLAND: its loops cannot leave
                     // it, so the reason Halve is otherwise whole-cage does not apply.
                     let report =
-                        self.halveScopesToSelection(mesh)
+                        self.islandScopes(mesh)
                         ? try mesh.halveDensity(limitedTo: self.selectedPatch)
                         : try mesh.halveDensity()
                     self.reportStatus(Self.halveStatus(report))
@@ -398,8 +410,9 @@ extension MeshEditController {
                 + "of it, and an edge loop does not stop at a patch boundary, so halving "
                 + "one partway leaves a hanging half-loop. A SEPARATE piece halves on its own"
         default:
-            return "\(command.title) runs on the whole cage: subdividing one patch "
-                + "would leave n-gons where it meets its neighbours"
+            return "\(command.title) ran on the whole cage: the selection is attached to "
+                + "the rest of it, and subdividing a patch splits the edges it shares with "
+                + "its neighbours, leaving them n-gons. A SEPARATE piece subdivides on its own"
         }
     }
 
@@ -413,22 +426,23 @@ extension MeshEditController {
             + "across, so its last loop is the boundary)"
     }
 
-    /// Whether Halve will act on the selection rather than the whole cage.
+    /// Whether the whole-cage operations will act on the selection instead.
     ///
-    /// An ISLAND is the case where the usual objection — an edge loop does not stop
-    /// at a patch boundary — does not apply, because nothing outside the selection
-    /// is attached to it, so no loop can leave. Reported from device: two patches,
-    /// one selected, "it should work only on the selected one".
-    func halveScopesToSelection(_ mesh: Mesh) -> Bool {
+    /// An ISLAND is the case where BOTH objections vanish: nothing outside the
+    /// selection is attached, so no edge loop can leave it (Halve) and there is no
+    /// shared edge to split into an n-gon (Subdivide). Reported from device: two
+    /// patches, one selected, "the batch operation should work only on the selected
+    /// faces".
+    func islandScopes(_ mesh: Mesh) -> Bool {
         !selectedPatch.isEmpty && mesh.isSelfContainedIsland(selectedPatch)
     }
 
-    /// Whether `command` will honour the current selection — which for Halve
-    /// depends on the SELECTION, not only on the command.
+    /// Whether `command` will honour the current selection — which for the
+    /// whole-cage three depends on the SELECTION, not only on the command.
     func willScope(_ command: BatchCommand) -> Bool {
         guard !selectedPatch.isEmpty else { return false }
-        if command == .halve, let mesh = contextProvider?()?.editMesh {
-            return halveScopesToSelection(mesh)
+        if !command.scopesToSelection, let mesh = contextProvider?()?.editMesh {
+            return islandScopes(mesh)
         }
         return command.scopesToSelection
     }

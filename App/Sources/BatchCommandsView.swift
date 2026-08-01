@@ -110,14 +110,15 @@ struct BatchCommandsView: View {
 
     /// Whether this command will IGNORE the current selection.
     ///
-    /// Halve is the conditional one: it scopes when the selection is a separate
-    /// piece, whose loops cannot leave it, and runs whole-cage otherwise. The badge
-    /// has to follow the selection, not just the command, or it would tell the
-    /// artist the opposite of what is about to happen.
+    /// Subdivide and Halve are the conditional ones: they scope when the selection
+    /// is a separate piece — nothing attached, so no loop leaves it and no shared
+    /// edge becomes an n-gon — and run whole-cage otherwise. The badge has to follow
+    /// the SELECTION, not just the command, or it tells the artist the opposite of
+    /// what is about to happen.
     private func ignoresSelection(_ command: BatchCommand) -> Bool {
         guard model.selectedPatchCount > 0 else { return false }
-        if command == .halve { return !model.selectedPatchIsIsland }
-        return !command.scopesToSelection
+        if !command.scopesToSelection { return !model.selectedPatchIsIsland }
+        return false
     }
 
     private func isEnabled(_ command: BatchCommand) -> Bool {
